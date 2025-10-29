@@ -15,10 +15,10 @@ SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
 GAMMA_API_KEY = os.getenv("GAMMA_API_KEY")
 GAMMA_API_URL = os.getenv("GAMMA_API_URL")
 
-# D-ID (talking head / video generation) settings
-# Set DID_API_KEY and DID_API_URL in your .env to enable
-DID_API_KEY = os.getenv("DID_API_KEY")
-DID_API_URL = os.getenv("DID_API_URL", "https://api.d-id.com/talks")
+# Synthesia (alternativer Video-Provider)
+# Set SYNTHESIA_API_KEY and optionally SYNTHESIA_API_BASE in your .env
+SYNTHESIA_API_KEY = os.getenv("SYNTHESIA_API_KEY")
+SYNTHESIA_API_BASE = os.getenv("SYNTHESIA_API_BASE", "https://api.synthesia.io/v1")
 
 DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", "1200"))
 DEFAULT_CHUNK_OVERLAP = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "150"))

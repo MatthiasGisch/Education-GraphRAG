@@ -42,7 +42,7 @@ from src.concept_extract import (
 # Import für Gamma API
 from src.gamma import GammaClient, to_gamma_input_text
 from src.gamma_client import generate_presentation
-from src.did_client import generate_video_from_pptx_via_did
+from src.synthesia_client import generate_video_from_pptx_via_synthesia
 
 GRAPH_SCHEMA_PATH = ROOT / "src" / "graph_schema.cypher"
 UPLOAD_DIR = ROOT / "data" / "uploads"
@@ -58,6 +58,61 @@ st.set_page_config(page_title="GraphRAG GUI", layout="wide")
 # =========================
 def load_schema_text() -> str:
     return GRAPH_SCHEMA_PATH.read_text(encoding="utf-8")
+
+
+def _themes_file_path() -> Path:
+    return EXPORTS_DIR / "gamma_themes.json"
+
+
+def load_gamma_themes() -> list:
+    """Load saved Gamma theme names from exports/gamma_themes.json or return defaults."""
+    p = _themes_file_path()
+    defaults = ["Oasis", "Minimal", "Corporate"]
+    try:
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8") or "[]")
+            if isinstance(data, list) and data:
+                return data
+    except Exception:
+        pass
+    return defaults
+
+
+def save_gamma_theme(name: str) -> None:
+    """Save a theme name to the themes file (prepend, keep unique)."""
+    name = (name or "").strip()
+    if not name:
+        return
+    p = _themes_file_path()
+    try:
+        themes = load_gamma_themes()
+        if name in themes:
+            # move to front
+            themes.remove(name)
+            themes.insert(0, name)
+        else:
+            themes.insert(0, name)
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(themes, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        # best-effort; avoid crashing the GUI
+        pass
+
+
+def remove_gamma_theme(name: str) -> None:
+    """Remove a saved theme from exports/gamma_themes.json (best-effort)."""
+    try:
+        p = _themes_file_path()
+        if not p.exists():
+            return
+        data = json.loads(p.read_text(encoding="utf-8") or "[]")
+        if not isinstance(data, list):
+            return
+        if name in data:
+            data = [t for t in data if t != name]
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 @st.cache_resource(show_spinner=False)
 def get_neo() -> Neo4jClient:
@@ -729,32 +784,32 @@ st.sidebar.markdown("**Tipp:** `.env` anpassen und App neu starten, wenn Keys/UR
 # Main Tabs
 # =========================
 st.title("GraphRAG Pipeline – GUI")
-# Add D-ID tab (before Info)
+# Add Synthesia tab (before Info)
 tab_concepts, tab_ingest, tab_query, tab_did, tab_about = st.tabs([
     "🧩 Konzepte",
     "📥 Ingest",
     "❓ Fragen & Export",
-    "🎬 PPTX → D-ID",
+    "🎬 PPTX → Synthesia",
     "ℹ️ Info",
 ])
 
-# ---- Tab: PPTX -> D-ID (upload / select PPTX then send to D-ID)
+# ---- Tab: PPTX -> Synthesia (upload / select PPTX then send to Synthesia)
 with tab_did:
-    st.subheader("🎬 PPTX → D-ID: Erzeuge Lernvideo via D-ID API")
-    st.markdown("Lade eine `.pptx` hoch oder wähle eine vorhandene Datei aus `exports/` und sende sie an D-ID.")
+    st.subheader("🎬 PPTX → Synthesia: Erzeuge Lernvideo via Synthesia API")
+    st.markdown("Lade eine `.pptx` hoch oder wähle eine vorhandene Datei aus `exports/` und sende sie an Synthesia.")
     col1, col2 = st.columns([2, 1])
     with col1:
-        uploaded = st.file_uploader("PPTX hochladen (für D-ID)", type=["pptx"])
+        uploaded = st.file_uploader("PPTX hochladen (für Synthesia)", type=["pptx"])
         pptx_files = [p.name for p in EXPORTS_DIR.glob("*.pptx")] if EXPORTS_DIR.exists() else []
         selected = None
         if pptx_files:
             selected = st.selectbox("Vorhandene PPTX aus exports/ wählen", ["-- none --"] + pptx_files)
     with col2:
-        voice = st.text_input("Voice (D-ID voice id)", value="en-US")
+        voice = st.text_input("Voice (Synthesia voice id)", value="en-US")
         model = st.text_input("Model (optional)", value="")
         # Allow pasting an API key here if .env cannot be edited
-        api_key = st.text_input("D-ID API Key (paste here if not in .env)", value=st.session_state.get("did_api_key", ""), type="password")
-        api_url = st.text_input("D-ID API URL", value=st.session_state.get("did_api_url", cfg.DID_API_URL or "https://api.d-id.com/talks"))
+        api_key = st.text_input("Synthesia API Key (paste here if not in .env)", value=st.session_state.get("synthesia_api_key", ""), type="password")
+        api_url = st.text_input("Synthesia API Base URL", value=st.session_state.get("synthesia_api_base", cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1"))
         # duration controls
         st.markdown("---")
         total_minutes = st.number_input("Gesamtlänge (Minuten, optional)", min_value=0.0, value=0.0, step=0.5)
@@ -762,10 +817,10 @@ with tab_did:
         fallback_local = st.checkbox("Bei Fehler lokal erzeugen (Fallback)", value=True)
         # persist in session for the current user/session only
         if api_key:
-            st.session_state["did_api_key"] = api_key
+            st.session_state["synthesia_api_key"] = api_key
         if api_url:
-            st.session_state["did_api_url"] = api_url
-        gen = st.button("An D-ID senden und Video erzeugen")
+            st.session_state["synthesia_api_base"] = api_url
+        gen = st.button("An Synthesia senden und Video erzeugen")
 
     pptx_path = None
     if uploaded is not None:
@@ -782,21 +837,20 @@ with tab_did:
             st.error("Bitte zuerst eine PPTX hochladen oder eine vorhandene auswählen.")
         else:
             # prefer API key provided in the UI/session, otherwise fallback to cfg
-            use_key = st.session_state.get("did_api_key") or cfg.DID_API_KEY
-            use_url = st.session_state.get("did_api_url") or cfg.DID_API_URL
+            use_key = st.session_state.get("synthesia_api_key") or cfg.SYNTHESIA_API_KEY
+            use_url = st.session_state.get("synthesia_api_base") or cfg.SYNTHESIA_API_BASE
             if not use_key:
-                st.error("D-ID API Key nicht konfiguriert. Füge ihn in .env ein oder füge ihn hier in das Feld 'D-ID API Key' ein.")
+                st.error("Synthesia API Key nicht konfiguriert. Füge ihn in .env ein oder füge ihn hier in das Feld 'Synthesia API Key' ein.")
             else:
                 out_dir = EXPORTS_DIR
-                with st.spinner("Sende an D-ID und warte auf Ergebnis (kann einige Minuten dauern)…"):
+                with st.spinner("Sende an Synthesia und warte auf Ergebnis (kann einige Minuten dauern)…"):
                     try:
-                        mp4 = generate_video_from_pptx_via_did(
+                        mp4 = generate_video_from_pptx_via_synthesia(
                             pptx_path,
                             str(out_dir),
                             voice=voice or "en-US",
-                            model=(model or None),
                             api_key=use_key,
-                            api_url=(use_url or None),
+                            api_base=(use_url or None),
                             total_minutes=(total_minutes or None),
                             per_slide_seconds=(per_slide_seconds or None),
                             fallback_local=fallback_local,
@@ -806,7 +860,7 @@ with tab_did:
                         with open(mp4, "rb") as fh:
                             st.download_button("MP4 herunterladen", fh.read(), file_name=Path(mp4).name, mime="video/mp4")
                     except Exception as e:
-                        st.error(f"Fehler beim D-ID-Aufruf: {e}")
+                        st.error(f"Fehler beim Synthesia-Aufruf: {e}")
 
 # ---- Tab: Konzepte (Topic + Seed-Liste, Pre-Ingest) ----
 with tab_concepts:
@@ -1106,7 +1160,29 @@ with tab_query:
         st.markdown("### 🎞️ Slides mit Gamma erzeugen")
 
         colA, colB, colC = st.columns(3)
-        theme = colA.text_input("Theme-Name (Gamma)", value="Oasis")
+        # Theme selection: show saved/favorite themes and allow a custom name
+        themes = load_gamma_themes()
+        # ensure Oasis is available as a sensible default
+        if "Oasis" not in themes:
+            themes.append("Oasis")
+        selected = colA.selectbox("Theme (Gamma)", options=themes + ["<custom>"], index=0)
+        if selected == "<custom>":
+            custom_theme = colA.text_input("Custom theme name", value="")
+        else:
+            custom_theme = selected
+        # allow saving the current custom theme into favorites
+        c1, c2 = colA.columns([1,1])
+        if c1.button("Add theme to favorites"):
+            if custom_theme and custom_theme.strip():
+                save_gamma_theme(custom_theme.strip())
+                st.success(f"Theme '{custom_theme.strip()}' saved to favorites.")
+        if c2.button("Remove selected theme"):
+            if selected and selected != "<custom>":
+                remove_gamma_theme(selected)
+                st.info(f"Theme '{selected}' removed from favorites.")
+                # refresh themes in session by reloading
+                st.experimental_rerun()
+        theme = custom_theme or "Oasis"
         cards = colB.number_input("Ziel-Folien (bei auto)", 1, 60, 10)
         lang  = colC.selectbox("Sprache", ["de","en","fr","es","it"], index=0)
 
@@ -1121,6 +1197,56 @@ with tab_query:
             index=0,
             horizontal=True
         )
+
+        # Theme quick-test: runs a short Gamma generation to validate the theme name
+        if colB.button("Test theme"):
+            test_name = theme.strip() or "Oasis"
+            st.info(f"Teste Theme: {test_name}")
+            try:
+                gtest = None
+                try:
+                    gtest = GammaClient()
+                except Exception as e:
+                    st.error(f"GammaClient nicht konfiguriert: {e}")
+                if gtest is not None:
+                    test_body = {
+                        "inputText": "# Test\n* Theme validation",
+                        "textMode": "preserve",
+                        "format": "presentation",
+                        "themeName": test_name,
+                        "cardSplit": "inputTextBreaks",
+                        "numCards": 1,
+                        "exportAs": "pptx",
+                        # note: valid amounts: brief, medium, detailed, extensive
+                        "textOptions": {"language": "en", "amount": "brief"},
+                        "imageOptions": {"source": "noImages"},
+                    }
+                    with st.spinner("Validiere Theme bei Gamma …"):
+                        try:
+                            gen_id = gtest.generate(test_body)
+                            status = gtest.poll(gen_id, interval_sec=1, timeout_sec=20)
+                            outp = {"generationId": gen_id, "status": status}
+                            EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+                            safe = re.sub(r"[^A-Za-z0-9_-]", "_", test_name)[:40]
+                            fn = EXPORTS_DIR / f"gamma_theme_test_{safe}.json"
+                            fn.write_text(json.dumps(outp, ensure_ascii=False, indent=2), encoding="utf-8")
+                            st.success("Theme validiert (siehe Ergebnis unten).")
+                            st.json(outp)
+                        except Exception as e:
+                            st.error(f"Theme Test fehlgeschlagen: {e}")
+                            try:
+                                # save error details
+                                tb = traceback.format_exc()
+                            except Exception:
+                                tb = str(e)
+                            err = {"error": str(e), "traceback": tb}
+                            EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+                            safe = re.sub(r"[^A-Za-z0-9_-]", "_", test_name)[:40]
+                            fn = EXPORTS_DIR / f"gamma_theme_test_{safe}_error.json"
+                            fn.write_text(json.dumps(err, ensure_ascii=False, indent=2), encoding="utf-8")
+                            st.info(f"Fehlerdetails gespeichert in: {fn}")
+            except Exception as e:
+                st.error(f"Unerwarteter Fehler beim Theme-Test: {e}")
 
         if st.button("Als PPTX mit Gamma erstellen"):
             title_for_deck = st.session_state.get("last_query", "Ergebnis")
@@ -1195,7 +1321,24 @@ with tab_query:
                         else:
                             st.warning("Kein PPTX-Link in der Antwort von Gamma gefunden. Verwende lokalen Fallback.")
                     except Exception as e:
+                        # capture exception for later display and debugging
                         gamma_failed = e
+                        try:
+                            tb = traceback.format_exc()
+                        except Exception:
+                            tb = str(e)
+                        err_obj = {
+                            "error": str(e),
+                            "args": getattr(e, "args", []),
+                            "traceback": tb,
+                        }
+                        try:
+                            EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+                            err_path = EXPORTS_DIR / "gamma_last_error.json"
+                            err_path.write_text(json.dumps(err_obj, ensure_ascii=False, indent=2), encoding="utf-8")
+                        except Exception:
+                            # best-effort; don't crash GUI
+                            pass
 
             # If Gamma not configured or failed, use local generator
             if out_file is None:
@@ -1228,6 +1371,23 @@ with tab_query:
             else:
                 if tried_gamma and gamma_failed:
                     st.warning(f"Gamma fehlgeschlagen: {gamma_failed}")
+                    # Show detailed error if we saved it
+                    try:
+                        err_path = EXPORTS_DIR / "gamma_last_error.json"
+                        if err_path.exists():
+                            with st.expander("Gamma Fehlerdetails anzeigen"):
+                                try:
+                                    obj = json.loads(err_path.read_text(encoding="utf-8"))
+                                    st.json(obj)
+                                except Exception:
+                                    st.text(err_path.read_text(encoding="utf-8"))
+                            st.info(f"Fehlerdetails gespeichert in: {err_path}")
+                        else:
+                            with st.expander("Gamma Fehlerdetails anzeigen"):
+                                st.text(str(gamma_failed))
+                    except Exception:
+                        # don't let the error UI crash the app
+                        st.text(str(gamma_failed))
 
     # --- Cypher ausführen & visualisieren ---
     st.markdown("---")
