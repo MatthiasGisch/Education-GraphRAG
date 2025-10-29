@@ -1,0 +1,10 @@
+{
+  "attempt_header": {
+    "Authorization": "Basic Y3pFM1lXUTVRSFZ0ZDJWc2RDMWpZVzF3ZFhNdVpHVTpZcFp3YW1ZaGFWTzQzOUFtaVhyYk0="
+  },
+  "status_code": 402,
+  "response": {
+    "kind": "InsufficientCreditsError",
+    "description": "not enough credits"
+  }
+}

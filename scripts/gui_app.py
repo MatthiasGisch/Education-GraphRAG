@@ -752,6 +752,19 @@ with tab_did:
     with col2:
         voice = st.text_input("Voice (D-ID voice id)", value="en-US")
         model = st.text_input("Model (optional)", value="")
+        # Allow pasting an API key here if .env cannot be edited
+        api_key = st.text_input("D-ID API Key (paste here if not in .env)", value=st.session_state.get("did_api_key", ""), type="password")
+        api_url = st.text_input("D-ID API URL", value=st.session_state.get("did_api_url", cfg.DID_API_URL or "https://api.d-id.com/talks"))
+        # duration controls
+        st.markdown("---")
+        total_minutes = st.number_input("Gesamtlänge (Minuten, optional)", min_value=0.0, value=0.0, step=0.5)
+        per_slide_seconds = st.number_input("Sekunden pro Folie (optional, überschreibt Gesamtlänge)", min_value=0.0, value=0.0, step=0.5)
+        fallback_local = st.checkbox("Bei Fehler lokal erzeugen (Fallback)", value=True)
+        # persist in session for the current user/session only
+        if api_key:
+            st.session_state["did_api_key"] = api_key
+        if api_url:
+            st.session_state["did_api_url"] = api_url
         gen = st.button("An D-ID senden und Video erzeugen")
 
     pptx_path = None
@@ -768,13 +781,26 @@ with tab_did:
         if not pptx_path:
             st.error("Bitte zuerst eine PPTX hochladen oder eine vorhandene auswählen.")
         else:
-            if not cfg.DID_API_KEY:
-                st.error("D-ID API Key nicht konfiguriert. Setze DID_API_KEY in .env.")
+            # prefer API key provided in the UI/session, otherwise fallback to cfg
+            use_key = st.session_state.get("did_api_key") or cfg.DID_API_KEY
+            use_url = st.session_state.get("did_api_url") or cfg.DID_API_URL
+            if not use_key:
+                st.error("D-ID API Key nicht konfiguriert. Füge ihn in .env ein oder füge ihn hier in das Feld 'D-ID API Key' ein.")
             else:
                 out_dir = EXPORTS_DIR
                 with st.spinner("Sende an D-ID und warte auf Ergebnis (kann einige Minuten dauern)…"):
                     try:
-                        mp4 = generate_video_from_pptx_via_did(pptx_path, str(out_dir), voice=voice or "en-US", model=(model or None))
+                        mp4 = generate_video_from_pptx_via_did(
+                            pptx_path,
+                            str(out_dir),
+                            voice=voice or "en-US",
+                            model=(model or None),
+                            api_key=use_key,
+                            api_url=(use_url or None),
+                            total_minutes=(total_minutes or None),
+                            per_slide_seconds=(per_slide_seconds or None),
+                            fallback_local=fallback_local,
+                        )
                         st.success(f"Video erhalten: {Path(mp4).name}")
                         st.video(mp4)
                         with open(mp4, "rb") as fh:
