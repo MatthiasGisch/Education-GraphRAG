@@ -22,6 +22,8 @@ try:
 except Exception:
     Presentation = None  # type: ignore
 
+import requests
+
 
 def _call_gamma_api(title: str, slides: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -54,7 +56,7 @@ def _call_gamma_api(title: str, slides: List[Dict[str, Any]]) -> Dict[str, Any]:
         raise
 
 
-def _create_local_pptx(title: str, slides: List[Dict[str, Any]], out_dir: str = ".") -> str:
+def _create_local_pptx(title: str, slides: List[Dict[str, Any]], out_dir: str = ".", template_path: Optional[str] = None) -> str:
     """
     Erzeugt lokal eine .pptx-Datei mit python-pptx als Fallback.
 
@@ -64,7 +66,22 @@ def _create_local_pptx(title: str, slides: List[Dict[str, Any]], out_dir: str = 
     if Presentation is None:
         raise RuntimeError("python-pptx nicht installiert; Installation in requirements.txt fehlt oder nicht installiert")
 
-    prs = Presentation()
+    # ensure output directory early (we may download images into it)
+    out_dir_path = Path(out_dir or Path.cwd())
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # Use provided template if available
+    if template_path:
+        try:
+            tpl = Path(template_path)
+            if tpl.exists():
+                prs = Presentation(str(tpl))
+            else:
+                prs = Presentation()
+        except Exception:
+            prs = Presentation()
+    else:
+        prs = Presentation()
 
     # Title slide
     title_layout = prs.slide_layouts[0]
@@ -102,10 +119,62 @@ def _create_local_pptx(title: str, slides: List[Dict[str, Any]], out_dir: str = 
                 # fallback: split by sentence
                 lines = [p.strip() for p in str(content).split(".") if p.strip()]
 
+        # If the slide contains image markers like 'Bild: <url>', attempt to download
+        # and insert the image; otherwise render text into the body placeholder.
         if body_shape is not None:
             tf = body_shape.text_frame
             tf.clear()
             for i, ln in enumerate(lines):
+                # detect image marker
+                if isinstance(ln, str) and ln.startswith("Bild:"):
+                    img_url = ln.split("Bild:", 1)[1].strip()
+                    if img_url:
+                        try:
+                            img_dir = out_dir_path / "images"
+                            img_dir.mkdir(parents=True, exist_ok=True)
+                            img_name = os.path.basename(img_url.split("?")[0]) or "image.jpg"
+                            img_path = img_dir / img_name
+                            if not img_path.exists():
+                                # support local files (file:// or direct path)
+                                local_src = None
+                                if img_url.startswith("file://"):
+                                    local_src = Path(img_url[len("file://"):])
+                                else:
+                                    pcheck = Path(img_url)
+                                    if pcheck.exists():
+                                        local_src = pcheck
+
+                                if local_src is not None and local_src.exists():
+                                    # copy local file into images dir
+                                    from shutil import copyfile
+                                    copyfile(str(local_src), str(img_path))
+                                else:
+                                    # download image
+                                    r = requests.get(img_url, stream=True, timeout=30)
+                                    r.raise_for_status()
+                                    with open(img_path, "wb") as fh:
+                                        for chunk in r.iter_content(chunk_size=1 << 14):
+                                            if chunk:
+                                                fh.write(chunk)
+                            # add image to slide
+                            left = Inches(1)
+                            top = Inches(1.5)
+                            width = Inches(7.5)
+                            try:
+                                sl.shapes.add_picture(str(img_path), left, top, width=width)
+                            except Exception:
+                                # fallback: put URL as text
+                                p = tf.add_paragraph()
+                                p.text = img_url
+                                p.level = 1
+                                p.font.size = Pt(12)
+                            # continue to next line
+                            continue
+                        except Exception:
+                            # if download or insert fails, fall back to placing URL as text
+                            pass
+
+                # regular text handling
                 if i == 0:
                     p = tf.paragraphs[0]
                     p.text = ln
@@ -139,6 +208,7 @@ def generate_presentation(
     supports: List[Dict[str, Any]],
     use_gamma: bool = True,
     out_dir: Optional[str] = None,
+    template_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Erzeugt eine Präsentation aus einer Answer-Text und zugehörigen Supports.
@@ -192,5 +262,5 @@ def generate_presentation(
             log.warning("Gamma API fehlgeschlagen, falle auf lokal PPTX zurück: %s", e)
 
     # 3) Local PPTX
-    out_path = _create_local_pptx(title, slides, out_dir=(out_dir or Path.cwd()))
+    out_path = _create_local_pptx(title, slides, out_dir=(out_dir or Path.cwd()), template_path=template_path)
     return {"method": "local", "result": {"path": out_path}, "slides": slides}

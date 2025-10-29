@@ -59,6 +59,105 @@ class GammaClient:
         return out_path
 
 
+    def list_themes(self) -> List[str]:
+        """Try to discover available theme names in the Gamma API.
+
+        This is best-effort: different Gamma API versions may expose themes under
+        different endpoints. We try a few likely endpoints and return a list of
+        theme names if any are found.
+        """
+        candidates = [
+            f"{self.base}/themes",
+            f"{self.base}/templates",
+            f"{self.base}/workspaces",
+        ]
+
+        names = []
+
+        # 1) Try /themes or /templates which might return a list
+        for url in candidates[:2]:
+            try:
+                r = self.s.get(url, timeout=20)
+                if r.status_code == 200:
+                    data = r.json()
+                    # data could be list or dict with items
+                    if isinstance(data, list):
+                        # try to map element -> name
+                        for it in data:
+                            if isinstance(it, dict):
+                                if "name" in it:
+                                    names.append(it["name"])
+                                elif "title" in it:
+                                    names.append(it["title"])
+                            elif isinstance(it, str):
+                                names.append(it)
+                    elif isinstance(data, dict):
+                        # maybe {"themes": [...]}
+                        for k in ("themes", "items", "data", "templates"):
+                            if k in data and isinstance(data[k], list):
+                                for it in data[k]:
+                                    if isinstance(it, dict) and "name" in it:
+                                        names.append(it["name"])
+                                    elif isinstance(it, str):
+                                        names.append(it)
+                    if names:
+                        return list(dict.fromkeys(names))
+            except Exception:
+                # ignore and try next
+                pass
+
+        # 2) Try workspaces -> for each workspace check /workspaces/{id}/themes
+        try:
+            wurl = f"{self.base}/workspaces"
+            r = self.s.get(wurl, timeout=20)
+            if r.status_code == 200:
+                data = r.json()
+                ws = []
+                if isinstance(data, list):
+                    ws = data
+                elif isinstance(data, dict):
+                    # common payload shape: {"workspaces":[...]}
+                    for k in ("workspaces", "items", "data"):
+                        if k in data and isinstance(data[k], list):
+                            ws = data[k]
+                            break
+                for w in ws:
+                    wid = None
+                    if isinstance(w, dict):
+                        wid = w.get("id") or w.get("workspaceId") or w.get("workspace_id")
+                    elif isinstance(w, str):
+                        wid = w
+                    if not wid:
+                        continue
+                    try:
+                        turl = f"{self.base}/workspaces/{wid}/themes"
+                        rt = self.s.get(turl, timeout=20)
+                        if rt.status_code == 200:
+                            td = rt.json()
+                            if isinstance(td, list):
+                                for it in td:
+                                    if isinstance(it, dict) and "name" in it:
+                                        names.append(it["name"])
+                                    elif isinstance(it, str):
+                                        names.append(it)
+                            elif isinstance(td, dict):
+                                for k in ("themes", "items", "data"):
+                                    if k in td and isinstance(td[k], list):
+                                        for it in td[k]:
+                                            if isinstance(it, dict) and "name" in it:
+                                                names.append(it["name"])
+                                            elif isinstance(it, str):
+                                                names.append(it)
+                    except Exception:
+                        continue
+                if names:
+                    return list(dict.fromkeys(names))
+        except Exception:
+            pass
+
+        raise GammaError("Couldn't discover themes from Gamma API (no themes endpoint responded).")
+
+
 # ---- Helper: Text in Gamma-freundliches Input-Format umwandeln ----------------
 
 def to_gamma_input_text(answer_text: str, supports: List[Dict[str, Any]], title: str = "Ergebnis") -> str:
@@ -101,6 +200,12 @@ def to_gamma_input_text(answer_text: str, supports: List[Dict[str, Any]], title:
     parts = []
     parts.append(f"# {title}\n* Überblick der wichtigsten Ergebnisse")
     parts.append("\n".join(bullets[:40]))  # begrenzen, Gamma kann später verdichten
+    # Include image supports as separate slides using Markdown image syntax
+    for s in supports or []:
+        img = s.get("image_uri") or s.get("image")
+        if img:
+            caption = (s.get("caption") or s.get("figure_label") or "Abbildung").strip()
+            parts.append(f"# Abbildung\n![{caption}]({img})\n{caption}")
     if refs:
         parts.append("# Quellen\n" + "\n".join(refs[:25]))
     return "\n---\n".join(parts)

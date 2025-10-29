@@ -1182,7 +1182,46 @@ with tab_query:
                 st.info(f"Theme '{selected}' removed from favorites.")
                 # refresh themes in session by reloading
                 st.experimental_rerun()
+        # Refresh themes from Gamma (query provider for available themes)
+        if c2.button("Refresh themes from Gamma"):
+            try:
+                try:
+                    gcli = GammaClient()
+                except Exception as e:
+                    st.error(f"GammaClient nicht konfiguriert: {e}")
+                    gcli = None
+                if gcli is not None:
+                    with st.spinner("Rufe Themes von Gamma ab …"):
+                        try:
+                            remote = gcli.list_themes()
+                            if remote:
+                                EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+                                (EXPORTS_DIR / "gamma_themes.json").write_text(json.dumps(remote, ensure_ascii=False, indent=2), encoding="utf-8")
+                                st.success(f"{len(remote)} Themes von Gamma importiert.")
+                                st.experimental_rerun()
+                            else:
+                                st.info("Keine Themes von Gamma zurückgegeben.")
+                        except Exception as e:
+                            st.error(f"Fehler beim Abrufen der Themes: {e}")
+            except Exception as e:
+                st.error(f"Unerwarteter Fehler: {e}")
         theme = custom_theme or "Oasis"
+        # Template upload: optional .pptx/.potx template to use for local generation
+        tpl_col = st.columns([1, 3])[1]
+        uploaded_tpl = tpl_col.file_uploader("Optional: PPTX-Template (.pptx/.potx)", type=["pptx", "potx"], key="gamma_template_uploader")
+        if uploaded_tpl is not None:
+            # save uploaded template to uploads/templates
+            tpl_dir = UPLOAD_DIR / "templates"
+            tpl_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", uploaded_tpl.name)[:120]
+            out_path = tpl_dir / safe_name
+            with open(out_path, "wb") as f:
+                f.write(uploaded_tpl.getvalue())
+            st.session_state["gamma_template_path"] = str(out_path)
+            st.success(f"Template hochgeladen: {out_path}")
+        else:
+            # maintain existing session value if any
+            _ = st.session_state.get("gamma_template_path")
         cards = colB.number_input("Ziel-Folien (bei auto)", 1, 60, 10)
         lang  = colC.selectbox("Sprache", ["de","en","fr","es","it"], index=0)
 
@@ -1350,6 +1389,7 @@ with tab_query:
                         supports=res.get("supports", []),
                         use_gamma=False,
                         out_dir=str(EXPORTS_DIR),
+                        template_path=st.session_state.get("gamma_template_path"),
                     )
                     if gen.get("method") == "local":
                         out_file = gen["result"]["path"]
