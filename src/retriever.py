@@ -1,0 +1,183 @@
+# src/retriever.py
+from __future__ import annotations
+from typing import List, Dict, Any, Optional
+import os
+import logging
+
+from .neo import Neo4jClient
+from .openai_client import embed_text
+
+log = logging.getLogger(__name__)
+
+# =========================
+# Embedding-Konfiguration
+# =========================
+
+EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-large")  # 3072-D
+
+
+def _embed_query(text: str) -> List[float]:
+    """Erzeugt eine Query-Embedding-Vektorrepräsentation.
+
+    Diese Funktion verwendet die zentrale `embed_text`-Hilfe aus `openai_client.py`.
+    Dadurch vermeiden wir, beim Import bereits einen OpenAI-Client zu instanziieren
+    und erhalten konsistente Fehlerbehandlung (z. B. wenn OPENAI_API_KEY fehlt).
+    """
+    try:
+        emb = embed_text(text, model=EMBED_MODEL)
+    except Exception as e:
+        log.error("Embedding fehlgeschlagen: %s", e)
+        raise
+    return emb
+
+
+# =========================
+# Neo4j Vector-Suche (Paragraphs / Figures)
+# =========================
+def _vsearch_paragraphs(neo: Neo4jClient, embedding: List[float], k: int = 24) -> List[Dict[str, Any]]:
+    """
+    Vector-Suche über Paragraph-Index. Liefert direkt verwertbare 'supports'-Einträge (type='paragraph').
+    """
+    rows = neo.run(
+        """
+        CALL db.index.vector.queryNodes('paragraph_embedding_index', $k, $embedding)
+        YIELD node, score
+        WITH node, score
+        MATCH (para:Paragraph) WHERE para = node
+        MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
+        OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
+        RETURN
+          'paragraph'              AS type,
+          para.paragraph_id        AS paragraph_id,
+          para.text                AS text,
+          para.page                AS page,
+          p.paper_id               AS paper_id,
+          p.title                  AS paper_title,
+          p.doi                    AS doi,
+          p.url                    AS url,
+          sec.section_id           AS section_id,
+          sec.title                AS section_title,
+          toFloat(score)           AS score
+        ORDER BY score DESC
+        LIMIT $k
+        """,
+        {"embedding": embedding, "k": k},
+    )
+    return rows or []
+
+
+def _vsearch_figures(neo: Neo4jClient, embedding: List[float], k: int = 8) -> List[Dict[str, Any]]:
+    """
+    Vector-Suche über Figure-Index. Liefert 'supports'-Einträge (type='figure') inkl. image_uri/caption.
+    """
+    rows = neo.run(
+        """
+        CALL db.index.vector.queryNodes('figure_embedding_index', $k, $embedding)
+        YIELD node, score
+        WITH node, score
+        MATCH (f:Figure) WHERE f = node
+        MATCH (p:Paper)-[:HAS_FIGURE]->(f)
+        OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_FIGURE]->(f)
+        RETURN
+          'figure'                 AS type,
+          f.figure_id              AS figure_id,
+          f.caption                AS caption,
+          f.figure_label           AS figure_label,
+          f.page                   AS page,
+          coalesce(f.image_uri, f.image_path) AS image_uri,
+          f.analysis_json          AS analysis_json,
+          p.paper_id               AS paper_id,
+          p.title                  AS paper_title,
+          p.doi                    AS doi,
+          p.url                    AS url,
+          sec.section_id           AS section_id,
+          sec.title                AS section_title,
+          toFloat(score)           AS score
+        ORDER BY score DESC
+        LIMIT $k
+        """,
+        {"embedding": embedding, "k": k},
+    )
+    return rows or []
+
+
+def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict[str, Any]], limit: int = 200) -> None:
+    """
+    Ergänzt zu bereits gefundenen Figure-Supports passende Paragraph-Supports über REFERS_TO/CAPTIONS.
+    Dedupliziert gegen bereits vorhandene Paragraphs. Modifiziert 'supports' IN PLACE.
+    """
+    top_figs = [s for s in supports if s.get("type") == "figure" and s.get("figure_id")]
+    if not top_figs:
+        return
+
+    fig_ids = [f["figure_id"] for f in top_figs]
+    rows = neo.run(
+        """
+        UNWIND $ids AS fid
+        MATCH (f:Figure {figure_id: fid})<-[:REFERS_TO|:CAPTIONS]-(para:Paragraph)
+        MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
+        OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
+        RETURN
+          'paragraph'        AS type,
+          para.paragraph_id  AS paragraph_id,
+          para.text          AS text,
+          para.page          AS page,
+          p.paper_id         AS paper_id,
+          p.title            AS paper_title,
+          p.doi              AS doi,
+          p.url              AS url,
+          sec.section_id     AS section_id,
+          sec.title          AS section_title,
+          0.99               AS score
+        LIMIT $limit
+        """,
+        {"ids": fig_ids, "limit": limit},
+    ) or []
+
+    existing_para_ids = {s.get("paragraph_id") for s in supports if s.get("type") == "paragraph"}
+    for r in rows:
+        pid = r.get("paragraph_id")
+        if pid and pid not in existing_para_ids:
+            supports.append(r)
+            existing_para_ids.add(pid)
+
+
+# =========================
+# Öffentliche API
+# =========================
+def hybrid_retrieve(
+    neo: Neo4jClient,
+    query: str,
+    *,
+    k_paragraphs: int = 18,
+    k_figures: int = 6,
+    add_figure_context: bool = True,
+) -> Dict[str, Any]:
+    """
+    Hybrid-Retrieval:
+      1) Embed Query
+      2) Vector-Suche Paragraphs & Figures (getrennte Indizes)
+      3) (optional) Figure-Kontext aus Paragraphen via REFERS_TO/CAPTIONS nachziehen
+      4) Supports zusammenführen
+
+    Rückgabe:
+      {"supports": [ {type: 'paragraph'| 'figure', ...}, ... ]}
+    """
+    emb = _embed_query(query)
+
+    paras = _vsearch_paragraphs(neo, emb, k=k_paragraphs)
+    figs  = _vsearch_figures(neo, emb, k=k_figures)
+
+    # Mergen: Paragraphs zuerst, dann Figures
+    supports: List[Dict[str, Any]] = []
+    supports.extend(paras)
+    supports.extend(figs)
+
+    # Figure-Kontext (Absätze) ergänzen
+    if add_figure_context:
+        try:
+            _expand_figure_context_with_paragraphs(neo, supports, limit=200)
+        except Exception as e:
+            log.warning("Figure-Kontext konnte nicht erweitert werden: %s", e)
+
+    return {"supports": supports}
