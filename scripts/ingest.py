@@ -95,10 +95,14 @@ def ingest_one(pdf_path: Path, neo: Neo4jClient) -> Dict[str, Any]:
         paragraphs=paragraphs_emb,
         topic_hint="Künstliche Intelligenz",
         max_concepts=30,
-        neo_client=neo
+        neo_client=neo,
+        persist_to_topic=True
     )
-    if concepts:
-        neo.add_concepts(topic_name="Künstliche Intelligenz", concepts=concepts)
+    # Konzepte wurden (falls vorhanden) direkt persistiert
+    try:
+        neo.attach_concepts_to_existing_umbrella("Künstliche Intelligenz")
+    except Exception:
+        pass
     if links:
         neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
 

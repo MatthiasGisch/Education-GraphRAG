@@ -237,6 +237,42 @@ class Neo4jClient:
             {"embedding": embedding, "k": k, "min_score": min_score},
         )
 
+    # --- Convenience: attach all topic concepts to the (single) umbrella if only one exists and they are unassigned ---
+    def attach_concepts_to_existing_umbrella(self, topic_name: str) -> dict:
+        """If the topic has exactly one Umbrella and there are concepts without a NARROWER assignment,
+        attach them. Returns stats.
+        """
+        umbrellas = self.run(
+            """
+            MATCH (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)
+            RETURN u.umbrella_id AS uid
+            """,
+            {"topic": topic_name},
+        )
+        if len(umbrellas) != 1:
+            return {"attached": 0, "skipped": "umbrella_count!=1"}
+        uid = umbrellas[0]["uid"]
+        unassigned = self.run(
+            """
+            MATCH (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
+            WHERE NOT ( (:Umbrella)-[:NARROWER]->(c) )
+            RETURN c.concept_id AS cid
+            """,
+            {"topic": topic_name},
+        )
+        if not unassigned:
+            return {"attached": 0, "skipped": "none_unassigned"}
+        self.run(
+            """
+            MATCH (u:Umbrella {umbrella_id:$uid})
+            UNWIND $cids AS cid
+            MATCH (c:Concept {concept_id: cid})
+            MERGE (u)-[:NARROWER]->(c)
+            """,
+            {"uid": uid, "cids": [r["cid"] for r in unassigned]},
+        )
+        return {"attached": len(unassigned), "umbrella_id": uid}
+
     def vector_search_similar_concepts(self, embedding: list[float], min_similarity: float = 0.92) -> list[dict]:
         """
         Find semantically similar existing concepts using vector similarity.
@@ -474,7 +510,8 @@ class Neo4jClient:
         created = 0
         for mem in clusters:
             cluster_names = [names[j] for j in mem]
-            rep = sorted(cluster_names, key=lambda x: (len(x), x.lower()))[0]
+            # Generate descriptive umbrella name using LLM
+            rep = self._generate_umbrella_name(cluster_names)
             umbrella_id = f"umb-{__import__('uuid').uuid4()}"
             self.run(
                 """
@@ -498,3 +535,252 @@ class Neo4jClient:
             created += 1
 
         return {"clusters": len(clusters), "umbrellas_created": created, "assigned": int(np.sum(assigned))}
+
+    def _generate_umbrella_name(self, concept_names: list[str]) -> str:
+        """Generate a descriptive umbrella term from concept names using LLM."""
+        from openai import OpenAI
+        client = OpenAI()
+        
+        if len(concept_names) <= 2:
+            # For small clusters, just use the shortest name
+            return sorted(concept_names, key=lambda x: (len(x), x.lower()))[0]
+        
+        try:
+            prompt = (
+                f"Given these related concepts: {', '.join(concept_names[:15])}\n\n"
+                f"Generate a single, concise umbrella term (2-4 words max) that best represents all of them. "
+                f"Return ONLY the umbrella term, nothing else."
+            )
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=20
+            )
+            umbrella = resp.choices[0].message.content.strip().strip('"').strip("'")
+            # Fallback if LLM returns something weird
+            if len(umbrella) > 50 or not umbrella:
+                return sorted(concept_names, key=lambda x: (len(x), x.lower()))[0]
+            return umbrella
+        except Exception:
+            # Fallback to shortest name on error
+            return sorted(concept_names, key=lambda x: (len(x), x.lower()))[0]
+
+    # --- Umbrella Management Functions ---
+    
+    def list_umbrellas_for_topic(self, topic_name: str) -> list[dict]:
+        """List all umbrellas for a topic with their concepts."""
+        return self.run(
+            """
+            MATCH (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)
+            OPTIONAL MATCH (u)-[:NARROWER]->(c:Concept)
+            WITH u, collect(c.name) AS concepts
+            RETURN u.umbrella_id AS umbrella_id,
+                   u.name AS name,
+                   u.size AS size,
+                   u.keywords AS keywords,
+                   concepts,
+                   size(concepts) AS concept_count
+            ORDER BY u.name
+            """,
+            {"topic": topic_name}
+        )
+    
+    def rename_umbrella(self, umbrella_id: str, new_name: str) -> dict:
+        """Rename an umbrella."""
+        self.run(
+            """
+            MATCH (u:Umbrella {umbrella_id:$uid})
+            SET u.name = $name
+            """,
+            {"uid": umbrella_id, "name": new_name}
+        )
+        return {"umbrella_id": umbrella_id, "new_name": new_name}
+    
+    def delete_umbrella(self, umbrella_id: str, reassign_to: str | None = None) -> dict:
+        """Delete an umbrella. If reassign_to is provided, move concepts to that umbrella."""
+        if reassign_to:
+            # Move concepts to another umbrella
+            self.run(
+                """
+                MATCH (u1:Umbrella {umbrella_id:$from})-[r:NARROWER]->(c:Concept)
+                MATCH (u2:Umbrella {umbrella_id:$to})
+                DELETE r
+                MERGE (u2)-[:NARROWER]->(c)
+                """,
+                {"from": umbrella_id, "to": reassign_to}
+            )
+        
+        # Delete umbrella and its relationships
+        result = self.run(
+            """
+            MATCH (u:Umbrella {umbrella_id:$uid})
+            OPTIONAL MATCH (u)-[r]-()
+            DELETE r, u
+            RETURN count(u) AS deleted
+            """,
+            {"uid": umbrella_id}
+        )
+        return {"deleted": result[0]["deleted"] if result else 0, "reassigned": bool(reassign_to)}
+    
+    def merge_umbrellas(self, umbrella_ids: list[str], new_name: str | None = None) -> dict:
+        """Merge multiple umbrellas into the first one, optionally renaming it."""
+        if len(umbrella_ids) < 2:
+            return {"error": "Need at least 2 umbrellas to merge"}
+        
+        target = umbrella_ids[0]
+        sources = umbrella_ids[1:]
+        
+        # Move all concepts from source umbrellas to target
+        for source in sources:
+            self.run(
+                """
+                MATCH (source:Umbrella {umbrella_id:$source})-[r:NARROWER]->(c:Concept)
+                MATCH (target:Umbrella {umbrella_id:$target})
+                DELETE r
+                MERGE (target)-[:NARROWER]->(c)
+                """,
+                {"source": source, "target": target}
+            )
+            # Delete source umbrella
+            self.run(
+                """
+                MATCH (u:Umbrella {umbrella_id:$uid})
+                OPTIONAL MATCH (u)-[r]-()
+                DELETE r, u
+                """,
+                {"uid": source}
+            )
+        
+        # Update target umbrella name and size
+        size_update = self.run(
+            """
+            MATCH (u:Umbrella {umbrella_id:$uid})-[:NARROWER]->(c:Concept)
+            WITH u, collect(c.name) AS concept_names
+            SET u.size = size(concept_names),
+                u.keywords = concept_names
+            """ + (f"SET u.name = $new_name " if new_name else "") + """
+            RETURN u.name AS name, u.size AS size
+            """,
+            {"uid": target, "new_name": new_name} if new_name else {"uid": target}
+        )
+        
+        return {
+            "target_id": target,
+            "merged_count": len(sources),
+            "new_size": size_update[0]["size"] if size_update else 0,
+            "new_name": size_update[0]["name"] if size_update else None
+        }
+
+    # --- Concept Management Functions ---
+    
+    def list_concepts_for_topic(self, topic_name: str) -> list[dict]:
+        """List all concepts for a topic with their metadata."""
+        return self.run(
+            """
+            MATCH (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
+            OPTIONAL MATCH (u:Umbrella)-[:NARROWER]->(c)
+            OPTIONAL MATCH (c)<-[m:MENTIONS]-(p:Paragraph)
+            WITH c, u.name AS umbrella, count(DISTINCT p) AS mentions
+            RETURN c.concept_id AS concept_id,
+                   c.name AS name,
+                   c.alt_labels AS alt_labels,
+                   c.description AS description,
+                   umbrella,
+                   mentions
+            ORDER BY c.name
+            """,
+            {"topic": topic_name}
+        )
+    
+    def update_concept(self, concept_id: str, name: str | None = None, 
+                      alt_labels: list[str] | None = None, description: str | None = None) -> dict:
+        """Update concept metadata."""
+        updates = []
+        params = {"cid": concept_id}
+        
+        if name is not None:
+            updates.append("c.name = $name")
+            params["name"] = name
+        if alt_labels is not None:
+            updates.append("c.alt_labels = $alt_labels")
+            params["alt_labels"] = alt_labels
+        if description is not None:
+            updates.append("c.description = $description")
+            params["description"] = description
+        
+        if not updates:
+            return {"error": "No updates provided"}
+        
+        self.run(
+            f"""
+            MATCH (c:Concept {{concept_id:$cid}})
+            SET {', '.join(updates)}
+            """,
+            params
+        )
+        return {"concept_id": concept_id, "updated_fields": list(params.keys())}
+    
+    def delete_concept(self, concept_id: str) -> dict:
+        """Delete a concept and all its relationships."""
+        result = self.run(
+            """
+            MATCH (c:Concept {concept_id:$cid})
+            OPTIONAL MATCH (c)-[r]-()
+            DELETE r, c
+            RETURN count(c) AS deleted
+            """,
+            {"cid": concept_id}
+        )
+        return {"deleted": result[0]["deleted"] if result else 0}
+    
+    def merge_concepts(self, source_id: str, target_id: str) -> dict:
+        """Merge source concept into target concept."""
+        # Get source info for potential alt_labels update
+        source_info = self.run(
+            """
+            MATCH (s:Concept {concept_id:$sid})
+            RETURN s.name AS name, s.alt_labels AS alt_labels
+            """,
+            {"sid": source_id}
+        )
+        
+        if not source_info:
+            return {"error": "Source concept not found"}
+        
+        # Move all MENTIONS relationships from source to target
+        self.run(
+            """
+            MATCH (s:Concept {concept_id:$sid})<-[r:MENTIONS]-(p:Paragraph)
+            MATCH (t:Concept {concept_id:$tid})
+            DELETE r
+            MERGE (p)-[:MENTIONS]->(t)
+            """,
+            {"sid": source_id, "tid": target_id}
+        )
+        
+        # Add source name to target's alt_labels if not already there
+        source_name = source_info[0]["name"]
+        self.run(
+            """
+            MATCH (t:Concept {concept_id:$tid})
+            SET t.alt_labels = coalesce(t.alt_labels, []) + 
+                CASE WHEN NOT $source_name IN coalesce(t.alt_labels, []) 
+                     THEN [$source_name] 
+                     ELSE [] 
+                END
+            """,
+            {"tid": target_id, "source_name": source_name}
+        )
+        
+        # Delete source concept
+        self.run(
+            """
+            MATCH (c:Concept {concept_id:$cid})
+            OPTIONAL MATCH (c)-[r]-()
+            DELETE r, c
+            """,
+            {"cid": source_id}
+        )
+        
+        return {"merged": True, "source_id": source_id, "target_id": target_id}

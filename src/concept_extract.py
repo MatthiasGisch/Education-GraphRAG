@@ -181,9 +181,10 @@ def extract_and_embed_concepts(
     max_concepts: int = 30,
     seed_names: List[str] | None = None,
     allow_new: bool = True,
-    neo_client: Optional['Neo4jClient'] = None,  # For deduping against existing concepts
+    neo_client: Optional['Neo4jClient'] = None,  # For deduping + optional persistence
     dedupe_threshold: float = 0.92,  # Similarity threshold for concept deduping
-    min_confidence: float = 0.0  # Min confidence for paragraph-concept links
+    min_confidence: float = 0.0,  # Min confidence for paragraph-concept links
+    persist_to_topic: bool = False  # If True: automatically upsert Topic & add concepts
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Rückgabe:
@@ -320,5 +321,16 @@ def extract_and_embed_concepts(
             continue
         conf = float(l.get("confidence") or 0.7)
         links.append({"paragraph_id": pid, "concept_id": c_obj["concept_id"], "confidence": conf})
+
+    # 7) Optional: Persist concepts directly to Neo4j under the given topic
+    if persist_to_topic and neo_client and topic_hint:
+        try:
+            neo_client.upsert_topic(topic_hint)
+            if concepts:
+                # MERGE semantics inside add_concepts prevent duplicates
+                neo_client.add_concepts(topic_hint, concepts)
+        except Exception:
+            # Silent failure (GUI/CLI should not crash); still return concepts for preview
+            pass
 
     return concepts, links

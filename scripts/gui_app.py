@@ -749,11 +749,155 @@ with tab_concepts:
         sim = st.slider("Ähnlichkeits-Threshold (Cosine) für Umbrellas", 0.70, 0.99, 0.86, 0.01)
         minc = st.number_input("Min. Clustergröße", min_value=2, max_value=20, value=2, step=1)
         if st.button("Umbrella-Konzepte clustern"):
-            with st.spinner("Clustere Concepts zu Umbrellas …"):
+            with st.spinner("Clustere Concepts zu Umbrellas (mit LLM-Namen) …"):
                 topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
                 rep = cluster_concepts_into_umbrellas(topic, sim_threshold=float(sim), min_cluster_size=int(minc))
             st.success(f"{rep['umbrellas_created']} Umbrellas erzeugt, {rep['assigned']} Konzepte zugeordnet.")
             st.json(rep)
+
+    st.markdown("---")
+    st.subheader("🏷️ Umbrella-Verwaltung")
+    
+    topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
+    neo = get_neo()
+    
+    # List umbrellas
+    umbrellas = neo.list_umbrellas_for_topic(topic)
+    
+    if not umbrellas:
+        st.info(f"Keine Umbrellas für Topic '{topic}' gefunden. Führe zuerst Clustering aus.")
+    else:
+        st.markdown(f"**{len(umbrellas)} Umbrella(s) für Topic '{topic}'**")
+        
+        for umb in umbrellas:
+            with st.expander(f"📁 {umb['name']} ({umb['concept_count']} Concepts)"):
+                st.json({"umbrella_id": umb['umbrella_id'], "keywords": umb.get('keywords', [])[:10]})
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    new_name = st.text_input("Neuer Name", value=umb['name'], key=f"rename_{umb['umbrella_id']}")
+                    if st.button("Umbenennen", key=f"btn_rename_{umb['umbrella_id']}"):
+                        try:
+                            neo.rename_umbrella(umb['umbrella_id'], new_name)
+                            st.success(f"Umbenannt zu '{new_name}'")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
+                
+                with col2:
+                    # Merge with another umbrella
+                    other_umbrellas = [u for u in umbrellas if u['umbrella_id'] != umb['umbrella_id']]
+                    if other_umbrellas:
+                        merge_target = st.selectbox(
+                            "Mergen mit",
+                            options=[u['umbrella_id'] for u in other_umbrellas],
+                            format_func=lambda uid: next(u['name'] for u in other_umbrellas if u['umbrella_id'] == uid),
+                            key=f"merge_target_{umb['umbrella_id']}"
+                        )
+                        merge_name = st.text_input("Name nach Merge", value=umb['name'], key=f"merge_name_{umb['umbrella_id']}")
+                        if st.button("Mergen", key=f"btn_merge_{umb['umbrella_id']}"):
+                            try:
+                                result = neo.merge_umbrellas([umb['umbrella_id'], merge_target], merge_name)
+                                st.success(f"Gemerged: {result}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Fehler: {e}")
+                
+                with col3:
+                    st.warning("Löschen entfernt Umbrella, nicht Concepts")
+                    if other_umbrellas:
+                        reassign_to = st.selectbox(
+                            "Concepts verschieben nach",
+                            options=["(löschen ohne verschieben)"] + [u['umbrella_id'] for u in other_umbrellas],
+                            format_func=lambda uid: "(löschen ohne verschieben)" if uid == "(löschen ohne verschieben)" else next(u['name'] for u in other_umbrellas if u['umbrella_id'] == uid),
+                            key=f"reassign_{umb['umbrella_id']}"
+                        )
+                        reassign_id = None if reassign_to == "(löschen ohne verschieben)" else reassign_to
+                    else:
+                        reassign_id = None
+                    
+                    if st.button("🗑️ Löschen", key=f"btn_delete_{umb['umbrella_id']}"):
+                        try:
+                            result = neo.delete_umbrella(umb['umbrella_id'], reassign_id)
+                            st.success(f"Gelöscht: {result}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
+
+    st.markdown("---")
+    st.subheader("📝 Concept-Verwaltung")
+    
+    concepts = neo.list_concepts_for_topic(topic)
+    
+    if not concepts:
+        st.info(f"Keine Concepts für Topic '{topic}' gefunden.")
+    else:
+        st.markdown(f"**{len(concepts)} Concept(s) für Topic '{topic}'**")
+        
+        # Filter options
+        show_all = st.checkbox("Alle anzeigen", value=False)
+        filter_umbrella = st.selectbox(
+            "Filter nach Umbrella",
+            options=["(alle)"] + [u['name'] for u in umbrellas],
+            disabled=show_all
+        )
+        
+        filtered_concepts = concepts if show_all or filter_umbrella == "(alle)" else [
+            c for c in concepts if c.get('umbrella') == filter_umbrella
+        ]
+        
+        # Show as table with actions
+        for i, concept in enumerate(filtered_concepts[:50]):  # Limit to 50 for performance
+            with st.expander(f"🏷️ {concept['name']} ({concept.get('mentions', 0)} mentions)"):
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    new_name = st.text_input("Name", value=concept['name'], key=f"c_name_{i}")
+                    new_desc = st.text_area("Beschreibung", value=concept.get('description', ''), key=f"c_desc_{i}", height=80)
+                    new_alts = st.text_input("Alt-Labels (kommasepariert)", value=', '.join(concept.get('alt_labels', [])), key=f"c_alts_{i}")
+                    
+                    if st.button("Aktualisieren", key=f"btn_update_{i}"):
+                        try:
+                            alts_list = [a.strip() for a in new_alts.split(',') if a.strip()]
+                            neo.update_concept(
+                                concept['concept_id'],
+                                name=new_name if new_name != concept['name'] else None,
+                                description=new_desc if new_desc != concept.get('description', '') else None,
+                                alt_labels=alts_list if alts_list != concept.get('alt_labels', []) else None
+                            )
+                            st.success("Aktualisiert")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
+                
+                with col2:
+                    st.markdown(f"**Umbrella:** {concept.get('umbrella', '(keine)')}")
+                    st.markdown(f"**ID:** `{concept['concept_id'][:20]}...`")
+                    
+                    # Merge with another concept
+                    merge_target_name = st.selectbox(
+                        "Mergen in",
+                        options=[c['name'] for c in filtered_concepts if c['concept_id'] != concept['concept_id']],
+                        key=f"merge_c_{i}"
+                    )
+                    if st.button("Mergen", key=f"btn_merge_c_{i}"):
+                        target = next((c for c in filtered_concepts if c['name'] == merge_target_name), None)
+                        if target:
+                            try:
+                                result = neo.merge_concepts(concept['concept_id'], target['concept_id'])
+                                st.success(f"Gemerged: {result}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Fehler: {e}")
+                    
+                    if st.button("🗑️ Löschen", key=f"btn_delete_c_{i}"):
+                        try:
+                            result = neo.delete_concept(concept['concept_id'])
+                            st.success(f"Gelöscht: {result}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
 
 # ---- Tab: Ingest ----
 with tab_ingest:
@@ -826,27 +970,60 @@ with tab_ingest:
             max_concepts=30,
             seed_names=seeds_for_llm,
             allow_new=allow_new,
-            neo_client=neo
+            neo_client=neo,
+            persist_to_topic=True
         )
 
+        # Konzepte wurden (falls vorhanden) bereits persistiert (persist_to_topic=True)
         if concepts:
-            # Preview + optional add
-            with st.expander(f"Vorgeschlagene Konzepte ({len(concepts)})"):
-                st.json(concepts)
-                add_key = f"auto_add_ingest_{paper_meta.get('paper_id','') }"
-                auto_add = st.checkbox("Vorgeschlagene Konzepte automatisch in DB anlegen", value=True, key=add_key)
-            if auto_add:
-                neo.upsert_topic(topic)
-                neo.add_concepts(topic, concepts)
-                if links:
-                    neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
-        else:
-            # keine neuen Konzepte, aber evtl. Links zu bestehenden
-            if links:
-                try:
-                    neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
-                except Exception:
-                    pass
+            # Calculate confidence stats from links
+            concept_confidence = {}
+            for link in links:
+                cid = link.get('concept_id')
+                conf = link.get('confidence', 0.0)
+                if cid not in concept_confidence:
+                    concept_confidence[cid] = []
+                concept_confidence[cid].append(conf)
+            
+            # Add avg confidence to concepts for display
+            concepts_with_conf = []
+            for c in concepts:
+                cid = c.get('concept_id')
+                confs = concept_confidence.get(cid, [])
+                avg_conf = sum(confs) / len(confs) if confs else 0.0
+                mention_count = len(confs)
+                concepts_with_conf.append({
+                    **c,
+                    'avg_confidence': round(avg_conf, 2),
+                    'mention_count': mention_count,
+                    'confidence_level': '🟢 Hoch' if avg_conf >= 0.7 else '🟡 Mittel' if avg_conf >= 0.5 else '🔴 Niedrig'
+                })
+            
+            # Sort by confidence (high to low)
+            concepts_with_conf.sort(key=lambda x: x.get('avg_confidence', 0), reverse=True)
+            
+            with st.expander(f"✅ Konzepte (automatisch gespeichert) ({len(concepts)})"):
+                st.markdown("**Legende:** 🟢 Hoch (≥0.7) | 🟡 Mittel (≥0.5) | 🔴 Niedrig (<0.5)")
+                for c in concepts_with_conf:
+                    st.markdown(
+                        f"- **{c['name']}** {c.get('confidence_level', '')} "
+                        f"(Ø Conf: {c.get('avg_confidence', 0):.2f}, {c.get('mention_count', 0)} mentions)"
+                    )
+                with st.expander("JSON Details"):
+                    st.json(concepts_with_conf)
+        # Paragraph↔Concept Links jetzt schreiben (falls vorhanden)
+        if links:
+            try:
+                neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
+            except Exception:
+                pass
+        # Falls genau ein Umbrella existiert, ordne neue (noch unassigned) Konzepte automatisch zu
+        try:
+            auto_umbrella_res = neo.attach_concepts_to_existing_umbrella(topic)
+            if auto_umbrella_res.get("attached"):
+                st.info(f"{auto_umbrella_res['attached']} Konzepte automatisch dem einzigen Umbrella zugeordnet.")
+        except Exception:
+            pass
 
         return {
             "paper_id": paper_meta["paper_id"],
@@ -1261,7 +1438,6 @@ with tab_query:
 
     with tab_cypher:
         # --- Cypher ausführen & visualisieren ---
-        st.markdown("---")
         st.subheader("🔎 Cypher ausführen & visualisieren")
 
         # Topics aus DB (Dropdown)
@@ -1316,6 +1492,54 @@ with tab_query:
                 except Exception as e:
                     st.error(f"Cypher-Fehler: {e}")
                     st.code(cypher_in, language="cypher")
+
+            # Diagnostic button: check Topic, Umbrellas, Concepts
+            if st.button("Diagnose: Topic/Umbrella/Concept Counts"):
+                neo = get_neo()
+                topic_name = selected_topic
+                diag = {}
+                # Zeige alle Topic-Namen
+                try:
+                    all_topics = neo.run("MATCH (t:Topic) RETURN t.name AS name", {})
+                    topic_names = [t['name'] for t in all_topics if 'name' in t]
+                    diag['all_topic_names'] = topic_names
+                except Exception as e:
+                    diag['all_topic_names'] = f"Error: {e}"
+                # Zähle Topic, Umbrella, Concept
+                try:
+                    topic_result = neo.run(
+                        "MATCH (t:Topic {name:$topic}) RETURN count(t) AS c",
+                        {'topic': topic_name}
+                    )
+                    diag['topic_count'] = topic_result[0]['c'] if topic_result and 'c' in topic_result[0] else 0
+                except Exception as e:
+                    diag['topic_count'] = f"Error: {e}"
+                try:
+                    umbrella_result = neo.run(
+                        "MATCH (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella) RETURN count(u) AS c",
+                        {'topic': topic_name}
+                    )
+                    diag['umbrella_count'] = umbrella_result[0]['c'] if umbrella_result and 'c' in umbrella_result[0] else 0
+                except Exception as e:
+                    diag['umbrella_count'] = f"Error: {e}"
+                try:
+                    concept_result = neo.run(
+                        "MATCH (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)-[:NARROWER]->(c:Concept) RETURN count(DISTINCT c) AS c",
+                        {'topic': topic_name}
+                    )
+                    diag['concept_count'] = concept_result[0]['c'] if concept_result and 'c' in concept_result[0] else 0
+                except Exception as e:
+                    diag['concept_count'] = f"Error: {e}"
+                try:
+                    direct_concepts = neo.run(
+                        "MATCH (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept) RETURN count(DISTINCT c) AS c",
+                        {'topic': topic_name}
+                    )
+                    diag['concepts_direct'] = direct_concepts[0]['c'] if direct_concepts and 'c' in direct_concepts[0] else 0
+                except Exception as e:
+                    diag['concepts_direct'] = f"Error: {e}"
+                st.info(f"Diagnose für Topic '{topic_name}':")
+                st.json(diag)
 
         with colQ2:
             # One-click Umbrella view (keeps the UI simple)
