@@ -599,11 +599,12 @@ st.sidebar.markdown("**Tipp:** `.env` anpassen und App neu starten, wenn Keys/UR
 # Main Tabs
 # =========================
 st.title("GraphRAG Pipeline – GUI")
-# Add Synthesia tab (before Info)
-tab_concepts, tab_ingest, tab_query, tab_did, tab_about = st.tabs([
+# Add Synthesia tab (before Info) and a dedicated Cypher tab
+tab_concepts, tab_ingest, tab_query, tab_cypher, tab_did, tab_about = st.tabs([
     "🧩 Konzepte",
     "📥 Ingest",
     "❓ Fragen & Export",
+    "🔎 Cypher",
     "🎬 PPTX → Synthesia",
     "ℹ️ Info",
 ])
@@ -1258,99 +1259,84 @@ with tab_query:
                         # don't let the error UI crash the app
                         st.text(str(gamma_failed))
 
-    # --- Cypher ausführen & visualisieren ---
-    st.markdown("---")
-    st.subheader("🔎 Cypher ausführen & visualisieren")
+    with tab_cypher:
+        # --- Cypher ausführen & visualisieren ---
+        st.markdown("---")
+        st.subheader("🔎 Cypher ausführen & visualisieren")
 
-    # Topics aus DB (Dropdown)
-    topics = list_topics()
-    colTop, colPreset = st.columns([1,1])
-    with colTop:
-        selected_topic = st.selectbox("Topic aus der DB", topics or ["(keins gefunden)"])
-        # JSON-Param für topic setzen
-        st.session_state["cypher_params_box"] = json.dumps({"topic": selected_topic}, ensure_ascii=False, indent=2)
-        st.session_state["cypher_ui_params"] = {"topic": selected_topic}
+        # Topics aus DB (Dropdown)
+        topics = list_topics()
+        colTop, colPreset = st.columns([1,1])
+        with colTop:
+            selected_topic = st.selectbox("Topic aus der DB", topics or ["(keins gefunden)"])
+            # JSON-Param für topic setzen
+            st.session_state["cypher_params_box"] = json.dumps({"topic": selected_topic}, ensure_ascii=False, indent=2)
+            st.session_state["cypher_ui_params"] = {"topic": selected_topic}
 
-    # Presets
-    presets = {
-        "Umbrella → Concept → Paragraph → Paper → (Section/Figure)":
-        """\
+        # Simplified presets (kept small for clarity)
+        presets = {
+            "Umbrella → Concept → Paragraphs & Figures":
+            """\
     :param topic => "Künstliche Intelligenz";
     MATCH p1 = (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)-[:NARROWER]->(c:Concept)
     OPTIONAL MATCH p2 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
-    OPTIONAL MATCH p3 = (paper)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
-    OPTIONAL MATCH p4 = (paper)-[:HAS_FIGURE]->(figP:Figure)
-    OPTIONAL MATCH p5 = (sec)-[:HAS_FIGURE]->(figS:Figure)
-    RETURN p1, p2, p3, p4, p5
+    OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
+    OPTIONAL MATCH p4 = (para)-[:HAS_FIGURE]->(figS:Figure)
+    RETURN p1, p2, p3, p4
     LIMIT 500
     """,
-        "Topic → Concept → Paragraph → Paper → (Section/Figure)":
-        """\
-    :param topic => "Künstliche Intelligenz";
-    MATCH p1 = (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
-    OPTIONAL MATCH p2 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
-    OPTIONAL MATCH p3 = (paper)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
-    OPTIONAL MATCH p4 = (paper)-[:HAS_FIGURE]->(figP:Figure)
-    OPTIONAL MATCH p5 = (sec)-[:HAS_FIGURE]->(figS:Figure)
-    RETURN p1, p2, p3, p4, p5
-    LIMIT 500
-    """,
-        "Quick-Umbrella erzeugen (Default)":
-        """\
-    :param topic => "Künstliche Intelligenz";
-    MERGE (t:Topic {name:$topic})
-    MERGE (u:Umbrella {umbrella_id: $topic + ":default"})
-    SET u.name = $topic + " – Umbrella (default)"
-    MERGE (t)-[:HAS_UMBRELLA]->(u)
-    WITH t, u
-    MATCH (t)-[:HAS_CONCEPT]->(c:Concept)
-    MERGE (u)-[:NARROWER]->(c)
-    RETURN t,u
-    """,
-        "Alle Paper → Paragraphen (ohne Topic/Concept)":
-        """\
+            "Alle Paper → Paragraphen (einfach)":
+            """\
     MATCH p = (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
     RETURN p
     LIMIT 400
     """,
-    }
+        }
 
-    with colPreset:
-        preset_name = st.selectbox("Preset wählen", list(presets.keys()))
-        if st.button("Preset laden"):
-            st.session_state["cypher_box"] = presets[preset_name]
+        with colPreset:
+            preset_name = st.selectbox("Preset wählen", list(presets.keys()))
+            if st.button("Preset laden"):
+                st.session_state["cypher_box"] = presets[preset_name]
 
-    cypher_in = st.text_area("Cypher", value=st.session_state.get("cypher_box", list(presets.values())[0]), height=240, key="cypher_box")
+        cypher_in = st.text_area("Cypher", value=st.session_state.get("cypher_box", list(presets.values())[0]), height=240, key="cypher_box")
 
-    # Parameter (JSON) anzeigen/änderbar
-    params_text = st.text_area("Parameter (JSON)", value=st.session_state.get("cypher_params_box", json.dumps({"topic": selected_topic}, ensure_ascii=False, indent=2)), height=100, key="cypher_params_box")
-    st.session_state["cypher_ui_params"] = _extract_params_from_textarea(params_text)
+        # Parameter (JSON) anzeigen/änderbar
+        params_text = st.text_area("Parameter (JSON)", value=st.session_state.get("cypher_params_box", json.dumps({"topic": selected_topic}, ensure_ascii=False, indent=2)), height=100, key="cypher_params_box")
+        st.session_state["cypher_ui_params"] = _extract_params_from_textarea(params_text)
 
-    colQ1, colQ2 = st.columns([1,1])
-    with colQ1:
-        if st.button("Query ausführen"):
-            try:
-                recs = run_cypher_with_params(cypher_in)
-                st.success(f"{len(recs)} Record(s) erhalten.")
-                with st.expander("Rohdaten anzeigen"):
-                    st.write(recs)
-                visualize_records_as_graph(recs, height=650)
-            except Exception as e:
-                st.error(f"Cypher-Fehler: {e}")
-                st.code(cypher_in, language="cypher")
+        colQ1, colQ2 = st.columns([1,1])
+        with colQ1:
+            if st.button("Query ausführen"):
+                try:
+                    recs = run_cypher_with_params(cypher_in)
+                    st.success(f"{len(recs)} Record(s) erhalten.")
+                    with st.expander("Rohdaten anzeigen"):
+                        st.write(recs)
+                    visualize_records_as_graph(recs, height=650)
+                except Exception as e:
+                    st.error(f"Cypher-Fehler: {e}")
+                    st.code(cypher_in, language="cypher")
 
-    with colQ2:
-        # garantiert funktionierende Test-Query (unabhängig vom Concept/Umbrella-Status)
-        if st.button("Test: Paper→Paragraph visualisieren"):
-            try:
-                test_q = "MATCH p = (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph) RETURN p LIMIT 150"
-                recs = run_cypher_with_params(test_q)
-                st.success(f"{len(recs)} Record(s) erhalten.")
-                with st.expander("Rohdaten anzeigen (Test)"):
-                    st.write(recs)
-                visualize_records_as_graph(recs, height=650)
-            except Exception as e:
-                st.error(f"Fehler beim Test: {e}")
+        with colQ2:
+            # One-click Umbrella view (keeps the UI simple)
+            if st.button("Show Umbrellas + Concepts + Paragraphs/Figures"):
+                try:
+                    cy = """
+    :param topic => "Künstliche Intelligenz";
+    MATCH p1 = (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)-[:NARROWER]->(c:Concept)
+    OPTIONAL MATCH p2 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
+    OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
+    OPTIONAL MATCH p4 = (para)-[:HAS_FIGURE]->(figS:Figure)
+    RETURN p1, p2, p3, p4
+    LIMIT 500
+                    """
+                    recs = run_cypher_with_params(cy)
+                    st.success(f"{len(recs)} Record(s) erhalten.")
+                    with st.expander("Rohdaten anzeigen (Umbrellas→Concepts)"):
+                        st.write(recs)
+                    visualize_records_as_graph(recs, height=700)
+                except Exception as e:
+                    st.error(f"Fehler beim Laden der Umbrella-Ansicht: {e}")
 
 
 # ---- Tab: Info ----
