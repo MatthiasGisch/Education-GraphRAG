@@ -214,11 +214,16 @@ class Neo4jClient:
             {"paper_id": paper_id, "links": links},
         )
 
-    def vector_search_concepts(self, embedding: list[float], k: int = 10) -> list[dict]:
+    def vector_search_concepts(self, embedding: list[float], k: int = 10, min_score: float = 0.0) -> list[dict]:
+        """
+        Vector similarity search for concepts with score threshold.
+        Returns concepts sorted by similarity score, filtered by min_score if provided.
+        """
         return self.run(
             """
             CALL db.index.vector.queryNodes('concept_embedding_index', $k, $embedding)
             YIELD node, score
+            WHERE score >= $min_score
             OPTIONAL MATCH (node)<-[:MENTIONS]-(para:Paragraph)
             WITH node, score, count(DISTINCT para) AS mentions
             RETURN node.concept_id AS concept_id,
@@ -229,5 +234,267 @@ class Neo4jClient:
                 score
             ORDER BY score DESC
             """,
-            {"embedding": embedding, "k": k},
+            {"embedding": embedding, "k": k, "min_score": min_score},
         )
+
+    def vector_search_similar_concepts(self, embedding: list[float], min_similarity: float = 0.92) -> list[dict]:
+        """
+        Find semantically similar existing concepts using vector similarity.
+        Returns only concepts above the similarity threshold.
+        """
+        return self.vector_search_concepts(embedding=embedding, k=5, min_score=min_similarity)
+
+    def _get_single_value(self, cypher: str) -> int:
+        """Hilfsmethode: Führt Cypher aus und holt einen einzelnen Zählwert."""
+        res = self.run(cypher)
+        return int(res[0]["c"]) if res and "c" in res[0] else 0
+
+    def stitch_document_hierarchy(self) -> dict:
+        """
+        Verbindet Paragraphs/Figures mit ihren Sections basierend auf Seitenbereichen.
+        Erstellt Dummy-Sections für Paper ohne Sections.
+
+        Rückgabe: Stats über Verknüpfungen vor/nach dem Stitching.
+        """
+        # Dummy-Section pro Paper falls nötig
+        self.run("""
+        MATCH (p:Paper)
+        WHERE NOT (p)-[:HAS_SECTION]->()
+        MERGE (s:Section {section_id: p.paper_id + ":DOC"})
+        SET s.title = "Document",
+            s.level = 1,
+            s.page_start = 1,
+            s.page_end = 999999,
+            s.`order` = 1
+        MERGE (p)-[:HAS_SECTION]->(s)
+        """)
+
+        # Paragraphs zu passenden Sections verbinden
+        self.run("""
+        MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
+        MATCH (p)-[:HAS_SECTION]->(sec:Section)
+        WHERE para.page >= coalesce(sec.page_start, 1)
+          AND para.page <= coalesce(sec.page_end, 999999)
+        MERGE (sec)-[:HAS_PARAGRAPH]->(para)
+        """)
+
+        # Figures zu passenden Sections verbinden
+        self.run("""
+        MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
+        MATCH (p)-[:HAS_SECTION]->(sec:Section)
+        WHERE f.page >= coalesce(sec.page_start, 1)
+          AND f.page <= coalesce(sec.page_end, 999999)
+        MERGE (sec)-[:HAS_FIGURE]->(f)
+        """)
+
+        stats = {}
+        stats["paras_direct_at_paper"] = self._get_single_value(
+            "MATCH (p:Paper)-[:HAS_PARAGRAPH]->(:Paragraph) RETURN count(*) AS c")
+        stats["paras_via_section"] = self._get_single_value(
+            "MATCH (:Section)-[:HAS_PARAGRAPH]->(:Paragraph) RETURN count(*) AS c")
+        stats["figs_at_paper"] = self._get_single_value(
+            "MATCH (p:Paper)-[:HAS_FIGURE]->(:Figure) RETURN count(*) AS c")
+        stats["figs_via_section"] = self._get_single_value(
+            "MATCH (:Section)-[:HAS_FIGURE]->(:Figure) RETURN count(*) AS c")
+        stats["paragraph_orphans"] = self._get_single_value(
+            "MATCH (para:Paragraph) WHERE NOT (()-[:HAS_PARAGRAPH]->(para)) RETURN count(para) AS c")
+        stats["figure_orphans"] = self._get_single_value(
+            "MATCH (f:Figure) WHERE NOT (()-[:HAS_FIGURE]->(f)) RETURN count(f) AS c")
+        stats["papers_without_sections"] = self._get_single_value(
+            "MATCH (p:Paper) WHERE NOT (p)-[:HAS_SECTION]->() RETURN count(p) AS c")
+        return stats
+
+    def stitch_figures_to_paragraphs(self, prefix_length: int = 60, page_tolerance: int = 1) -> dict:
+        """
+        Verbindet Figures mit relevanten Paragraphen über drei Arten von Beziehungen:
+        1) CAPTIONS: Absatz enthält Prefix der (normalisierten) Caption
+        2) REFERS_TO: Absatz erwähnt figure_label (z.B. "Figure 2", "Fig. 2")
+        3) NEAR: Fallback für noch unverbundene Figures
+
+        Args:
+            prefix_length: Länge des Caption-Prefixes für den ersten CAPTIONS-Pass
+            page_tolerance: ±Seiten für Caption/Reference-Matching
+
+        Rückgabe: Stats über neue Verbindungen + Beispiele unverbundener Figures
+        """
+        def cnt(rel: str) -> int:
+            return self._get_single_value(f"MATCH ()-[r:{rel}]->() RETURN count(r) AS c")
+
+        cap_before = cnt("CAPTIONS")
+        ref_before = cnt("REFERS_TO")
+        near_before = cnt("NEAR")
+
+        # PASS 1a: CAPTIONS mit längerem Präfix, ±1 Seite
+        self.run("""
+        MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
+        WHERE NOT (()-[:CAPTIONS]->(f))
+        WITH p, f,
+             toLower(coalesce(replace(replace(replace(f.caption, '\r',' '), '\n',' '), '  ',' '), '')) AS cap,
+             coalesce(f.page,-1) AS fpage
+        WHERE cap <> ''
+        WITH p, f, cap, fpage, substring(cap,0,$prefix) AS pref
+        MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+        WHERE para.page IN range(fpage-$tol, fpage+$tol)
+          AND toLower(para.text) CONTAINS pref
+        MERGE (para)-[:CAPTIONS]->(f)
+        """, {"prefix": prefix_length, "tol": page_tolerance})
+
+        # PASS 1b: CAPTIONS mit kürzerem Präfix, nur gleiche Seite
+        self.run("""
+        MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
+        WHERE NOT (()-[:CAPTIONS]->(f))
+        WITH p, f,
+             toLower(coalesce(replace(replace(replace(f.caption, '\r',' '), '\n',' '), '  ',' '), '')) AS cap,
+             coalesce(f.page,-1) AS fpage
+        WHERE cap <> ''
+        WITH p, f, cap, fpage, substring(cap,0,25) AS pref
+        MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+        WHERE para.page = fpage
+          AND toLower(para.text) CONTAINS pref
+        MERGE (para)-[:CAPTIONS]->(f)
+        """)
+
+        # PASS 2a: REFERS_TO mit figure_label direkt
+        self.run("""
+        MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
+        WHERE NOT (()-[:REFERS_TO]->(f))
+        WITH p, f,
+             toLower(coalesce(replace(f.figure_label,'.',''), '')) AS flbl,
+             coalesce(f.page,-1) AS fpage
+        WHERE flbl <> ''
+        MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+        WHERE para.page IN range(fpage-$tol, fpage+$tol)
+          AND toLower(replace(para.text,'.','')) CONTAINS flbl
+        MERGE (para)-[:REFERS_TO]->(f)
+        """, {"tol": page_tolerance})
+
+        # PASS 2b: REFERS_TO mit Varianten (figure/fig/abb)
+        self.run("""
+        MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
+        WHERE NOT (()-[:REFERS_TO]->(f))
+        WITH p, f,
+             toLower(coalesce(replace(f.figure_label,'.',''), '')) AS flbl,
+             coalesce(f.page,-1) AS fpage
+        WHERE flbl =~ '.*\\d+.*'   // nur wenn Ziffern drin sind
+        WITH p, f, fpage,
+             replace(replace(replace(replace(flbl,'figure',''),'fig',''),'abb',''),'  ',' ') AS numish
+        MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+        WHERE para.page IN range(fpage-$tol, fpage+$tol)
+          AND (
+               toLower(para.text) CONTAINS ('figure ' + numish) OR
+               toLower(para.text) CONTAINS ('fig ' + numish)    OR
+               toLower(para.text) CONTAINS ('abb ' + numish)
+          )
+        MERGE (para)-[:REFERS_TO]->(f)
+        """, {"tol": page_tolerance})
+
+        # PASS 3: NEAR Fallback
+        self.run("""
+        MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
+        WHERE NOT (()-[:CAPTIONS|:REFERS_TO]->(f))
+        MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+        WHERE para.page = coalesce(f.page,-999999)
+        WITH f, para
+        ORDER BY size(coalesce(para.text,'')) DESC
+        WITH f, head(collect(para)) AS best
+        MERGE (best)-[:NEAR]->(f)
+        """)
+
+        cap_after = cnt("CAPTIONS")
+        ref_after = cnt("REFERS_TO")
+        near_after = cnt("NEAR")
+
+        # Beispiele für weiterhin unverbundene Figures
+        samples = self.run("""
+        MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
+        WHERE NOT (()-[:CAPTIONS|:REFERS_TO|:NEAR]->(f))
+        RETURN p.title    AS paper,
+               f.figure_id  AS figure_id,
+               f.page      AS page,
+               f.figure_label AS figure_label,
+               left(coalesce(f.caption,''), 100) AS caption
+        LIMIT 10
+        """)
+
+        return {
+            "captions_before": cap_before, "captions_after": cap_after,
+            "captions_new": max(0, cap_after - cap_before),
+            "refers_before": ref_before, "refers_after": ref_after,
+            "refers_new": max(0, ref_after - ref_before),
+            "near_before": near_before, "near_after": near_after,
+            "near_new": max(0, near_after - near_before),
+            "still_unlinked_examples": samples
+        }
+
+    def cluster_concepts_into_umbrellas(self, topic_name: str, sim_threshold: float = 0.86, min_cluster_size: int = 2) -> dict:
+        """
+        Bildet Umbrella-Knoten aus Concept-Embeddings für ein Topic.
+
+        Rückgabe: {"clusters": n_clusters, "umbrellas_created": n_created, "assigned": n_assigned}
+
+        Diese Methode repliziert die (einfache) Greedy-Clustering-Logik, die zuvor in
+        `scripts/gui_app.py` implementiert war, und stellt sie als wiederverwendbare Backend-Funktion
+        bereit, damit andere Teile der Applikation (CLI/GUI/Pipelines) dieselbe Logik nutzen.
+        """
+        import numpy as np
+        # Konzepte + Embeddings laden
+        concepts = self.run(
+            """
+            MATCH (:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
+            WHERE c.embedding IS NOT NULL
+            RETURN c.concept_id AS concept_id, c.name AS name, c.embedding AS emb
+            ORDER BY name
+            """,
+            {"topic": topic_name},
+        )
+
+        if not concepts:
+            return {"clusters": 0, "assigned": 0, "message": "Keine Konzepte mit Embeddings gefunden."}
+
+        ids = [c["concept_id"] for c in concepts]
+        names = [c["name"] for c in concepts]
+        vecs = np.array([c["emb"] for c in concepts], dtype=float)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12
+        vecsN = vecs / norms
+
+        assigned = np.full(len(ids), False)
+        clusters = []
+        for i in range(len(ids)):
+            if assigned[i]:
+                continue
+            sims = (vecsN[i] @ vecsN.T)
+            members = [j for j, s in enumerate(sims) if (s >= float(sim_threshold)) and (not assigned[j])]
+            if len(members) >= int(min_cluster_size):
+                for j in members:
+                    assigned[j] = True
+                clusters.append(members)
+            else:
+                continue
+
+        created = 0
+        for mem in clusters:
+            cluster_names = [names[j] for j in mem]
+            rep = sorted(cluster_names, key=lambda x: (len(x), x.lower()))[0]
+            umbrella_id = f"umb-{__import__('uuid').uuid4()}"
+            self.run(
+                """
+                MERGE (t:Topic {name:$topic})
+                MERGE (u:Umbrella {umbrella_id:$uid})
+                SET u.name=$name, u.size=$size, u.keywords=$keywords
+                MERGE (t)-[:HAS_UMBRELLA]->(u)
+                """,
+                {"topic": topic_name, "uid": umbrella_id, "name": rep, "size": len(mem), "keywords": cluster_names},
+            )
+
+            self.run(
+                """
+                MATCH (u:Umbrella {umbrella_id:$uid})
+                UNWIND $concept_ids AS cid
+                MATCH (c:Concept {concept_id: cid})
+                MERGE (u)-[:NARROWER]->(c)
+                """,
+                {"uid": umbrella_id, "concept_ids": [ids[j] for j in mem]},
+            )
+            created += 1
+
+        return {"clusters": len(clusters), "umbrellas_created": created, "assigned": int(np.sum(assigned))}

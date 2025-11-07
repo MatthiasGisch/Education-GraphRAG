@@ -1,11 +1,20 @@
 # src/concept_extract.py
 from __future__ import annotations
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import os, re, uuid, json
 from openai import OpenAI
 
+# Avoid circular imports by using string type annotation for Neo4jClient
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .neo import Neo4jClient
+
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-large")
 client = OpenAI()
+
+# JSON fence extractor (used to robustly parse LLM output)
+_JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+_BRACE_JSON_RE = re.compile(r"(\{.*\})", re.DOTALL)
 
 # ---------- Utils ----------
 def _slug(s: str) -> str:
@@ -37,6 +46,50 @@ def seed_names_to_concepts(seed_names: List[str]) -> List[Dict[str, Any]]:
     return out
 
 # ---------- LLM-Aufruf für Konzepte + Absatz-Zuordnung ----------
+def _try_parse_llm_response(raw: str) -> dict:
+    """Parse LLM response with fallback strategies for robustness."""
+    if not raw or raw.isspace():
+        return {"concepts": [], "links": []}
+
+    # Strategy 1: Direct JSON parse
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            data.setdefault("concepts", [])
+            data.setdefault("links", [])
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: Try to fix common JSON issues
+    cleaned = re.sub(r'(?m)^\s*//.*\n?', '', raw)  # Remove comments
+    cleaned = re.sub(r'(?m)^\s*#.*\n?', '', cleaned)  # Remove Python-style comments
+    cleaned = re.sub(r',\s*}', '}', cleaned)  # Remove trailing commas
+    cleaned = re.sub(r',\s*\]', ']', cleaned)
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            data.setdefault("concepts", [])
+            data.setdefault("links", [])
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 3: Extract JSON-like content if wrapped in text
+    json_match = re.search(r'\{[\s\S]*\}', raw)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(0))
+            if isinstance(data, dict):
+                data.setdefault("concepts", [])
+                data.setdefault("links", [])
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: Return empty structure
+    return {"concepts": [], "links": []}
+
 def _ask_llm_for_concepts(
     title: str,
     paragraphs: List[Dict[str, Any]],
@@ -90,11 +143,31 @@ def _ask_llm_for_concepts(
             {"role":"user","content":json.dumps(user, ensure_ascii=False)}
         ]
     )
-    raw = resp.output_text or "{}"
-    try:
-        data = json.loads(raw)
-        if not isinstance(data, dict): data = {}
-    except Exception:
+    raw = getattr(resp, "output_text", None) or ""
+
+    # 1) Try explicit ```json { ... } ``` block
+    m = _JSON_BLOCK_RE.search(raw)
+    if m:
+        payload = m.group(1)
+    else:
+        # 2) Try to find any JSON-like {...} substring
+        m2 = _BRACE_JSON_RE.search(raw)
+        payload = m2.group(1) if m2 else None
+
+    data = {}
+    if payload:
+        try:
+            data = json.loads(payload)
+        except Exception:
+            data = {}
+    else:
+        # 3) Last-resort: try to parse the whole output as JSON
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {}
+
+    if not isinstance(data, dict):
         data = {}
     data.setdefault("concepts", [])
     data.setdefault("links", [])
@@ -103,11 +176,14 @@ def _ask_llm_for_concepts(
 # ---------- Hauptfunktion: Konzepte + Links erzeugen ----------
 def extract_and_embed_concepts(
     paper_title: str,
-    paragraphs: List[Dict[str, Any]],
+    paragraphs: List[Dict[str, Any]], 
     topic_hint: str = "Künstliche Intelligenz",
     max_concepts: int = 30,
     seed_names: List[str] | None = None,
-    allow_new: bool = True
+    allow_new: bool = True,
+    neo_client: Optional['Neo4jClient'] = None,  # For deduping against existing concepts
+    dedupe_threshold: float = 0.92,  # Similarity threshold for concept deduping
+    min_confidence: float = 0.0  # Min confidence for paragraph-concept links
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Rückgabe:
@@ -116,6 +192,11 @@ def extract_and_embed_concepts(
     Wenn seed_names gesetzt: Konzepte für Seeds werden immer erzeugt (mit Embedding).
     Bei allow_new=False werden KEINE zusätzlichen Konzepte erzeugt; die Links mappen ausschließlich
     auf Seeds. Bei allow_new=True können LLM-Konzepte hinzukommen.
+
+    Parameters:
+        neo_client: Optional Neo4jClient for checking existing concepts
+        dedupe_threshold: Similarity threshold for merging with existing concepts
+        min_confidence: Minimum confidence required for paragraph-concept links
     """
     # 1) Seeds vorbereiten (mit Embeddings)
     seed_concepts = seed_names_to_concepts(seed_names or [])
@@ -144,15 +225,82 @@ def extract_and_embed_concepts(
         new_concepts.append({"concept_id": _slug(name), "name": name, "alt_labels": alt, "description": desc})
         new_names.append(name + ("; " + ", ".join(alt) if alt else ""))
 
-    # 4) Embeddings für neue Konzepte
-    new_embs = _embed(new_names)
-    for i, e in enumerate(new_embs):
-        new_concepts[i]["embedding"] = e
+    # 3b) Aggregate mention counts & confidences from LLM links (used to decide creation)
+    mention_counts: Dict[str, int] = {}
+    mention_conf_sums: Dict[str, float] = {}
+    for link in llm.get("links", []):
+        cname = (link.get("concept_name") or "").lower()
+        if not cname:
+            continue
+        mention_counts[cname] = mention_counts.get(cname, 0) + 1
+        mention_conf_sums[cname] = mention_conf_sums.get(cname, 0.0) + float(link.get("confidence") or 0.0)
 
-    # 5) Gesamtkonzepte
-    concepts = seed_concepts + new_concepts
+    # 4) Embeddings für neue Konzepte + Dedupe gegen bestehende Konzepte (optional)
+    created_new_concepts: List[Dict[str, Any]] = []
+    mapped_existing: dict = {}  # name.lower() -> existing concept_id
+
+    if new_names:
+        new_embs = _embed(new_names)
+        for i, e in enumerate(new_embs):
+            new_concepts[i]["embedding"] = e
+            name_l = new_concepts[i]["name"].lower()
+
+            # Apply mention/confidence thresholds: only consider creating if
+            # mention_counts >= min_mentions OR avg_confidence >= min_confidence
+            mentions = mention_counts.get(name_l, 0)
+            avg_conf = (mention_conf_sums.get(name_l, 0.0) / mentions) if mentions > 0 else 0.0
+            create_allowed = (avg_conf >= min_confidence)
+            if not create_allowed:
+                # If the concept doesn't meet thresholds, skip creating it (but keep it in suggestions)
+                # Still include in new_concepts (with embedding) so UI can preview
+                continue
+
+            # Dedupe: wenn ein Neo4j-Client vorhanden ist, suche ähnliche Konzepte
+            mapped_to_existing = False
+            if neo_client is not None:
+                try:
+                    matches = []
+                    if hasattr(neo_client, 'vector_search_concepts'):
+                        matches = neo_client.vector_search_concepts(e, k=1) or []
+                    elif hasattr(neo_client, 'run'):
+                        matches = neo_client.run(
+                            "CALL db.index.vector.queryNodes('concept_embedding_index', 1, $embedding) YIELD node, score RETURN node.concept_id AS concept_id, node.name AS name, toFloat(score) AS score",
+                            {"embedding": e}
+                        ) or []
+                    if matches:
+                        top = matches[0]
+                        score = float(top.get('score') or 0.0)
+                        if score >= float(dedupe_threshold):
+                            existing_id = top.get('concept_id')
+                            # fetch canonical info if possible
+                            try:
+                                info = neo_client.run(
+                                    "MATCH (c:Concept {concept_id:$id}) RETURN c.concept_id AS concept_id, c.name AS name, c.alt_labels AS alt_labels, c.description AS description",
+                                    {"id": existing_id}
+                                )
+                                if info:
+                                    mapped_existing[name_l] = info[0].get('concept_id')
+                                else:
+                                    mapped_existing[name_l] = existing_id
+                            except Exception:
+                                mapped_existing[name_l] = existing_id
+                            mapped_to_existing = True
+                except Exception:
+                    # on error, fall back to creating the concept
+                    mapped_to_existing = False
+
+            if not mapped_to_existing:
+                # schedule for creation
+                created_new_concepts.append(new_concepts[i])
+
+    # 5) Gesamtkonzepte: Seeds + tatsächlich neu zu erzeugende Konzepte + Platzhalter für gemappte bestehende
+    concepts = seed_concepts.copy()
+    concepts.extend(created_new_concepts)
+    for nm, cid in mapped_existing.items():
+        concepts.append({"concept_id": cid, "name": nm, "alt_labels": [], "description": "(mapped existing)"})
+
+    # name -> concept mapping (inkl. alt_labels)
     by_name = {c["name"].lower(): c for c in concepts}
-    # match alt_labels auch
     alt_map = {}
     for c in concepts:
         for a in c.get("alt_labels") or []:
@@ -167,10 +315,8 @@ def extract_and_embed_concepts(
             continue
         c_obj = by_name.get(cname) or alt_map.get(cname)
         if not c_obj:
-            # wenn nur Seeds erlaubt, keine neuen Zuordnungen
             if not allow_new:
                 continue
-            # Falls LLM einen Namen linkt, den es NICHT in concepts packte (selten) -> ignoriere
             continue
         conf = float(l.get("confidence") or 0.7)
         links.append({"paragraph_id": pid, "concept_id": c_obj["concept_id"], "confidence": conf})

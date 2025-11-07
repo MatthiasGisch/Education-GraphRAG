@@ -91,11 +91,12 @@ def ingest_one(pdf_path: Path, neo: Neo4jClient) -> Dict[str, Any]:
 
     # --- Concepts: aus Absätzen extrahieren, einfügen, verlinken ---
     concepts, links = extract_and_embed_concepts(
-    paper_title=paper_meta.get("title") or "",
-    paragraphs=paragraphs_emb,
-    topic_hint="Künstliche Intelligenz",   # kannst du pro Batch/GUI steuerbar machen
-    max_concepts=30
-)
+        paper_title=paper_meta.get("title") or "",
+        paragraphs=paragraphs_emb,
+        topic_hint="Künstliche Intelligenz",
+        max_concepts=30,
+        neo_client=neo
+    )
     if concepts:
         neo.add_concepts(topic_name="Künstliche Intelligenz", concepts=concepts)
     if links:

@@ -153,40 +153,7 @@ def parse_seed_input(text: str) -> List[str]:
 def stitch_graph() -> dict:
     """ Vernäht Paragraphs/Figures mit Sections (per page-range) + Dummy-Section pro Paper falls nötig. """
     neo = get_neo()
-    neo.run("""
-    MATCH (p:Paper)
-    WHERE NOT (p)-[:HAS_SECTION]->()
-    MERGE (s:Section {section_id: p.paper_id + ":DOC"})
-    SET s.title = "Document",
-        s.level = 1,
-        s.page_start = 1,
-        s.page_end = 999999,
-        s.`order` = 1
-    MERGE (p)-[:HAS_SECTION]->(s)
-    """)
-    neo.run("""
-    MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
-    MATCH (p)-[:HAS_SECTION]->(sec:Section)
-    WHERE para.page >= coalesce(sec.page_start, 1)
-      AND para.page <= coalesce(sec.page_end, 999999)
-    MERGE (sec)-[:HAS_PARAGRAPH]->(para)
-    """)
-    neo.run("""
-    MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
-    MATCH (p)-[:HAS_SECTION]->(sec:Section)
-    WHERE f.page >= coalesce(sec.page_start, 1)
-      AND f.page <= coalesce(sec.page_end, 999999)
-    MERGE (sec)-[:HAS_FIGURE]->(f)
-    """)
-    stats = {}
-    stats["paras_direct_at_paper"] = get_single_value(neo, "MATCH (p:Paper)-[:HAS_PARAGRAPH]->(:Paragraph) RETURN count(*) AS c")
-    stats["paras_via_section"]     = get_single_value(neo, "MATCH (:Section)-[:HAS_PARAGRAPH]->(:Paragraph) RETURN count(*) AS c")
-    stats["figs_at_paper"]         = get_single_value(neo, "MATCH (p:Paper)-[:HAS_FIGURE]->(:Figure) RETURN count(*) AS c")
-    stats["figs_via_section"]      = get_single_value(neo, "MATCH (:Section)-[:HAS_FIGURE]->(:Figure) RETURN count(*) AS c")
-    stats["paragraph_orphans"]     = get_single_value(neo, "MATCH (para:Paragraph) WHERE NOT (()-[:HAS_PARAGRAPH]->(para)) RETURN count(para) AS c")
-    stats["figure_orphans"]        = get_single_value(neo, "MATCH (f:Figure) WHERE NOT (()-[:HAS_FIGURE]->(f)) RETURN count(f) AS c")
-    stats["papers_without_sections"]= get_single_value(neo, "MATCH (p:Paper) WHERE NOT (p)-[:HAS_SECTION]->() RETURN count(p) AS c")
-    return stats
+    return neo.stitch_document_hierarchy()
 
 def clear_graph() -> dict:
     neo = get_neo()
@@ -544,11 +511,21 @@ def rebuild_concepts_for_all(topic: str, strategy: str, seeds: list[str]) -> dic
             topic_hint=topic,
             max_concepts=30,
             seed_names=seeds_for_llm,
-            allow_new=allow_new
+            allow_new=allow_new,
+            neo_client=neo
         )
         if concepts:
-            neo.upsert_topic(topic)
-            neo.add_concepts(topic, concepts)
+            # Vorschau im GUI anzeigen und optional anlegen
+            try:
+                with st.expander(f"Vorgeschlagene Konzepte für {title} (Anzahl: {len(concepts)})"):
+                    st.write("Preview der vorgeschlagenen Konzepte (Seed-Konzepte kombiniert mit neuen Kandidaten).")
+                    st.json(concepts)
+                    auto_add = st.checkbox("Vorgeschlagene Konzepte automatisch in DB anlegen", value=True, key=f"auto_add_preview_{pid}")
+            except Exception:
+                auto_add = True
+            if auto_add:
+                neo.upsert_topic(topic)
+                neo.add_concepts(topic, concepts)
         if links:
             neo.link_paragraphs_to_concepts(pid, links)
 
@@ -567,64 +544,12 @@ def cluster_concepts_into_umbrellas(topic: str, sim_threshold: float = 0.86, min
       und Kanten (u)-[:NARROWER]->(c:Concept)
       sowie (t:Topic)-[:HAS_UMBRELLA]->(u)
     """
+    # Delegate to backend implementation on Neo4jClient for consistency and reuse.
     neo = get_neo()
-    # Konzepte + Embeddings laden
-    concepts = neo.run("""
-        MATCH (:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
-        WHERE c.embedding IS NOT NULL
-        RETURN c.concept_id AS concept_id, c.name AS name, c.embedding AS emb
-        ORDER BY name
-    """, {"topic": topic})
-
-    if not concepts:
-        return {"clusters": 0, "assigned": 0, "message": "Keine Konzepte mit Embeddings gefunden."}
-
-    # Normiere Embeddings, baue Matrix
-    ids   = [c["concept_id"] for c in concepts]
-    names = [c["name"] for c in concepts]
-    vecs  = np.array([c["emb"] for c in concepts], dtype=float)
-    norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12
-    vecsN = vecs / norms
-
-    assigned = np.full(len(ids), False)
-    clusters = []
-    for i in range(len(ids)):
-        if assigned[i]: 
-            continue
-        # Ähnlichkeit zu allen
-        sims = (vecsN[i] @ vecsN.T)
-        members = [j for j, s in enumerate(sims) if (s >= sim_threshold) and (not assigned[j])]
-        if len(members) >= min_cluster_size:
-            for j in members: assigned[j] = True
-            clusters.append(members)
-        else:
-            # Einzelgänger: ignoriere hier (kannst du auch als eigener Umbrella nehmen, falls gewünscht)
-            continue
-
-    # Umbrellas in DB anlegen
-    created = 0
-    for mem in clusters:
-        cluster_names = [names[j] for j in mem]
-        # Einfacher "Name": häufigster / kürzester Name
-        rep = sorted(cluster_names, key=lambda x: (len(x), x.lower()))[0]
-        umbrella_id = f"umb-{uuid4()}"
-        neo.run("""
-            MERGE (t:Topic {name:$topic})
-            MERGE (u:Umbrella {umbrella_id:$uid})
-            SET u.name=$name, u.size=$size, u.keywords=$keywords
-            MERGE (t)-[:HAS_UMBRELLA]->(u)
-        """, {"topic": topic, "uid": umbrella_id, "name": rep, "size": len(mem), "keywords": cluster_names})
-
-        # Kanten zu Konzepten
-        neo.run("""
-            MATCH (u:Umbrella {umbrella_id:$uid})
-            UNWIND $concept_ids AS cid
-            MATCH (c:Concept {concept_id: cid})
-            MERGE (u)-[:NARROWER]->(c)
-        """, {"uid": umbrella_id, "concept_ids": [ids[j] for j in mem]})
-        created += 1
-
-    return {"clusters": len(clusters), "umbrellas_created": created, "assigned": int(np.sum(assigned))}
+    try:
+        return neo.cluster_concepts_into_umbrellas(topic, sim_threshold=sim_threshold, min_cluster_size=min_cluster_size)
+    except Exception as e:
+        return {"clusters": 0, "assigned": 0, "message": f"Fehler beim Clustern: {e}"}
 
 def list_topics() -> list[str]:
     neo = get_neo()
@@ -633,121 +558,11 @@ def list_topics() -> list[str]:
 
 def stitch_figures_paragraphs() -> dict:
     """
-    Vernäht Figures mit Paragraphen in drei Stufen:
-      1) CAPTIONS: Absatz enthält Prefix der (normalisierten) Caption, Seiten-Toleranz ±1
-      2) REFERS_TO: Absatz erwähnt figure_label (z. B. "Figure 2", "Fig. 2") auf ±1 Seite
-      3) NEAR-Fallback: Wenn noch immer keine Kante, linke zur "besten" Paragraph-Kandidatin
-         (gleiche Seite, längster Text).  -> Beziehungstyp :NEAR
-    Gibt Vorher/Nachher-Zahlen und Beispiele unverbundener Figures zurück.
+    Vernäht Figures mit Paragraphen über CAPTIONS/REFERS_TO/NEAR Beziehungen.
+    Delegiert an Backend-Implementierung in Neo4jClient.
     """
     neo = get_neo()
-
-    def cnt(rel):
-        return get_single_value(neo, f"MATCH ()-[r:{rel}]->() RETURN count(r) AS c")
-
-    cap_before = cnt("CAPTIONS")
-    ref_before = cnt("REFERS_TO")
-    near_before = cnt("NEAR")
-
-    # ---------- PASS 1a: CAPTIONS mit 60-Zeichen-Präfix, ±1 Seite ----------
-    neo.run("""
-    MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
-    WHERE NOT (()-[:CAPTIONS]->(f))
-    WITH p, f,
-         toLower(coalesce(replace(replace(replace(f.caption, '\r',' '), '\n',' '), '  ',' '), '')) AS cap,
-         coalesce(f.page,-1) AS fpage
-    WHERE cap <> ''
-    WITH p, f, cap, fpage, substring(cap,0,60) AS pref
-    MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
-    WHERE para.page IN [fpage-1, fpage, fpage+1]
-      AND toLower(para.text) CONTAINS pref
-    MERGE (para)-[:CAPTIONS]->(f)
-    """)
-
-    # ---------- PASS 1b: CAPTIONS mit 25-Zeichen-Präfix, nur gleiche Seite ----------
-    neo.run("""
-    MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
-    WHERE NOT (()-[:CAPTIONS]->(f))
-    WITH p, f,
-         toLower(coalesce(replace(replace(replace(f.caption, '\r',' '), '\n',' '), '  ',' '), '')) AS cap,
-         coalesce(f.page,-1) AS fpage
-    WHERE cap <> ''
-    WITH p, f, cap, fpage, substring(cap,0,25) AS pref
-    MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
-    WHERE para.page = fpage
-      AND toLower(para.text) CONTAINS pref
-    MERGE (para)-[:CAPTIONS]->(f)
-    """)
-
-    # ---------- PASS 2a: REFERS_TO mit figure_label direkt ----------
-    neo.run("""
-    MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
-    WHERE NOT (()-[:REFERS_TO]->(f))
-    WITH p, f,
-         toLower(coalesce(replace(f.figure_label,'.',''), '')) AS flbl,
-         coalesce(f.page,-1) AS fpage
-    WHERE flbl <> ''
-    MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
-    WHERE para.page IN [fpage-1, fpage, fpage+1]
-      AND toLower(replace(para.text,'.','')) CONTAINS flbl
-    MERGE (para)-[:REFERS_TO]->(f)
-    """)
-
-    # ---------- PASS 2b: REFERS_TO mit Varianten (figure/fig/abb) ----------
-    neo.run("""
-    MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
-    WHERE NOT (()-[:REFERS_TO]->(f))
-    WITH p, f,
-         toLower(coalesce(replace(f.figure_label,'.',''), '')) AS flbl,
-         coalesce(f.page,-1) AS fpage
-    WHERE flbl =~ '.*\\d+.*'   // nur wenn Ziffern drin sind
-    WITH p, f, fpage,
-         // extrahiere Nummer grob: entferne alles außer Ziffern und Leerzeichen
-         replace(replace(replace(replace(flbl,'figure',''),'fig',''),'abb',''),'  ',' ') AS numish
-    MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
-    WHERE para.page IN [fpage-1, fpage, fpage+1]
-      AND (
-           toLower(para.text) CONTAINS ('figure ' + numish) OR
-           toLower(para.text) CONTAINS ('fig ' + numish)    OR
-           toLower(para.text) CONTAINS ('abb ' + numish)
-      )
-    MERGE (para)-[:REFERS_TO]->(f)
-    """)
-
-    # ---------- PASS 3: NEAR Fallback (gleiche Seite, längster Paragraph) ----------
-    neo.run("""
-    MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
-    WHERE NOT (()-[:CAPTIONS|:REFERS_TO]->(f))
-    MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
-    WHERE para.page = coalesce(f.page,-999999)
-    WITH f, para
-    ORDER BY size(coalesce(para.text,'')) DESC
-    WITH f, head(collect(para)) AS best
-    MERGE (best)-[:NEAR]->(f)
-    """)
-
-    cap_after = cnt("CAPTIONS")
-    ref_after = cnt("REFERS_TO")
-    near_after = cnt("NEAR")
-
-    # Beispiele für weiterhin unverbundene Figures
-    samples = neo.run("""
-    MATCH (p:Paper)-[:HAS_FIGURE]->(f:Figure)
-    WHERE NOT (()-[:CAPTIONS|:REFERS_TO|:NEAR]->(f))
-    RETURN p.title   AS paper,
-           f.figure_id AS figure_id,
-           f.page      AS page,
-           f.figure_label AS figure_label,
-           left(coalesce(f.caption,''), 100) AS caption
-    LIMIT 10
-    """)
-
-    return {
-        "captions_before": cap_before, "captions_after": cap_after, "captions_new": max(0, cap_after - cap_before),
-        "refers_before": ref_before,   "refers_after": ref_after,   "refers_new":   max(0, ref_after - ref_before),
-        "near_before": near_before,    "near_after": near_after,    "near_new":     max(0, near_after - near_before),
-        "still_unlinked_examples": samples,
-    }
+    return neo.stitch_figures_to_paragraphs(prefix_length=60, page_tolerance=1)
 
 
 # =========================
@@ -1009,14 +824,28 @@ with tab_ingest:
             topic_hint=topic,
             max_concepts=30,
             seed_names=seeds_for_llm,
-            allow_new=allow_new
+            allow_new=allow_new,
+            neo_client=neo
         )
 
         if concepts:
-            neo.upsert_topic(topic)
-            neo.add_concepts(topic, concepts)
-        if links:
-            neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
+            # Preview + optional add
+            with st.expander(f"Vorgeschlagene Konzepte ({len(concepts)})"):
+                st.json(concepts)
+                add_key = f"auto_add_ingest_{paper_meta.get('paper_id','') }"
+                auto_add = st.checkbox("Vorgeschlagene Konzepte automatisch in DB anlegen", value=True, key=add_key)
+            if auto_add:
+                neo.upsert_topic(topic)
+                neo.add_concepts(topic, concepts)
+                if links:
+                    neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
+        else:
+            # keine neuen Konzepte, aber evtl. Links zu bestehenden
+            if links:
+                try:
+                    neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
+                except Exception:
+                    pass
 
         return {
             "paper_id": paper_meta["paper_id"],
