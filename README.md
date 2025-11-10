@@ -104,26 +104,88 @@ graphrag-auradb-starter/
 
 # AuraDB Cypherabfragen
 
+## DIAGNOSE: Was ist in der Datenbank?
+
+### Alle Knoten-Typen zählen
+```cypher
+MATCH (n)
+RETURN labels(n) AS NodeType, count(n) AS Count
+ORDER BY Count DESC
+```
+
+### Topics und ihre Konzepte
+```cypher
+MATCH (t:Topic)
+OPTIONAL MATCH (t)-[:HAS_CONCEPT]->(c:Concept)
+RETURN t.name AS Topic, count(c) AS ConceptCount
+```
+
+### Papers und ihre Komponenten
+```cypher
+MATCH (p:Paper)
+OPTIONAL MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+OPTIONAL MATCH (p)-[:HAS_FIGURE]->(fig:Figure)
+OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)
+RETURN p.title AS Paper, 
+       count(DISTINCT para) AS Paragraphs,
+       count(DISTINCT fig) AS Figures,
+       count(DISTINCT sec) AS Sections
+LIMIT 10
+```
+
+### Konzept-Paragraph Verknüpfungen prüfen
+```cypher
+MATCH (para:Paragraph)-[:MENTIONS]->(c:Concept)
+RETURN count(*) AS MentionsCount
+```
+
+### Semantische Relationen prüfen (Hybrid-Modus)
+```cypher
+MATCH (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
+RETURN c1.name, r.relation_type, c2.name, r.confidence
+LIMIT 20
+```
+
 ## TOPIC->CONCEPTS
+```cypher
 MATCH p = (:Topic)-[:HAS_CONCEPT]->(:Concept)
 RETURN p
 LIMIT 100
+```
 
 ## PAPER->PARAGRAPHS
+```cypher
 MATCH p = (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
 RETURN p
 LIMIT 100
+```
 
 ## PAPER -> FIGURES/MENTIONS/PARAGRAPHS -> CONCEPTS
+```cypher
 MATCH (t:Topic {name:$topic})
-OPTIONAL MATCH (t)-[hu]->(u:Umbrella)-[:NARROWER]->(c1:Concept)
-OPTIONAL MATCH (t)-[:HAS_CONCEPT]->(c2:Concept)
-WITH t, collect(DISTINCT c1) + collect(DISTINCT c2) AS cs
-UNWIND cs AS c
-WITH DISTINCT c
+OPTIONAL MATCH (t)-[:HAS_CONCEPT]->(c:Concept)
+WITH c
+WHERE c IS NOT NULL
 OPTIONAL MATCH p1 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
 OPTIONAL MATCH p2 = (paper)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
 OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
 OPTIONAL MATCH p4 = (sec)-[:HAS_FIGURE]->(figS:Figure)
 RETURN p1, p2, p3, p4
-LIMIT 500;
+LIMIT 500
+```
+
+## Einfache Graph-Visualisierung (ohne Topic-Parameter)
+```cypher
+MATCH (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)-[:MENTIONS]->(c:Concept)
+OPTIONAL MATCH (paper)-[:HAS_FIGURE]->(fig:Figure)
+RETURN paper, para, c, fig
+LIMIT 100
+```
+
+## Hybrid-Modus: Konzepte mit Relationen
+```cypher
+MATCH (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
+OPTIONAL MATCH (c1)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
+RETURN c1, r, c2, para, paper
+LIMIT 100
+```

@@ -259,24 +259,48 @@ def extract_entities_hybrid(
     # Step 3: Merge into unified entity list
     all_entities = []
     
-    # Add NER entities
-    for ent_type, ent_list in ner_entities.items():
-        for entity in ent_list:
-            all_entities.append({
-                "name": entity,
-                "type": ent_type.lower(),
-                "source": "ner",
-                "description": ""
-            })
+    # Define which NER entity types to include (exclude PERSON, DATE, GPE for scientific concepts)
+    # Only include scientific/technical entities from NER
+    RELEVANT_NER_TYPES = {"SCIENTIFIC_TERM", "CHEMICAL", "DISEASE", "ORG"}
     
-    # Add LLM concepts
+    # Filter to exclude trivial entities (single chars, numbers, etc.)
+    def is_valid_entity(name: str) -> bool:
+        """Check if entity name is meaningful enough to be a concept."""
+        name = name.strip()
+        # Exclude too short
+        if len(name) < 3:
+            return False
+        # Exclude pure numbers or dates
+        if name.replace('.', '').replace(',', '').replace('/', '').replace('%', '').replace('-', '').isdigit():
+            return False
+        # Exclude single letters/numbers with special chars
+        if len(name) <= 4 and any(c.isdigit() for c in name):
+            return False
+        return True
+    
+    # Add NER entities (ONLY relevant types and valid names)
+    for ent_type, ent_list in ner_entities.items():
+        if ent_type not in RELEVANT_NER_TYPES:
+            continue  # Skip PERSON, DATE, GPE, etc.
+        
+        for entity in ent_list:
+            if is_valid_entity(entity):
+                all_entities.append({
+                    "name": entity,
+                    "type": ent_type.lower(),
+                    "source": "ner",
+                    "description": ""
+                })
+    
+    # Add LLM concepts (with validation)
     for concept in llm_concepts:
-        all_entities.append({
-            "name": concept["name"],
-            "type": concept.get("type", "concept"),
-            "source": "llm",
-            "description": concept.get("description", "")
-        })
+        if is_valid_entity(concept["name"]):
+            all_entities.append({
+                "name": concept["name"],
+                "type": concept.get("type", "concept"),
+                "source": "llm",
+                "description": concept.get("description", "")
+            })
     
     # Deduplicate by name (case-insensitive)
     seen = set()
