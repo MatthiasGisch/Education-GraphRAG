@@ -69,6 +69,7 @@ class Neo4jClient:
             MATCH (p:Paper {paper_id:$paper_id})
             MERGE (para:Paragraph {paragraph_id: row.paragraph_id})
             SET para.text = row.text,
+                para.paper_id = $paper_id,
                 para.page = row.page,
                 para.order_in_page = row.order_in_page,
                 para.char_start = row.char_start,
@@ -78,14 +79,11 @@ class Neo4jClient:
                 para.page_height = row.page_height,
                 para.sha256 = row.sha256,
                 para.embedding = row.embedding
+            MERGE (p)-[:HAS_PARAGRAPH]->(para)
             WITH p, para, row
             OPTIONAL MATCH (sec:Section {section_id: row.section_id_ref})
-            FOREACH (_ IN CASE WHEN sec IS NULL THEN [] ELSE [1] END |
-                MERGE (sec)-[:HAS_PARAGRAPH]->(para)
-            )
-            FOREACH (_ IN CASE WHEN sec IS NULL THEN [1] ELSE [] END |
-                MERGE (p)-[:HAS_PARAGRAPH]->(para)  // Fallback, falls keine Section erkannt
-            )
+            WHERE sec IS NOT NULL
+            MERGE (sec)-[:HAS_PARAGRAPH]->(para)
             """,
             {"paper_id": paper_id, "paragraphs": paragraphs},
         )
