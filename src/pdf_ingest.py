@@ -204,9 +204,21 @@ def read_pdf_text_and_images(path: str):
         for img_idx, img in enumerate(page.get_images(full=True)):
             xref = img[0]
             pix = fitz.Pixmap(doc, xref)
+            
+            # Handle alpha channel: convert to RGB if present
             if pix.alpha:
-                pix = fitz.Pixmap(fitz.csRGB, pix)
-            img_path = os.path.join(IMAGES_DIR, f"{paper_id}_{page_num1}_{xref}.jpg")
+                # Create new RGB pixmap without alpha
+                pix_rgb = fitz.Pixmap(fitz.csRGB, pix)
+                pix = None  # Release original
+                pix = pix_rgb
+            
+            # Use PNG for images with colorspace that might still have issues with JPG
+            # Otherwise use JPG for better compression
+            if pix.n >= 4:  # n = number of components (RGBA = 4, RGB = 3)
+                img_path = os.path.join(IMAGES_DIR, f"{paper_id}_{page_num1}_{xref}.png")
+            else:
+                img_path = os.path.join(IMAGES_DIR, f"{paper_id}_{page_num1}_{xref}.jpg")
+            
             pix.save(img_path)
 
             # BBox heuristisch zuordnen (gleiche Reihenfolge); wenn nicht vorhanden -> None
