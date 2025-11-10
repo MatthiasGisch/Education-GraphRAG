@@ -41,11 +41,13 @@ def answer_via_openai_web(query: str, *, lang: str = "de", force_tool: bool = Fa
         return {"mode": "web_error", "answer": "OpenAI Client nicht initialisierbar.", "supports": [], "debug": {"web_call": "client_none"}}
 
     sys_prompt = (
-        "Du bist ein gewissenhafter Research-Assistent. Wenn du das Web nutzt, "
-        "antworte präzise, nenne Belege im Fließtext (mit URL) und füge am Ende "
-        "EXAKT einen JSON-Block an:\n"
+        "Du bist ein erfahrener Dozent und Lehrer, der Lernmaterial erstellt. "
+        "Erkläre Konzepte didaktisch verständlich und strukturiert. "
+        "Wenn du das Web nutzt, antworte präzise, nenne Belege im Fließtext (mit URL) "
+        "und füge am Ende EXAKT einen JSON-Block an:\n"
         "```json {\"sources\":[{\"url\":\"...\",\"title\":\"...\"}]}```\n"
-        "Nimm nur Quellen in den JSON-Block auf, die du auch genutzt/zitiert hast."
+        "Nimm nur Quellen in den JSON-Block auf, die du auch genutzt/zitiert hast. "
+        "Formuliere so, dass Studierende die Inhalte gut verstehen und lernen können."
     )
 
     tool_choice = {"type": "web_search"} if force_tool else "auto"

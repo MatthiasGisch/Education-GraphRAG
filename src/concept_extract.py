@@ -110,13 +110,15 @@ def _ask_llm_for_concepts(
       - allow_new = True  -> Seeds bevorzugen, aber neue Konzepte zulassen.
     """
     sys = (
-        "Du extrahierst Konzepte (Themen/Begriffe) aus wissenschaftlichen Texten.\n"
+        "Du bist ein erfahrener Dozent, der Konzepte (Themen/Begriffe) aus wissenschaftlichen Texten extrahiert, "
+        "um daraus Lernmaterial für Studierende zu erstellen.\n"
         "Liefere kompakt JSON:\n"
         "{\n"
-        '  "concepts":[{"name":"...", "alt_labels":["..."], "description":"..."}],\n'
+        '  "concepts":[{"name":"...", "alt_labels":["..."], "description":"kurze, didaktische Erklärung"}],\n'
         '  "links":[{"paragraph_id":"...", "concept_name":"...", "confidence":0.0}]\n'
         "}\n"
-        f"Maximal {max_concepts} Konzepte, nutze kanonische Namen, alt_labels für Synonyme."
+        f"Maximal {max_concepts} Konzepte, nutze kanonische Namen, alt_labels für Synonyme. "
+        "Beschreibungen sollten für Studierende verständlich formuliert sein."
     )
     seeds_txt = ", ".join(seed_names or [])
     seed_rule = (

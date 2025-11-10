@@ -55,7 +55,13 @@ def describe_image(path: str) -> Dict[str, Any]:
     return data
 
 def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
-    sys = "Du bist ein präziser wissenschaftlicher Assistent. Antworte NUR auf Basis der gelieferten Belege. Erfinde nichts."
+    sys = (
+        "Du bist ein erfahrener Dozent und Lehrer, der Lernmaterial aus wissenschaftlichen Quellen erstellt. "
+        "Erkläre die Inhalte didaktisch aufbereitet, strukturiert und verständlich für Studierende. "
+        "Antworte NUR auf Basis der gelieferten Belege. Erfinde nichts. "
+        "Nutze eine klare, lehrende Sprache mit Beispielen wo möglich. "
+        "Strukturiere deine Antwort logisch (z.B. Definition → Erklärung → Anwendung → Zusammenfassung)."
+    )
     # Kontext mit strukturierter Provenance
     bib = {}
     ctx_lines = []
@@ -90,10 +96,13 @@ Frage: {query}
 Belege (nicht erfinden, nur daraus arbeiten):
 {chr(10).join(ctx_lines[:20])}
 
-Anweisung:
-- Erkläre verständlich auf Deutsch.
-- Jede Kernaussage mit [Pxxx] / [Fxxx] belegen.
-- Wenn Belege widersprüchlich oder zu dünn sind, sage das klar.
+Anweisung als Dozent:
+- Erkläre das Thema didaktisch verständlich auf Deutsch, wie in einer Vorlesung oder einem Lehrbuch.
+- Strukturiere die Antwort logisch (z.B. Definition → Erklärung → Beispiele → Zusammenhänge).
+- Nutze eine klare, lehrende Sprache: Führe Studierende schrittweise durch das Thema.
+- Jede Kernaussage mit [Pxxx] / [Fxxx] belegen (Quellenangabe in eckigen Klammern).
+- Wenn möglich, verdeutliche Zusammenhänge und Anwendungsbereiche.
+- Wenn Belege widersprüchlich oder zu dünn sind, sage das klar und erkläre was fehlt.
 
 Zitierformat:
 - Jede Kernaussage belege in eckigen Klammern z.B. [P..., F...]

@@ -180,9 +180,11 @@ def extract_concepts_llm(
         if all_found:
             ner_context = f"\nAlready identified entities (don't repeat): {', '.join(all_found[:10])}"
     
-    system_prompt = f"""You are an expert at extracting key concepts from scientific text.
+    system_prompt = f"""You are an experienced educator and expert at extracting key concepts from scientific text to create learning materials.
 Extract abstract concepts, methodologies, theories, and technical terms that are central to understanding the text.
 Focus on domain-specific concepts that NER systems typically miss.{ner_context}
+
+For each concept, provide a brief, didactic description suitable for students learning the topic.
 
 Return JSON format:
 {{
@@ -190,7 +192,7 @@ Return JSON format:
     {{
       "name": "concept name",
       "type": "methodology|theory|technique|domain_term|abstract_concept",
-      "description": "brief description"
+      "description": "clear, educational description for students"
     }}
   ]
 }}
@@ -328,9 +330,10 @@ def extract_relations_llm(
     entity_names = [e["name"] for e in entities[:30]]  # Limit for API
     entity_list_str = ", ".join(entity_names)
     
-    system_prompt = f"""You are an expert at extracting semantic relationships from scientific text.
-Identify relationships between entities in the following format:
-(Subject, Predicate, Object)
+    system_prompt = f"""You are an experienced educator and expert at extracting semantic relationships from scientific text to create learning materials.
+Identify relationships between entities that help students understand connections and dependencies between concepts.
+
+Format: (Subject, Predicate, Object)
 
 Example relations:
 - ("Deep Learning", "is_a", "Machine Learning")
@@ -338,8 +341,10 @@ Example relations:
 - ("Albert Einstein", "developed", "Theory of Relativity")
 - ("Attention Mechanism", "improves", "Transformer Performance")
 
-Focus on meaningful, factual relationships. Use clear, standardized predicates like:
+Focus on meaningful, factual relationships that are pedagogically valuable. Use clear, standardized predicates like:
 - is_a, part_of, uses, requires, causes, leads_to, improves, evaluates, applies_to, based_on, extends
+
+For context, include the exact sentence or phrase that expresses this relationship - this helps students see the relation in context.
 
 Return JSON format:
 {{
@@ -354,7 +359,7 @@ Return JSON format:
   ]
 }}
 
-Extract up to {max_relations} most important relations."""
+Extract up to {max_relations} most important relations for learning purposes."""
 
     # Truncate text
     text_sample = text[:5000] if len(text) > 5000 else text
