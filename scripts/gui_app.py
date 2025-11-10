@@ -36,8 +36,7 @@ from src.pdf_export import write_answer_pdf
 from src.agent import answer_query
 from src.concept_extract import (
     extract_and_embed_concepts,
-    extract_and_embed_concepts_hybrid,
-    seed_names_to_concepts
+    extract_and_embed_concepts_hybrid
 )
 
 # Import für Gamma API
@@ -137,19 +136,6 @@ def create_schema():
     statements = [s.strip() for s in cleaned.split(";") if s.strip()]
     for stmt in statements:
         neo.run(stmt)
-
-def parse_seed_input(text: str) -> List[str]:
-    seeds = []
-    for line in (text or "").splitlines():
-        name = line.strip()
-        if name:
-            seeds.append(name)
-    # Duplikate raus
-    seen = set(); out=[]
-    for n in seeds:
-        if n.lower() in seen: continue
-        seen.add(n.lower()); out.append(n)
-    return out
 
 def stitch_graph() -> dict:
     """ Vernäht Paragraphs/Figures mit Sections (per page-range) + Dummy-Section pro Paper falls nötig. """
@@ -477,24 +463,19 @@ import math
 import numpy as np
 from uuid import uuid4
 
-def rebuild_concepts_for_all(topic: str, strategy: str, seeds: list[str]) -> dict:
+def rebuild_concepts_for_all(topic: str, strategy: str) -> dict:
     """
     Extrahiert Konzepte + Links für bereits ingestierte Paper neu (per aktueller Strategie).
-    - strategy: "Nur Seeds (keine neuen Konzepte)" | "Seeds + LLM-Erweiterung" | "Nur LLM"
-    - seeds: Liste von Seed-Namen
+    - strategy: "LLM" | "Hybrid (NER + LLM + Relationen)"
     """
-    from src.concept_extract import extract_and_embed_concepts
+    from src.concept_extract import extract_and_embed_concepts, extract_and_embed_concepts_hybrid
 
     neo = get_neo()
     papers = neo.run("MATCH (p:Paper) RETURN p.paper_id AS id, p.title AS title ORDER BY title")
     total_concepts, total_links = 0, 0
     per_paper = []
 
-    seed_only = (strategy == "Nur Seeds (keine neuen Konzepte)")
-    llm_only  = (strategy == "Nur LLM")
     hybrid_mode = (strategy == "Hybrid (NER + LLM + Relationen)")
-    allow_new = not seed_only
-    seeds_for_llm = [] if llm_only else seeds
 
     for row in papers:
         pid = row["id"]; title = row.get("title","")
@@ -531,14 +512,14 @@ def rebuild_concepts_for_all(topic: str, strategy: str, seeds: list[str]) -> dic
                 with st.expander(f"Extrahierte Relationen für {title} (Anzahl: {len(relations)})"):
                     st.json(relations[:10])  # Show first 10
         else:
-            # Use legacy LLM-only extraction
+            # Use LLM-only extraction
             concepts, links = extract_and_embed_concepts(
                 paper_title=title,
                 paragraphs=paras,
                 topic_hint=topic,
                 max_concepts=30,
-                seed_names=seeds_for_llm,
-                allow_new=allow_new,
+                seed_names=[],
+                allow_new=True,
                 neo_client=neo
             )
             
@@ -546,7 +527,7 @@ def rebuild_concepts_for_all(topic: str, strategy: str, seeds: list[str]) -> dic
             # Vorschau im GUI anzeigen und optional anlegen
             try:
                 with st.expander(f"Vorgeschlagene Konzepte für {title} (Anzahl: {len(concepts)})"):
-                    st.write("Preview der vorgeschlagenen Konzepte (Seed-Konzepte kombiniert mit neuen Kandidaten).")
+                    st.write("Preview der vorgeschlagenen Konzepte.")
                     st.json(concepts)
                     if not hybrid_mode:  # Hybrid mode already persists
                         auto_add = st.checkbox("Vorgeschlagene Konzepte automatisch in DB anlegen", value=True, key=f"auto_add_preview_{pid}")
@@ -711,40 +692,21 @@ with tab_did:
 
 # ---- Tab: Konzepte (Topic + Seed-Liste, Pre-Ingest) ----
 with tab_concepts:
-    st.subheader("Topic & Konzepte festlegen (vor dem Ingest)")
+    st.subheader("Topic & Konzepte festlegen")
     default_topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
     topic = st.text_input("Umbrella-Topic", value=default_topic)
     st.session_state["concept_topic"] = topic
 
-    st.markdown("**Seed-Konzepte** (ein Konzept pro Zeile)")
-    default_seed_text = st.session_state.get("concept_seed_text", "Green AI\nReinforcement Learning\nComputer Vision")
-    seed_text = st.text_area("Seedliste", value=default_seed_text, height=140)
-    st.session_state["concept_seed_text"] = seed_text
-    seeds = parse_seed_input(seed_text)
-
     mode = st.radio(
         "Konzept-Strategie",
-        ["Nur Seeds (keine neuen Konzepte)", "Seeds + LLM-Erweiterung", "Nur LLM", "Hybrid (NER + LLM + Relationen)"],
+        ["LLM", "Hybrid (NER + LLM + Relationen)"],
         index=1,
         help="Bestimmt, wie beim Ingest Konzepte erzeugt/verknüpft werden. Hybrid-Modus nutzt Named Entity Recognition + LLM und extrahiert auch semantische Relationen."
     )
     st.session_state["concept_mode"] = mode
 
-    colC1, colC2, colC3 = st.columns(3)
+    colC1, colC2 = st.columns(2)
     with colC1:
-        if st.button("Seeds in DB anlegen/aktualisieren"):
-            try:
-                neo = get_neo()
-                concepts = seed_names_to_concepts(seeds)
-                if not concepts:
-                    st.warning("Keine gültigen Seeds gefunden.")
-                else:
-                    neo.upsert_topic(topic)
-                    neo.add_concepts(topic, concepts)
-                    st.success(f"{len(concepts)} Seed-Konzepte unter Topic „{topic}“ angelegt/aktualisiert.")
-            except Exception as e:
-                st.error(f"Fehler beim Anlegen der Seeds: {e}")
-    with colC2:
         if st.button("Vorhandene Konzepte anzeigen"):
             neo = get_neo()
             rows = neo.run("""
@@ -757,7 +719,10 @@ with tab_concepts:
                 LIMIT 200
             """, {"topic": topic})
             st.dataframe(rows, use_container_width=True)
-    with colC3:
+    with colC2:
+        st.info("Konzepte werden automatisch beim Ingest extrahiert. Wähle oben den gewünschten Modus.")
+
+
         st.info("Seeds werden beim Ingest genutzt. Modus und Topic kannst du hier vorgeben.")
 
 
@@ -769,9 +734,8 @@ with tab_concepts:
         if st.button("Konzepte aus bestehenden Papern extrahieren"):
             with st.spinner("Extrahiere Konzepte & verknüpfe Absätze …"):
                 topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-                seeds = parse_seed_input(st.session_state.get("concept_seed_text", ""))
-                strategy = st.session_state.get("concept_mode", "Seeds + LLM-Erweiterung")
-                rep = rebuild_concepts_for_all(topic, strategy, seeds)
+                strategy = st.session_state.get("concept_mode", "Hybrid (NER + LLM + Relationen)")
+                rep = rebuild_concepts_for_all(topic, strategy)
             st.success(f"Fertig: {rep['total_concepts']} Konzepte, {rep['total_links']} Links.")
             with st.expander("Details pro Paper"):
                 st.json(rep["per_paper"])
@@ -937,8 +901,7 @@ with tab_ingest:
 
     # Kleines Status-Banner zu Konzept-Einstellungen
     st.markdown(f"**Aktuelles Topic:** `{st.session_state.get('concept_topic','—')}`  •  "
-                f"**Seeds:** {len(parse_seed_input(st.session_state.get('concept_seed_text','')))}  •  "
-                f"**Strategie:** `{st.session_state.get('concept_mode','Seeds + LLM-Erweiterung')}`")
+                f"**Strategie:** `{st.session_state.get('concept_mode','Hybrid (NER + LLM + Relationen)')}`")
 
     def ingest_one_pdf(path: Path) -> Dict[str, Any]:
         neo = get_neo()
@@ -984,26 +947,38 @@ with tab_ingest:
 
         # ---- Konzepte je nach Strategie ----
         topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-        seed_names = parse_seed_input(st.session_state.get("concept_seed_text", ""))
-
-        strategy = st.session_state.get("concept_mode", "Seeds + LLM-Erweiterung")
-        seed_only   = (strategy == "Nur Seeds (keine neuen Konzepte)")
-        llm_only    = (strategy == "Nur LLM")
-
-        allow_new = not seed_only
-        seeds_for_llm = [] if llm_only else seed_names
-
-        # Konzepte extrahieren/zuordnen
-        concepts, links = extract_and_embed_concepts(
-            paper_title=paper_meta.get("title") or "",
-            paragraphs=paragraphs_emb,
-            topic_hint=topic,
-            max_concepts=30,
-            seed_names=seeds_for_llm,
-            allow_new=allow_new,
-            neo_client=neo,
-            persist_to_topic=True
-        )
+        strategy = st.session_state.get("concept_mode", "Hybrid (NER + LLM + Relationen)")
+        
+        hybrid_mode = (strategy == "Hybrid (NER + LLM + Relationen)")
+        
+        if hybrid_mode:
+            # Hybrid: NER + LLM + Relationen
+            full_text = "\n\n".join([p.get("text", "") for p in paragraphs_emb])
+            result = extract_and_embed_concepts_hybrid(
+                paper_title=paper_meta.get("title") or "",
+                paper_text=full_text,
+                paragraphs=paragraphs_emb,
+                topic_hint=topic,
+                max_entities=30,
+                max_relations=20,
+                use_scispacy=True,
+                neo_client=neo,
+                persist_to_topic=True
+            )
+            concepts = result.get('concepts', [])
+            links = result.get('links', [])
+        else:
+            # LLM-only mode
+            concepts, links = extract_and_embed_concepts(
+                paper_title=paper_meta.get("title") or "",
+                paragraphs=paragraphs_emb,
+                topic_hint=topic,
+                max_concepts=30,
+                seed_names=None,
+                allow_new=True,
+                neo_client=neo,
+                persist_to_topic=True
+            )
 
         # Konzepte wurden (falls vorhanden) bereits persistiert (persist_to_topic=True)
         if concepts:
