@@ -1275,6 +1275,17 @@ with tab_query:
             horizontal=True
         )
 
+        # Font size controls for local PPTX
+        with st.expander("📝 Schriftgrößen (nur lokales PPTX)"):
+            st.info("Diese Einstellungen gelten nur für das lokale python-pptx Fallback, nicht für Gamma API.")
+            colF1, colF2, colF3 = st.columns(3)
+            title_font = colF1.number_input("Folientitel (pt)", min_value=16, max_value=72, value=32, step=2)
+            body_font = colF2.number_input("Body-Text (pt)", min_value=12, max_value=48, value=18, step=2)
+            bullet_font = colF3.number_input("Bulletpoints (pt)", min_value=10, max_value=36, value=14, step=2)
+            st.session_state["pptx_title_font"] = title_font
+            st.session_state["pptx_body_font"] = body_font
+            st.session_state["pptx_bullet_font"] = bullet_font
+
         # Theme quick-test: runs a short Gamma generation to validate the theme name
         if colB.button("Test theme"):
             test_name = theme.strip() or "Oasis"
@@ -1428,6 +1439,9 @@ with tab_query:
                         use_gamma=False,
                         out_dir=str(EXPORTS_DIR),
                         template_path=st.session_state.get("gamma_template_path"),
+                        title_font_size=st.session_state.get("pptx_title_font", 32),
+                        body_font_size=st.session_state.get("pptx_body_font", 18),
+                        bullet_font_size=st.session_state.get("pptx_bullet_font", 14),
                     )
                     if gen.get("method") == "local":
                         out_file = gen["result"]["path"]

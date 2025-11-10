@@ -56,11 +56,23 @@ def _call_gamma_api(title: str, slides: List[Dict[str, Any]]) -> Dict[str, Any]:
         raise
 
 
-def _create_local_pptx(title: str, slides: List[Dict[str, Any]], out_dir: str = ".", template_path: Optional[str] = None) -> str:
+def _create_local_pptx(
+    title: str, 
+    slides: List[Dict[str, Any]], 
+    out_dir: str = ".", 
+    template_path: Optional[str] = None,
+    title_font_size: int = 32,
+    body_font_size: int = 18,
+    bullet_font_size: int = 14
+) -> str:
     """
     Erzeugt lokal eine .pptx-Datei mit python-pptx als Fallback.
 
     slides: List[dict] mit Einträgen {"title": str, "content": str|List[str]}.
+    title_font_size: Schriftgröße für Folientitel (Standard: 32pt)
+    body_font_size: Schriftgröße für erste Zeile im Body (Standard: 18pt)
+    bullet_font_size: Schriftgröße für Bulletpoints (Standard: 14pt)
+    
     Gibt den absoluten Pfad zur erzeugten Datei zurück.
     """
     if Presentation is None:
@@ -96,6 +108,11 @@ def _create_local_pptx(title: str, slides: List[Dict[str, Any]], out_dir: str = 
         sl = prs.slides.add_slide(layout)
         try:
             sl.shapes.title.text = s.get("title", "")
+            # Apply custom title font size
+            if hasattr(sl.shapes.title, 'text_frame'):
+                for paragraph in sl.shapes.title.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.size = Pt(title_font_size)
         except Exception:
             pass
         body_shape = None
@@ -167,7 +184,7 @@ def _create_local_pptx(title: str, slides: List[Dict[str, Any]], out_dir: str = 
                                 p = tf.add_paragraph()
                                 p.text = img_url
                                 p.level = 1
-                                p.font.size = Pt(12)
+                                p.font.size = Pt(bullet_font_size)
                             # continue to next line
                             continue
                         except Exception:
@@ -178,12 +195,12 @@ def _create_local_pptx(title: str, slides: List[Dict[str, Any]], out_dir: str = 
                 if i == 0:
                     p = tf.paragraphs[0]
                     p.text = ln
-                    p.font.size = Pt(14)
+                    p.font.size = Pt(body_font_size)
                 else:
                     p = tf.add_paragraph()
                     p.text = ln
                     p.level = 1
-                    p.font.size = Pt(12)
+                    p.font.size = Pt(bullet_font_size)
 
     # ensure output directory
     out_dir_path = Path(out_dir or Path.cwd())
@@ -207,8 +224,11 @@ def generate_presentation(
     answer_text: str,
     supports: List[Dict[str, Any]],
     use_gamma: bool = True,
-    out_dir: Optional[str] = None,
+    out_dir: str = "outputs/gamma",
     template_path: Optional[str] = None,
+    title_font_size: int = 32,
+    body_font_size: int = 18,
+    bullet_font_size: int = 14
 ) -> Dict[str, Any]:
     """
     Erzeugt eine Präsentation aus einer Answer-Text und zugehörigen Supports.
@@ -216,6 +236,17 @@ def generate_presentation(
     Ablauf:
       - Baut einfache Slide-Struktur aus `answer_text` und `supports`.
       - Versucht, Gamma-API zu verwenden (wenn konfiguriert), andernfalls lokaler PPTX-Fallback.
+
+    Args:
+        title: Titel der Präsentation
+        answer_text: Haupttext für die Folien
+        supports: Liste von Belegen (paragraphs/figures)
+        use_gamma: Ob Gamma API verwendet werden soll
+        out_dir: Ausgabe-Verzeichnis
+        template_path: Optional: Pfad zu PPTX-Template
+        title_font_size: Schriftgröße für Folientitel (nur lokales PPTX, Standard: 32pt)
+        body_font_size: Schriftgröße für Body-Text (nur lokales PPTX, Standard: 18pt)
+        bullet_font_size: Schriftgröße für Bulletpoints (nur lokales PPTX, Standard: 14pt)
 
     Rückgabe: Dict mit Feldern:
       - method: "gamma" | "local"
@@ -262,5 +293,14 @@ def generate_presentation(
             log.warning("Gamma API fehlgeschlagen, falle auf lokal PPTX zurück: %s", e)
 
     # 3) Local PPTX
-    out_path = _create_local_pptx(title, slides, out_dir=(out_dir or Path.cwd()), template_path=template_path)
+    out_path = _create_local_pptx(
+        title, 
+        slides, 
+        out_dir=(out_dir or Path.cwd()), 
+        template_path=template_path,
+        title_font_size=title_font_size,
+        body_font_size=body_font_size,
+        bullet_font_size=bullet_font_size
+    )
     return {"method": "local", "result": {"path": out_path}, "slides": slides}
+
