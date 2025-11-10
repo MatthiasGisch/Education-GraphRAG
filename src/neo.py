@@ -784,3 +784,262 @@ class Neo4jClient:
         )
         
         return {"merged": True, "source_id": source_id, "target_id": target_id}
+
+    # =============================================================================
+    # SEMANTIC RELATIONS (NEW)
+    # =============================================================================
+
+    def add_semantic_relations(self, paper_id: str, relations: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Add semantic relations extracted from a paper.
+        
+        Args:
+            paper_id: The paper ID these relations belong to
+            relations: List of relation dicts with structure:
+                {
+                    "subject": str,  # Entity name
+                    "predicate": str,  # Relation type (IS_A, PART_OF, etc.)
+                    "object": str,  # Entity name
+                    "confidence": float,  # 0.0-1.0
+                    "context": str,  # Sentence/phrase where relation appears
+                    "source": str  # "llm" or "cooccurrence"
+                }
+        
+        Returns:
+            Statistics about relations created/updated
+        """
+        import logging
+        log = logging.getLogger(__name__)
+        
+        if not relations:
+            return {"created": 0, "updated": 0, "skipped": 0}
+        
+        stats = {"created": 0, "updated": 0, "skipped": 0}
+        
+        # Process each relation
+        for rel in relations:
+            try:
+                subject = rel.get("subject")
+                predicate = rel.get("predicate", "RELATED_TO")
+                obj = rel.get("object")
+                confidence = rel.get("confidence", 0.7)
+                context = rel.get("context", "")
+                source = rel.get("source", "llm")
+                
+                if not subject or not obj:
+                    stats["skipped"] += 1
+                    continue
+                
+                # Create concept IDs (same logic as in concept_extract.py)
+                subject_id = self._concept_slug(subject)
+                object_id = self._concept_slug(obj)
+                
+                # Ensure both concepts exist (merge will create if not exists)
+                result = self.run(
+                    """
+                    MERGE (s:Concept {concept_id: $subject_id})
+                    ON CREATE SET s.name = $subject
+                    MERGE (o:Concept {concept_id: $object_id})
+                    ON CREATE SET o.name = $object
+                    
+                    // Check if relation exists
+                    OPTIONAL MATCH (s)-[r:SEMANTIC_RELATION {relation_type: $predicate}]->(o)
+                    
+                    // Create or update relation
+                    WITH s, o, r,
+                         CASE WHEN r IS NULL THEN 'created' ELSE 'updated' END AS operation
+                    MERGE (s)-[rel:SEMANTIC_RELATION {relation_type: $predicate}]->(o)
+                    SET rel.confidence = $confidence,
+                        rel.context = $context,
+                        rel.source = $source,
+                        rel.paper_id = $paper_id,
+                        rel.updated_at = datetime()
+                    ON CREATE SET rel.created_at = datetime()
+                    
+                    RETURN operation
+                    """,
+                    {
+                        "subject_id": subject_id,
+                        "subject": subject,
+                        "object_id": object_id,
+                        "object": obj,
+                        "predicate": predicate,
+                        "confidence": confidence,
+                        "context": context,
+                        "source": source,
+                        "paper_id": paper_id
+                    }
+                )
+                
+                if result and result[0].get("operation") == "created":
+                    stats["created"] += 1
+                else:
+                    stats["updated"] += 1
+                    
+            except Exception as e:
+                log.warning(f"Failed to add relation {rel}: {e}")
+                stats["skipped"] += 1
+                continue
+        
+        return stats
+
+    def add_cooccurrence_relations(self, paper_id: str, cooccurrences: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Add co-occurrence relations between concepts.
+        
+        Args:
+            paper_id: The paper ID these relations belong to
+            cooccurrences: List of dicts with:
+                {
+                    "concept1": str,
+                    "concept2": str,
+                    "count": int,
+                    "strength": float  # normalized 0.0-1.0
+                }
+        
+        Returns:
+            Statistics about relations created
+        """
+        import logging
+        log = logging.getLogger(__name__)
+        
+        if not cooccurrences:
+            return {"created": 0, "updated": 0}
+        
+        stats = {"created": 0, "updated": 0}
+        
+        for cooc in cooccurrences:
+            try:
+                c1 = cooc.get("concept1")
+                c2 = cooc.get("concept2")
+                count = cooc.get("count", 1)
+                strength = cooc.get("strength", 0.5)
+                
+                if not c1 or not c2:
+                    continue
+                
+                c1_id = self._concept_slug(c1)
+                c2_id = self._concept_slug(c2)
+                
+                result = self.run(
+                    """
+                    MERGE (c1:Concept {concept_id: $c1_id})
+                    ON CREATE SET c1.name = $c1
+                    MERGE (c2:Concept {concept_id: $c2_id})
+                    ON CREATE SET c2.name = $c2
+                    
+                    // Create bidirectional co-occurrence (undirected)
+                    OPTIONAL MATCH (c1)-[r:CO_OCCURS_WITH]-(c2)
+                    
+                    WITH c1, c2, r,
+                         CASE WHEN r IS NULL THEN 'created' ELSE 'updated' END AS operation
+                    MERGE (c1)-[rel:CO_OCCURS_WITH]-(c2)
+                    SET rel.count = coalesce(rel.count, 0) + $count,
+                        rel.strength = $strength,
+                        rel.paper_id = $paper_id,
+                        rel.updated_at = datetime()
+                    ON CREATE SET rel.created_at = datetime()
+                    
+                    RETURN operation
+                    """,
+                    {
+                        "c1_id": c1_id,
+                        "c1": c1,
+                        "c2_id": c2_id,
+                        "c2": c2,
+                        "count": count,
+                        "strength": strength,
+                        "paper_id": paper_id
+                    }
+                )
+                
+                if result and result[0].get("operation") == "created":
+                    stats["created"] += 1
+                else:
+                    stats["updated"] += 1
+                    
+            except Exception as e:
+                log.warning(f"Failed to add co-occurrence {cooc}: {e}")
+                continue
+        
+        return stats
+
+    def get_concept_relations(self, concept_id: str, relation_types: List[str] = None, 
+                             min_confidence: float = 0.0) -> Dict[str, Any]:
+        """
+        Get all relations for a concept.
+        
+        Args:
+            concept_id: The concept ID
+            relation_types: Optional list of relation types to filter (e.g., ["IS_A", "PART_OF"])
+            min_confidence: Minimum confidence threshold
+        
+        Returns:
+            Dict with outgoing and incoming relations
+        """
+        type_filter = ""
+        if relation_types:
+            types_str = ", ".join([f"'{t}'" for t in relation_types])
+            type_filter = f"AND r.relation_type IN [{types_str}]"
+        
+        # Outgoing semantic relations
+        outgoing = self.run(
+            f"""
+            MATCH (c:Concept {{concept_id: $cid}})-[r:SEMANTIC_RELATION]->(target:Concept)
+            WHERE r.confidence >= $min_conf {type_filter}
+            RETURN r.relation_type AS relation_type,
+                   target.concept_id AS target_id,
+                   target.name AS target_name,
+                   r.confidence AS confidence,
+                   r.context AS context,
+                   r.source AS source
+            ORDER BY r.confidence DESC
+            """,
+            {"cid": concept_id, "min_conf": min_confidence}
+        )
+        
+        # Incoming semantic relations
+        incoming = self.run(
+            f"""
+            MATCH (source:Concept)-[r:SEMANTIC_RELATION]->(c:Concept {{concept_id: $cid}})
+            WHERE r.confidence >= $min_conf {type_filter}
+            RETURN r.relation_type AS relation_type,
+                   source.concept_id AS source_id,
+                   source.name AS source_name,
+                   r.confidence AS confidence,
+                   r.context AS context,
+                   r.source AS source
+            ORDER BY r.confidence DESC
+            """,
+            {"cid": concept_id, "min_conf": min_confidence}
+        )
+        
+        # Co-occurrence relations
+        cooccurrences = self.run(
+            """
+            MATCH (c:Concept {concept_id: $cid})-[r:CO_OCCURS_WITH]-(other:Concept)
+            RETURN other.concept_id AS other_id,
+                   other.name AS other_name,
+                   r.count AS count,
+                   r.strength AS strength
+            ORDER BY r.strength DESC
+            LIMIT 20
+            """,
+            {"cid": concept_id}
+        )
+        
+        return {
+            "outgoing": outgoing,
+            "incoming": incoming,
+            "cooccurrences": cooccurrences
+        }
+
+    def _concept_slug(self, name: str) -> str:
+        """Create a slug for concept ID (same logic as in concept_extract.py)."""
+        import re
+        slug = name.lower().strip()
+        slug = re.sub(r"[^\w\s-]", "", slug)
+        slug = re.sub(r"[\s_]+", "-", slug)
+        slug = slug[:100]
+        return slug
+

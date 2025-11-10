@@ -42,3 +42,15 @@ OPTIONS { indexConfig: {
   `vector.dimensions`: 3072,
   `vector.similarity_function`: 'cosine'
 }};
+
+// ---------- Semantic Relations ----------
+// Indexes for relation properties to enable efficient querying
+CREATE INDEX relation_type_index IF NOT EXISTS
+FOR ()-[r:SEMANTIC_RELATION]-() ON (r.relation_type);
+
+CREATE INDEX relation_confidence_index IF NOT EXISTS
+FOR ()-[r:SEMANTIC_RELATION]-() ON (r.confidence);
+
+// Index for co-occurrence relations
+CREATE INDEX cooccurrence_strength_index IF NOT EXISTS
+FOR ()-[r:CO_OCCURS_WITH]-() ON (r.strength);

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.concept_extract import extract_and_embed_concepts
+from src.concept_extract import extract_and_embed_concepts, extract_and_embed_concepts_hybrid
 from src.neo import Neo4jClient
 from src.pdf_ingest import (
     read_pdf_text_and_images,  # -> (paper_meta, sections, paragraphs, figures)
@@ -90,14 +90,35 @@ def ingest_one(pdf_path: Path, neo: Neo4jClient) -> Dict[str, Any]:
     neo.add_paragraphs(paper_meta["paper_id"], paragraphs_emb)
 
     # --- Concepts: aus Absätzen extrahieren, einfügen, verlinken ---
-    concepts, links = extract_and_embed_concepts(
+    # Option 1: Legacy-Extraktion (nur LLM)
+    # concepts, links = extract_and_embed_concepts(
+    #     paper_title=paper_meta.get("title") or "",
+    #     paragraphs=paragraphs_emb,
+    #     topic_hint="Künstliche Intelligenz",
+    #     max_concepts=30,
+    #     neo_client=neo,
+    #     persist_to_topic=True
+    # )
+    
+    # Option 2: Hybrid-Extraktion (NER + LLM + Relationen) - EMPFOHLEN
+    full_text = "\n\n".join([p.get("text", "") for p in paragraphs_emb])
+    extraction_result = extract_and_embed_concepts_hybrid(
         paper_title=paper_meta.get("title") or "",
+        paper_text=full_text,
         paragraphs=paragraphs_emb,
         topic_hint="Künstliche Intelligenz",
-        max_concepts=30,
+        max_entities=30,
+        max_relations=20,
+        use_scispacy=True,
         neo_client=neo,
         persist_to_topic=True
     )
+    concepts = extraction_result["concepts"]
+    links = extraction_result["paragraph_links"]
+    relations = extraction_result["relations"]
+    
+    print(f"  Extracted: {len(concepts)} concepts, {len(relations)} relations")
+    
     # Konzepte wurden (falls vorhanden) direkt persistiert
     try:
         neo.attach_concepts_to_existing_umbrella("Künstliche Intelligenz")

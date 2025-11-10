@@ -36,6 +36,7 @@ from src.pdf_export import write_answer_pdf
 from src.agent import answer_query
 from src.concept_extract import (
     extract_and_embed_concepts,
+    extract_and_embed_concepts_hybrid,
     seed_names_to_concepts
 )
 
@@ -491,6 +492,7 @@ def rebuild_concepts_for_all(topic: str, strategy: str, seeds: list[str]) -> dic
 
     seed_only = (strategy == "Nur Seeds (keine neuen Konzepte)")
     llm_only  = (strategy == "Nur LLM")
+    hybrid_mode = (strategy == "Hybrid (NER + LLM + Relationen)")
     allow_new = not seed_only
     seeds_for_llm = [] if llm_only else seeds
 
@@ -498,35 +500,64 @@ def rebuild_concepts_for_all(topic: str, strategy: str, seeds: list[str]) -> dic
         pid = row["id"]; title = row.get("title","")
         paras = neo.run("""
             MATCH (p:Paper {paper_id:$pid})-[:HAS_PARAGRAPH]->(para:Paragraph)
-            RETURN para.paragraph_id AS paragraph_id, para.text AS text
+            RETURN para.paragraph_id AS paragraph_id, para.text AS text, para.paper_id AS paper_id
             ORDER BY para.paragraph_id
         """, {"pid": pid})
         if not paras:
             per_paper.append({"paper_id": pid, "title": title, "n_concepts": 0, "n_links": 0, "note": "keine Paragraphs"})
             continue
 
-        concepts, links = extract_and_embed_concepts(
-            paper_title=title,
-            paragraphs=paras,
-            topic_hint=topic,
-            max_concepts=30,
-            seed_names=seeds_for_llm,
-            allow_new=allow_new,
-            neo_client=neo
-        )
+        # Choose extraction method based on strategy
+        if hybrid_mode:
+            # Use hybrid NER+LLM extraction with relations
+            full_text = "\n\n".join([p.get("text", "") for p in paras])
+            extraction_result = extract_and_embed_concepts_hybrid(
+                paper_title=title,
+                paper_text=full_text,
+                paragraphs=paras,
+                topic_hint=topic,
+                max_entities=30,
+                max_relations=20,
+                use_scispacy=True,
+                neo_client=neo,
+                persist_to_topic=True
+            )
+            concepts = extraction_result["concepts"]
+            links = extraction_result["paragraph_links"]
+            relations = extraction_result["relations"]
+            
+            # Display relation info
+            if relations:
+                with st.expander(f"Extrahierte Relationen für {title} (Anzahl: {len(relations)})"):
+                    st.json(relations[:10])  # Show first 10
+        else:
+            # Use legacy LLM-only extraction
+            concepts, links = extract_and_embed_concepts(
+                paper_title=title,
+                paragraphs=paras,
+                topic_hint=topic,
+                max_concepts=30,
+                seed_names=seeds_for_llm,
+                allow_new=allow_new,
+                neo_client=neo
+            )
+            
         if concepts:
             # Vorschau im GUI anzeigen und optional anlegen
             try:
                 with st.expander(f"Vorgeschlagene Konzepte für {title} (Anzahl: {len(concepts)})"):
                     st.write("Preview der vorgeschlagenen Konzepte (Seed-Konzepte kombiniert mit neuen Kandidaten).")
                     st.json(concepts)
-                    auto_add = st.checkbox("Vorgeschlagene Konzepte automatisch in DB anlegen", value=True, key=f"auto_add_preview_{pid}")
+                    if not hybrid_mode:  # Hybrid mode already persists
+                        auto_add = st.checkbox("Vorgeschlagene Konzepte automatisch in DB anlegen", value=True, key=f"auto_add_preview_{pid}")
+                    else:
+                        auto_add = False  # Already persisted in hybrid mode
             except Exception:
                 auto_add = True
-            if auto_add:
+            if auto_add and not hybrid_mode:
                 neo.upsert_topic(topic)
                 neo.add_concepts(topic, concepts)
-        if links:
+        if links and not hybrid_mode:  # Hybrid mode already persists links
             neo.link_paragraphs_to_concepts(pid, links)
 
         total_concepts += len(concepts)
@@ -693,9 +724,9 @@ with tab_concepts:
 
     mode = st.radio(
         "Konzept-Strategie",
-        ["Nur Seeds (keine neuen Konzepte)", "Seeds + LLM-Erweiterung", "Nur LLM"],
+        ["Nur Seeds (keine neuen Konzepte)", "Seeds + LLM-Erweiterung", "Nur LLM", "Hybrid (NER + LLM + Relationen)"],
         index=1,
-        help="Bestimmt, wie beim Ingest Konzepte erzeugt/verknüpft werden."
+        help="Bestimmt, wie beim Ingest Konzepte erzeugt/verknüpft werden. Hybrid-Modus nutzt Named Entity Recognition + LLM und extrahiert auch semantische Relationen."
     )
     st.session_state["concept_mode"] = mode
 

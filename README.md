@@ -16,21 +16,69 @@ Dieses Repo ist ein minimaler, lauffähiger Startpunkt für ein **GraphRAG-Hybri
    ```bash
    pip install -r requirements.txt
    ```
-3. **Schema in Neo4j anlegen**
+3. **spaCy Modelle installieren (für Hybrid-Extraktion)**
+   ```bash
+   python -m spacy download en_core_web_sm
+   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
+   ```
+4. **Schema in Neo4j anlegen**
    ```bash
    python scripts/create_schema.py
    ```
-4. **PDFs ingestieren** (Pfad(e) zu deinen PDFs angeben)
+5. **PDFs ingestieren** (Pfad(e) zu deinen PDFs angeben)
    ```bash
    python scripts/ingest.py /pfad/zu/deinen.pdf /weitere/datei.pdf
    ```
    Bilder werden in `data/images/` abgelegt und als `Figure`-Knoten verknüpft.
-5. **Fragen stellen (GraphRAG)**
+6. **Fragen stellen (GraphRAG)**
    ```bash
    python scripts/ask.py "Erkläre Green AI und nenne Belege."
    ```
-6. **GUI Starten**
+7. **GUI Starten**
+   ```bash
    streamlit run .\scripts\gui_app.py
+   ```
+
+## Features
+
+### Hybrid Entity & Relation Extraction (NEU)
+Das System bietet jetzt eine erweiterte Extraktion, die folgendes kombiniert:
+
+- **Named Entity Recognition (NER)**: spaCy + SciSpacy für strukturierte Entitäten (PERSON, ORG, SCIENTIFIC_TERM, CHEMICAL, etc.)
+- **LLM-basierte Konzeptextraktion**: Erfasst abstrakte Konzepte, Methodologien und Theorien
+- **Semantische Relationen**: Extrahiert Tripel (Subject-Predicate-Object) wie IS_A, PART_OF, CAUSES, etc.
+- **Ko-Okkurrenz-Analyse**: Statistische Beziehungen zwischen häufig gemeinsam auftretenden Konzepten
+
+#### Verwendung im Code:
+```python
+from src.concept_extract import extract_and_embed_concepts_hybrid
+
+result = extract_and_embed_concepts_hybrid(
+    paper_title="Mein Paper",
+    paper_text=full_text,
+    paragraphs=paragraphs,
+    max_entities=30,
+    max_relations=20,
+    use_scispacy=True,
+    neo_client=neo,
+    persist_to_topic=True
+)
+
+# result enthält: concepts, relations, paragraph_links, stats
+```
+
+#### GUI-Integration:
+In der Streamlit-GUI kannst du unter "Konzept-Strategie" den Modus **"Hybrid (NER + LLM + Relationen)"** wählen, um die erweiterte Extraktion zu nutzen.
+
+### Relation Types im Graph:
+- `SEMANTIC_RELATION` - Semantische Beziehungen mit Properties:
+  - `relation_type`: IS_A, PART_OF, CAUSES, REQUIRES, USES, etc.
+  - `confidence`: Konfidenzwert (0.0-1.0)
+  - `context`: Satz/Phrase, in dem die Relation erscheint
+  - `source`: "llm" oder "cooccurrence"
+- `CO_OCCURS_WITH` - Ko-Okkurrenz-Beziehungen mit Properties:
+  - `count`: Anzahl gemeinsamer Vorkommen
+  - `strength`: Normalisierte Stärke (0.0-1.0)
 
 ## Projektstruktur
 ```
