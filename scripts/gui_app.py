@@ -954,18 +954,16 @@ st.sidebar.markdown("**Tipp:** `.env` anpassen und App neu starten, wenn Keys/UR
 # Main Tabs
 # =========================
 st.title("GraphRAG Pipeline – GUI")
-# Add Synthesia tab (before Info) and a dedicated Cypher tab
-tab_concepts, tab_ingest, tab_query, tab_cypher, tab_did, tab_about = st.tabs([
+tab_concepts, tab_ingest, tab_query, tab_cypher, tab_synthesia = st.tabs([
     "🧩 Konzepte",
     "📥 Ingest",
     "❓ Fragen & Export",
     "🔎 Cypher",
     "🎬 PPTX → Synthesia",
-    "ℹ️ Info",
 ])
 
 # ---- Tab: PPTX -> Synthesia (upload / select PPTX then send to Synthesia)
-with tab_did:
+with tab_synthesia:
     st.subheader("🎬 PPTX → Synthesia: Erzeuge Lernvideo via Synthesia API")
     st.markdown("Lade eine `.pptx` hoch oder wähle eine vorhandene Datei aus `exports/` und sende sie an Synthesia.")
     col1, col2 = st.columns([2, 1])
@@ -2048,18 +2046,3 @@ with tab_query:
                         visualize_records_as_graph(recs_graph, height=700)
                 except Exception as e:
                     st.error(f"Fehler beim Laden der Umbrella-Ansicht: {e}")
-
-
-# ---- Tab: Info ----
-with tab_about:
-    st.markdown("""
-**Workflow**  
-1) *Schema anlegen* → 2) **Konzepte/Topic festlegen** → 3) *PDFs ingestieren* → 4) *Graph stitchen* → 5) *Frage stellen* → 6) *(optional) PDF exportieren*.
-
-**Hinweise**
-- Topic + Seed-Konzepte werden beim Ingest genutzt. Strategie:
-  - *Nur Seeds* → ausschließlich auf Seeds mappen (keine neuen Konzepte).
-  - *Seeds + LLM-Erweiterung* → Seeds bevorzugt, neue Konzepte erlaubt.
-  - *Nur LLM* → Seeds ignorieren, LLM bestimmt Konzepte.
-- „Graph leeren“ entfernt alle Daten, **nicht** die Indizes/Constraints.
-""")

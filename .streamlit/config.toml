@@ -1,0 +1,77 @@
+# Streamlit Theme Configuration
+# Dokumentation: https://docs.streamlit.io/library/advanced-features/configuration
+
+[theme]
+# Primary color (verwendet für Buttons, Links, aktive Elemente)
+primaryColor = "hsla(140, 30%, 40%, 1.00)"
+
+# Background color (Haupt-Hintergrund)
+backgroundColor = "hsla(240, 10%, 10%, 1.00)"
+
+# Secondary background color (Sidebar, Expander, etc.)
+secondaryBackgroundColor = "hsla(240, 10%, 5%, 1.00)"
+
+# Text color (Haupttext)
+textColor = "hsla(240, 10%, 85%, 1.00)"
+
+# Font family
+font = "sans serif"  # "sans serif", "serif", oder "monospace"
+
+
+# ============================================
+# ALTERNATIVE THEMES (Kommentar entfernen zum Aktivieren)
+# ============================================
+
+# --- DARK MODE ---
+# primaryColor = "#FF4B4B"
+# backgroundColor = "#0E1117"
+# secondaryBackgroundColor = "#262730"
+# textColor = "#FAFAFA"
+# font = "sans serif"
+
+# --- WISSENSCHAFTLICH (Blau/Grau) ---
+# primaryColor = "#1E88E5"  # Professional Blue
+# backgroundColor = "#FFFFFF"
+# secondaryBackgroundColor = "#ECEFF1"  # Blueish Grey
+# textColor = "#263238"  # Dark Grey
+# font = "sans serif"
+
+# --- GRÜN/NATUR ---
+# primaryColor = "#4CAF50"  # Green
+# backgroundColor = "#FAFAFA"
+# secondaryBackgroundColor = "#E8F5E9"  # Light Green
+# textColor = "#1B5E20"  # Dark Green
+# font = "sans serif"
+
+# --- CORPORATE/PROFESSIONAL ---
+# primaryColor = "#004D7A"  # Dark Blue
+# backgroundColor = "#FFFFFF"
+# secondaryBackgroundColor = "#F5F7FA"  # Very Light Blue
+# textColor = "#2C3E50"  # Dark Blue-Grey
+# font = "sans serif"
+
+# --- HOCHKONTRAST ---
+# primaryColor = "#E91E63"  # Pink
+# backgroundColor = "#FFFFFF"
+# secondaryBackgroundColor = "#F3F3F3"
+# textColor = "#000000"
+# font = "sans serif"
+
+
+# ============================================
+# WEITERE EINSTELLUNGEN
+# ============================================
+
+[server]
+# Port (default: 8501)
+# port = 8501
+
+# Wenn true, öffnet sich Browser automatisch
+# headless = false
+
+# Max upload size in MB
+maxUploadSize = 200
+
+[browser]
+# Browser automatisch öffnen
+gatherUsageStats = false
