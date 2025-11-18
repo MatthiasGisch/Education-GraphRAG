@@ -1,11 +1,12 @@
 from __future__ import annotations
-import fitz, os, uuid, json
-from typing import List, Dict, Any, Tuple
+import fitz, os, uuid, json, re
+from typing import List, Dict, Any, Tuple, Optional
 from tqdm import tqdm
 from PIL import Image
 from .config import IMAGES_DIR, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
 from .openai_client import embed_text, describe_image
 import hashlib
+import imagehash
 
 def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -127,13 +128,144 @@ def extract_images_with_bbox(page) -> list[dict]:
             out.append({"bbox": [x0, y0, x1, y1], "page_width": W, "page_height": H})
     return out
 
+
+def extract_figure_label(text: str) -> Optional[str]:
+    """
+    Extrahiert Figure-Label aus Text wie "Figure 1:", "Fig. 2.3:", "Abb. 5", etc.
+    """
+    patterns = [
+        r'\b(?:Figure|Fig\.|Abb\.|Abbildung)\s+(\d+(?:\.\d+)?)',
+        r'\bFigure\s+(\d+(?:\.\d+)?)\s*[:\.]',
+        r'\bFig\.\s*(\d+(?:\.\d+)?)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return f"Figure {match.group(1)}"
+    return None
+
+
+def find_caption_for_image(image_bbox: list, text_blocks: list, y_tolerance: int = 50, x_tolerance: int = 20) -> tuple[str, Optional[str]]:
+    """
+    Intelligente Caption-Suche für Bilder:
+    1. Sucht Text unterhalb des Bildes (y_tolerance)
+    2. Muss horizontal aligned sein (x_tolerance)
+    3. Extrahiert Figure-Label wenn vorhanden
+    4. Filtert Section-Header aus (zu weit weg, zu groß)
+    
+    Returns: (caption_text, figure_label)
+    """
+    x0, y0, x1, y1 = image_bbox
+    img_bottom = y1
+    img_center_x = (x0 + x1) / 2
+    img_width = x1 - x0
+    
+    candidates = []
+    
+    for tb in text_blocks:
+        tb_x0, tb_y0, tb_x1, tb_y1 = tb["bbox"]
+        tb_top = tb_y0
+        tb_center_x = (tb_x0 + tb_x1) / 2
+        
+        # 1. Muss unterhalb des Bildes sein
+        if tb_top < img_bottom:
+            continue
+        
+        # 2. Vertikaler Abstand muss klein sein
+        vertical_distance = tb_top - img_bottom
+        if vertical_distance > y_tolerance:
+            continue
+        
+        # 3. Horizontal alignment prüfen (Caption sollte unter Bild sein)
+        horizontal_distance = abs(tb_center_x - img_center_x)
+        if horizontal_distance > img_width / 2 + x_tolerance:
+            continue
+        
+        # 4. Text darf nicht zu kurz sein (min. 10 Zeichen für Caption)
+        text = tb.get("text", "").strip()
+        if len(text) < 10:
+            continue
+        
+        # 5. Kandidat hinzufügen mit Score (näher = besser)
+        candidates.append({
+            "text": text,
+            "distance": vertical_distance,
+            "horizontal_offset": horizontal_distance
+        })
+    
+    if not candidates:
+        return "", None
+    
+    # Sortiere nach vertikalem Abstand (näher ist besser)
+    candidates.sort(key=lambda c: (c["distance"], c["horizontal_offset"]))
+    
+    # Nimm den nächsten Kandidaten
+    caption_text = candidates[0]["text"]
+    
+    # Extrahiere Figure-Label
+    figure_label = extract_figure_label(caption_text)
+    
+    return caption_text, figure_label
+
+
+def match_bbox_to_xref(image_bboxes: list, xref_list: list, page) -> dict:
+    """
+    Spatial Matching: Ordnet xref (image index) der passenden BBox zu.
+    Nutzt Position und Größe statt Reihenfolge.
+    
+    Returns: {xref: bbox_index} mapping
+    """
+    if not image_bboxes:
+        return {}
+    
+    doc = page.parent
+    mapping = {}
+    
+    for idx, img_info in enumerate(xref_list):
+        xref = img_info[0]
+        
+        # Hole Image-Rects von der Page
+        img_rects = page.get_image_rects(xref)
+        
+        if not img_rects:
+            continue
+        
+        # Nimm das erste Rect (meist gibt es nur eins)
+        img_rect = img_rects[0]
+        img_bbox = [img_rect.x0, img_rect.y0, img_rect.x1, img_rect.y1]
+        
+        # Finde beste BBox-Match (kleinster Abstand)
+        best_match_idx = None
+        best_distance = float('inf')
+        
+        for bbox_idx, bbox_info in enumerate(image_bboxes):
+            bbox = bbox_info["bbox"]
+            
+            # Berechne Zentrum-Distanz
+            img_center_x = (img_bbox[0] + img_bbox[2]) / 2
+            img_center_y = (img_bbox[1] + img_bbox[3]) / 2
+            bbox_center_x = (bbox[0] + bbox[2]) / 2
+            bbox_center_y = (bbox[1] + bbox[3]) / 2
+            
+            distance = ((img_center_x - bbox_center_x) ** 2 + 
+                       (img_center_y - bbox_center_y) ** 2) ** 0.5
+            
+            if distance < best_distance:
+                best_distance = distance
+                best_match_idx = bbox_idx
+        
+        # Nur matchen wenn Distanz klein genug (< 50 Pixel)
+        if best_match_idx is not None and best_distance < 50:
+            mapping[xref] = best_match_idx
+    
+    return mapping
+
+
 def nearest_caption_after(image_bbox, text_blocks, y_tol=30):
-    """Suche Textblock direkt unterhalb des Bilds als Caption (heuristisch)."""
-    _, _, _, img_bottom = image_bbox
-    candidates = [tb for tb in text_blocks if tb["bbox"][1] >= img_bottom and (tb["bbox"][1]-img_bottom) <= y_tol]
-    if candidates:
-        return sorted(candidates, key=lambda tb: tb["bbox"][1])[0]["text"]
-    return ""
+    """DEPRECATED: Use find_caption_for_image instead."""
+    caption, _ = find_caption_for_image(image_bbox, text_blocks, y_tolerance=y_tol)
+    return caption
 
 def read_pdf_text_and_images(path: str):
     """
@@ -197,45 +329,100 @@ def read_pdf_text_and_images(path: str):
                 "section_id_ref": sec["section_id"] if sec else None,
             })
 
-        # --- BILDPFAD ---
+        # --- BILDEXTRAKTION (verbessert) ---
         # 1) BBoxen sammeln
-        img_blocks = extract_images_with_bbox(page)  # kann leer sein
-        # 2) Bilddateien physisch extrahieren
-        for img_idx, img in enumerate(page.get_images(full=True)):
+        img_blocks = extract_images_with_bbox(page)
+        
+        # 2) Spatial Matching: xref → bbox
+        img_list = page.get_images(full=True)
+        xref_to_bbox = match_bbox_to_xref(img_blocks, img_list, page)
+        
+        # 3) Duplikat-Tracking (via perceptual hash)
+        seen_hashes = set()
+        
+        # 4) Bilddateien physisch extrahieren
+        for img_idx, img in enumerate(img_list):
             xref = img[0]
-            pix = fitz.Pixmap(doc, xref)
             
-            # Always check for alpha and decide format accordingly
-            # If alpha channel exists, save as PNG (supports transparency)
-            # Otherwise save as JPG (better compression)
-            if pix.alpha:
-                # Keep alpha channel and save as PNG
-                img_path = os.path.join(IMAGES_DIR, f"{paper_id}_{page_num1}_{xref}.png")
+            try:
+                pix = fitz.Pixmap(doc, xref)
+                
+                # Quality Check: Größenfilter (ignoriere kleine Icons/Logos)
+                width, height = pix.width, pix.height
+                if width < 50 or height < 50:
+                    continue  # Zu klein, wahrscheinlich Icon/Logo
+                
+                # Temporär speichern für Hash-Berechnung
+                if pix.alpha:
+                    temp_format = "PNG"
+                    img_path = os.path.join(IMAGES_DIR, f"{paper_id}_{page_num1}_{xref}.png")
+                else:
+                    # Ensure RGB colorspace for JPG
+                    if pix.colorspace and pix.colorspace.name not in ["DeviceRGB", "CalRGB"]:
+                        pix_rgb = fitz.Pixmap(fitz.csRGB, pix)
+                        pix = None
+                        pix = pix_rgb
+                    temp_format = "JPEG"
+                    img_path = os.path.join(IMAGES_DIR, f"{paper_id}_{page_num1}_{xref}.jpg")
+                
+                # Speichern
                 pix.save(img_path)
-            else:
-                # No alpha channel, safe to save as JPG
-                # But ensure it's in RGB colorspace for JPG compatibility
-                if pix.colorspace and pix.colorspace.name not in ["DeviceRGB", "CalRGB"]:
-                    pix_rgb = fitz.Pixmap(fitz.csRGB, pix)
-                    pix = None  # Release original
-                    pix = pix_rgb
-                img_path = os.path.join(IMAGES_DIR, f"{paper_id}_{page_num1}_{xref}.jpg")
-                pix.save(img_path)
-
-            # BBox heuristisch zuordnen (gleiche Reihenfolge); wenn nicht vorhanden -> None
-            bbox = img_blocks[img_idx]["bbox"] if img_idx < len(img_blocks) else None
-            pw = img_blocks[img_idx]["page_width"] if img_idx < len(img_blocks) else page.rect.width
-            ph = img_blocks[img_idx]["page_height"] if img_idx < len(img_blocks) else page.rect.height
-
-            figures_meta.append({
-                "figure_id": str(uuid.uuid4()),
-                "page": page_num1,
-                "image_path": img_path,
-                "bbox": bbox,
-                "page_width": pw,
-                "page_height": ph,
-                "figure_label": "",  # echte Caption wird später heuristisch ermittelt/überschrieben
-            })
+                
+                # Duplikat-Erkennung via perceptual hash
+                try:
+                    img_pil = Image.open(img_path)
+                    img_hash = str(imagehash.phash(img_pil))
+                    
+                    if img_hash in seen_hashes:
+                        # Duplikat gefunden, Datei löschen
+                        os.remove(img_path)
+                        continue
+                    
+                    seen_hashes.add(img_hash)
+                except Exception:
+                    # Falls Hash-Berechnung fehlschlägt, trotzdem behalten
+                    pass
+                
+                # BBox via Spatial Matching
+                bbox_idx = xref_to_bbox.get(xref)
+                if bbox_idx is not None and bbox_idx < len(img_blocks):
+                    bbox = img_blocks[bbox_idx]["bbox"]
+                    pw = img_blocks[bbox_idx]["page_width"]
+                    ph = img_blocks[bbox_idx]["page_height"]
+                    
+                    # Caption und Figure-Label extrahieren
+                    caption, figure_label = find_caption_for_image(bbox, text_blocks, y_tolerance=50)
+                else:
+                    bbox = None
+                    pw = page.rect.width
+                    ph = page.rect.height
+                    caption = ""
+                    figure_label = None
+                
+                # DPI/Auflösung berechnen
+                dpi_x = int(width / (page.rect.width / 72)) if page.rect.width > 0 else 72
+                dpi_y = int(height / (page.rect.height / 72)) if page.rect.height > 0 else 72
+                
+                figures_meta.append({
+                    "figure_id": str(uuid.uuid4()),
+                    "page": page_num1,
+                    "image_path": img_path,
+                    "bbox": bbox,
+                    "page_width": pw,
+                    "page_height": ph,
+                    "figure_label": figure_label or "",
+                    "caption": caption,
+                    "width": width,
+                    "height": height,
+                    "dpi_x": dpi_x,
+                    "dpi_y": dpi_y,
+                    "format": temp_format,
+                })
+                
+            except Exception as e:
+                # Graceful handling von korrupten Bildern
+                print(f"Warning: Could not extract image xref={xref} on page {page_num1}: {e}")
+                continue
 
     return paper_meta, sections, paragraphs, figures_meta
 

@@ -5,6 +5,7 @@ openai>=1.51.0
 fastapi>=0.111.0
 uvicorn>=0.30.0
 pillow>=10.3.0
+imagehash>=4.3.1
 pydantic>=2.8.2
 tqdm>=4.66.4
 duckduckgo-search>=6.2.9

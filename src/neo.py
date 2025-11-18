@@ -99,8 +99,9 @@ class Neo4jClient:
             MERGE (p)-[:HAS_PARAGRAPH]->(para)
             WITH p, para, row
             OPTIONAL MATCH (sec:Section {section_id: row.section_id_ref})
-            WHERE sec IS NOT NULL
-            MERGE (sec)-[:HAS_PARAGRAPH]->(para)
+            FOREACH (_ IN CASE WHEN sec IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (sec)-[:HAS_PARAGRAPH]->(para)
+            )
             """,
             {"paper_id": paper_id, "paragraphs": paragraphs},
         )
