@@ -954,13 +954,28 @@ st.sidebar.markdown("**Tipp:** `.env` anpassen und App neu starten, wenn Keys/UR
 # Main Tabs
 # =========================
 st.title("GraphRAG Pipeline – GUI")
-tab_concepts, tab_ingest, tab_query, tab_cypher, tab_synthesia = st.tabs([
+tab_concepts, tab_ingest, tab_query, tab_cypher, tab_synthesia, tab_coursegen = st.tabs([
     "🧩 Konzepte",
     "📥 Ingest",
     "❓ Fragen & Export",
     "🔎 Cypher",
     "🎬 PPTX → Synthesia",
+    "📚 Kursgenerator"
 ])
+
+# === Prototyp: Kursgenerator ===
+import importlib
+try:
+    coursegen = importlib.import_module("scripts.course_generator")
+except Exception:
+    coursegen = None
+
+# ---- Tab: Kursgenerator ----
+with tab_coursegen:
+    if coursegen and hasattr(coursegen, "show_course_generator"):
+        coursegen.show_course_generator()
+    else:
+        st.warning("Modul 'course_generator' nicht gefunden oder fehlerhaft. Bitte prüfen.")
 
 # ---- Tab: PPTX -> Synthesia (upload / select PPTX then send to Synthesia)
 with tab_synthesia:
