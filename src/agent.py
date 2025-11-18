@@ -118,6 +118,8 @@ def answer_query(
     min_supports: int = MIN_SUPPORTS_COUNT_DEFAULT,
     min_supports_score: float = MIN_SUPPORTS_SCORE_DEFAULT,
     web_mode: str | None = None,   # "auto" | "force" | "off"
+    k_paragraphs: int = 24,
+    k_figures: int = 8,
 ) -> Dict[str, Any]:
     """
     web_mode:
@@ -125,9 +127,14 @@ def answer_query(
       - "off"  : niemals Websuche (nur Graph)
       - "auto" : erst Graph; wenn zu wenig valide Belege -> Web
       - None   : wie "auto" (Provider aus .env bestimmt openai/serp)
+    
+    k_paragraphs: Anzahl der Paragraphen beim Retrieval (default: 24)
+    k_figures: Anzahl der Abbildungen beim Retrieval (default: 8)
     """
     debug: Dict[str, Any] = {
         "web_mode": (web_mode or "auto"),
+        "k_paragraphs": k_paragraphs,
+        "k_figures": k_figures,
         "provider": WEB_SEARCH_PROVIDER,
         "min_supports": min_supports,
         "min_supports_score": min_supports_score,
@@ -145,7 +152,7 @@ def answer_query(
 
     # 2) OFF → nur Graph
     if (web_mode or "").lower() in {"off", "none", "disabled"}:
-        ret = hybrid_retrieve(neo, query)
+        ret = hybrid_retrieve(neo, query, k_paragraphs=k_paragraphs, k_figures=k_figures)
         supports = (ret.get("supports") or [])[:12]
         eff = _effective_supports(supports, min_supports_score)
         debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff, "decision": "graph_only"})
@@ -154,7 +161,7 @@ def answer_query(
         return {"mode": mode, "answer": answer, "supports": supports, "debug": debug}
 
     # 3) AUTO → erst Graph, dann ggf. Web
-    ret = hybrid_retrieve(neo, query)
+    ret = hybrid_retrieve(neo, query, k_paragraphs=k_paragraphs, k_figures=k_figures)
     supports = (ret.get("supports") or [])[:12]
     eff = _effective_supports(supports, min_supports_score)
     debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff})

@@ -785,10 +785,10 @@ def visualize_with_plotly(
 
 
 # ---------- Query orchestrator (UI helper) ----------
-def run_query(q: str, web_mode_ui: str) -> Dict[str, Any]:
+def run_query(q: str, web_mode_ui: str, k_paragraphs: int = 24, k_figures: int = 8) -> Dict[str, Any]:
     neo = get_neo()
     mapping = {"Auto": "auto", "Erzwingen": "force", "Aus": "off"}
-    return answer_query(q, neo, web_mode=mapping.get(web_mode_ui, "auto"))
+    return answer_query(q, neo, web_mode=mapping.get(web_mode_ui, "auto"), k_paragraphs=k_paragraphs, k_figures=k_figures)
 
 import math
 import numpy as np
@@ -1430,6 +1430,29 @@ with tab_ingest:
 with tab_query:
     st.subheader("Frage stellen")
     q = st.text_area("Deine Frage", placeholder="Erkläre Green AI mit Belegen.")
+    
+    # Retrieval-Einstellungen
+    with st.expander("⚙️ Retrieval-Einstellungen", expanded=False):
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            k_paragraphs = st.number_input(
+                "Anzahl Paragraphen",
+                min_value=5,
+                max_value=50,
+                value=24,
+                step=1,
+                help="Wie viele Paragraphen sollen aus der Datenbank abgerufen werden? (Standard: 24)"
+            )
+        with col_r2:
+            k_figures = st.number_input(
+                "Anzahl Abbildungen",
+                min_value=2,
+                max_value=20,
+                value=8,
+                step=1,
+                help="Wie viele Abbildungen sollen aus der Datenbank abgerufen werden? (Standard: 8)"
+            )
+    
     col1, col2, col3, col4 = st.columns([1,1,1,1])
     with col1:
         inline_figs = st.checkbox("Bilder inline einfügen", value=True)
@@ -1445,7 +1468,7 @@ with tab_query:
             st.warning("Bitte eine Frage eingeben.")
         else:
             with st.spinner("Suche & Synthese …"):
-                res = run_query(q, web_mode_ui=web_mode_ui)
+                res = run_query(q, web_mode_ui=web_mode_ui, k_paragraphs=k_paragraphs, k_figures=k_figures)
             st.session_state["last_result"] = res
             st.session_state["last_query"] = q
 
