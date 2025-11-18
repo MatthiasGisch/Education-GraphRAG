@@ -10,13 +10,106 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from pathlib import Path
 import datetime
 
-def generate_course_pdf(course: dict, output_path: str) -> str:
+def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None) -> dict:
     """
-    Generiert eine strukturierte PDF aus der Kursstruktur.
+    Holt relevante Inhalte aus dem Wissensgraphen für ein Kapitel.
+    
+    Args:
+        neo: Neo4j Client
+        chapter_title: Titel des Kapitels (meist ein Konzeptname)
+        topic: Optional das Topic für bessere Zuordnung
+        
+    Returns:
+        Dict mit paragraphs, figures, related_concepts
+    """
+    result = {"paragraphs": [], "figures": [], "related_concepts": [], "concept_description": ""}
+    
+    try:
+        # Strategie 1: Exakte Suche nach Konzept mit passendem Namen
+        concept_query = """
+        MATCH (c:Concept)
+        WHERE toLower(c.name) = toLower($name)
+           OR toLower(c.name) CONTAINS toLower($name)
+           OR ANY(alt IN c.alt_labels WHERE toLower(alt) = toLower($name))
+        OPTIONAL MATCH (c)<-[:MENTIONS]-(p:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
+        OPTIONAL MATCH (paper)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(p)
+        WITH c, p, paper, sec
+        ORDER BY p.order_in_page
+        RETURN c.concept_id AS concept_id,
+               c.name AS concept_name,
+               c.description AS concept_description,
+               collect(DISTINCT {text: p.text, paper_title: paper.title, section: sec.title})[..5] AS paragraphs
+        LIMIT 1
+        """
+        concept_result = neo.run(concept_query, {"name": chapter_title})
+        
+        print(f"DEBUG: Fetching content for chapter '{chapter_title}'")
+        print(f"DEBUG: Query returned {len(concept_result)} results")
+        
+        if concept_result and len(concept_result) > 0:
+            concept_data = concept_result[0]
+            result["paragraphs"] = concept_data.get("paragraphs", [])
+            result["concept_description"] = concept_data.get("concept_description", "")
+            
+            print(f"DEBUG: Found {len(result['paragraphs'])} paragraphs")
+            print(f"DEBUG: Concept description: {result['concept_description'][:100] if result['concept_description'] else 'None'}")
+            
+            # Hole verwandte Konzepte
+            related_query = """
+            MATCH (c:Concept {concept_id: $concept_id})-[r:SEMANTIC_RELATION]-(related:Concept)
+            RETURN related.name AS name, r.relation_type AS relation_type
+            LIMIT 5
+            """
+            related_result = neo.run(related_query, {"concept_id": concept_data.get("concept_id")})
+            result["related_concepts"] = related_result
+            
+            # Hole Figuren zum Konzept
+            figure_query = """
+            MATCH (c:Concept {concept_id: $concept_id})<-[:MENTIONS]-(p:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
+            MATCH (paper)-[:HAS_FIGURE]->(f:Figure)
+            WHERE f.page = p.page OR abs(f.page - p.page) <= 1
+            RETURN DISTINCT f.caption AS caption, f.figure_label AS label
+            LIMIT 3
+            """
+            figure_result = neo.run(figure_query, {"concept_id": concept_data.get("concept_id")})
+            result["figures"] = figure_result
+            
+            print(f"DEBUG: Found {len(result['related_concepts'])} related concepts, {len(result['figures'])} figures")
+        else:
+            print(f"DEBUG: No exact concept match found for '{chapter_title}'")
+            # Strategie 2: Volltext-Suche in Paragraphen mit dem Kapiteltitel
+            fallback_query = """
+            MATCH (p:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
+            WHERE toLower(p.text) CONTAINS toLower($keyword)
+            OPTIONAL MATCH (paper)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(p)
+            WITH p, paper, sec
+            ORDER BY p.order_in_page
+            RETURN collect(DISTINCT {text: p.text, paper_title: paper.title, section: sec.title})[..3] AS paragraphs
+            LIMIT 1
+            """
+            fallback_result = neo.run(fallback_query, {"keyword": chapter_title})
+            if fallback_result and len(fallback_result) > 0:
+                result["paragraphs"] = fallback_result[0].get("paragraphs", [])
+                print(f"DEBUG: Fallback search found {len(result['paragraphs'])} paragraphs with keyword '{chapter_title}'")
+            else:
+                print(f"DEBUG: No content found for '{chapter_title}' even with fallback search")
+    
+    except Exception as e:
+        print(f"ERROR: Error fetching content for chapter '{chapter_title}': {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return result
+
+def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None, include_content: bool = True) -> str:
+    """
+    Generiert eine strukturierte PDF aus der Kursstruktur mit Inhalten aus dem Wissensgraphen.
     
     Args:
         course: Dict mit Kursname und Kapiteln
         output_path: Pfad für die Ausgabedatei
+        neo: Neo4j Client für Inhaltsabruf (optional)
+        include_content: Ob Inhalte aus dem Graph eingebunden werden sollen
         
     Returns:
         Pfad zur erstellten PDF
@@ -103,10 +196,45 @@ def generate_course_pdf(course: dict, output_path: str) -> str:
     
     story.append(PageBreak())
     
+    # Content-Style
+    content_style = ParagraphStyle(
+        'Content',
+        parent=styles['BodyText'],
+        fontSize=11,
+        spaceAfter=10,
+        alignment=TA_LEFT,
+        fontName='Helvetica'
+    )
+    
+    citation_style = ParagraphStyle(
+        'Citation',
+        parent=styles['Italic'],
+        fontSize=9,
+        textColor=colors.HexColor('#666666'),
+        leftIndent=15,
+        spaceAfter=8
+    )
+    
     # Kapitel
     for idx, kapitel in enumerate(course.get("Kapitel", []), 1):
-        story.append(Paragraph(f"Kapitel {idx}: {kapitel.get('Titel', '')}", chapter_style))
+        chapter_title = kapitel.get('Titel', '')
+        story.append(Paragraph(f"Kapitel {idx}: {chapter_title}", chapter_style))
         story.append(Spacer(1, 0.3*cm))
+        
+        # Hole Inhalte aus dem Wissensgraphen
+        content = {}
+        if include_content and neo:
+            print(f"DEBUG: Fetching content for chapter {idx}: '{chapter_title}' (neo={neo}, include_content={include_content})")
+            content = fetch_content_for_chapter(neo, chapter_title)
+            print(f"DEBUG: Content retrieved: {len(content.get('paragraphs', []))} paragraphs, description exists: {bool(content.get('concept_description'))}")
+        else:
+            print(f"DEBUG: Skipping content fetch (include_content={include_content}, neo={neo})")
+        
+        # Konzeptbeschreibung (falls vorhanden)
+        if content.get("concept_description"):
+            story.append(Paragraph("Überblick:", section_style))
+            story.append(Paragraph(content["concept_description"], content_style))
+            story.append(Spacer(1, 0.3*cm))
         
         # Lernziele
         if kapitel.get("Lernziele"):
@@ -116,13 +244,55 @@ def generate_course_pdf(course: dict, output_path: str) -> str:
                     story.append(Paragraph(f"• {ziel}", objective_style))
             story.append(Spacer(1, 0.5*cm))
         
-        # Abschnitte
+        # Abschnitte mit Inhalten
         if kapitel.get("Abschnitte"):
             story.append(Paragraph("Abschnitte:", section_style))
             for aidx, abschnitt in enumerate(kapitel.get("Abschnitte", []), 1):
                 if abschnitt.strip():
                     story.append(Paragraph(f"{idx}.{aidx} {abschnitt}", objective_style))
             story.append(Spacer(1, 0.5*cm))
+        
+        # Inhalte aus Wissensgraph
+        if content.get("paragraphs"):
+            story.append(Paragraph("Inhalte:", section_style))
+            for para in content["paragraphs"][:3]:  # Max 3 Paragraphen pro Kapitel
+                text = para.get("text", "")
+                if text:
+                    # Kürze zu lange Texte
+                    if len(text) > 800:
+                        text = text[:800] + "..."
+                    story.append(Paragraph(text, content_style))
+                    
+                    # Quellenangabe
+                    paper_title = para.get("paper_title", "")
+                    section = para.get("section", "")
+                    if paper_title:
+                        citation = f"Quelle: {paper_title}"
+                        if section:
+                            citation += f" ({section})"
+                        story.append(Paragraph(citation, citation_style))
+            story.append(Spacer(1, 0.3*cm))
+        
+        # Verwandte Konzepte
+        if content.get("related_concepts"):
+            story.append(Paragraph("Verwandte Konzepte:", section_style))
+            for rel in content["related_concepts"]:
+                rel_name = rel.get("name", "")
+                rel_type = rel.get("relation_type", "verwandt mit")
+                if rel_name:
+                    story.append(Paragraph(f"• {rel_name} ({rel_type})", objective_style))
+            story.append(Spacer(1, 0.3*cm))
+        
+        # Abbildungen
+        if content.get("figures"):
+            story.append(Paragraph("Abbildungen:", section_style))
+            for fig in content["figures"]:
+                caption = fig.get("caption", "")
+                label = fig.get("label", "")
+                if caption or label:
+                    fig_text = f"• {label}: {caption}" if label else f"• {caption}"
+                    story.append(Paragraph(fig_text, objective_style))
+            story.append(Spacer(1, 0.3*cm))
         
         # Pagebreak nach jedem Kapitel (außer dem letzten)
         if idx < len(course.get("Kapitel", [])):
@@ -133,9 +303,11 @@ def generate_course_pdf(course: dict, output_path: str) -> str:
     return output_path
 
 def show_course_generator():
+    # Neo4j Client initialisieren (wird für Graph-Zugriff und PDF-Generierung benötigt)
+    neo = Neo4jClient()
+    
     # Topic-Auswahl und Konzept-Vorschläge
     st.subheader("Kapitelvorschläge aus Wissensgraph")
-    neo = Neo4jClient()
     topics = [r["name"] for r in neo.run("MATCH (t:Topic) RETURN t.name AS name ORDER BY name")]
     selected_topic = st.selectbox("Topic aus Wissensgraph wählen", topics, key="coursegen_topic_select")
     concepts = []
@@ -160,6 +332,9 @@ def show_course_generator():
         }
 
     course = st.session_state["course_struct"]
+    
+    st.markdown("---")
+    st.info("💡 **Tipp:** Um Inhalte aus dem Wissensgraphen zu nutzen, benenne deine Kapitel nach Konzeptnamen oder übernimm Konzepte direkt als Kapitel (Button oben).")
 
     # Kursname bearbeiten
     course["Kursname"] = st.text_input("Kursname", value=course["Kursname"])
@@ -223,7 +398,7 @@ def show_course_generator():
     st.markdown("---")
     st.subheader("📄 Kurs als PDF exportieren")
     
-    col_pdf1, col_pdf2 = st.columns([2, 1])
+    col_pdf1, col_pdf2, col_pdf3 = st.columns([2, 1, 1])
     with col_pdf1:
         pdf_filename = st.text_input(
             "PDF-Dateiname", 
@@ -231,7 +406,12 @@ def show_course_generator():
             help="Name der zu erstellenden PDF-Datei"
         )
     with col_pdf2:
-        st.write("")  # Spacer
+        include_content = st.checkbox(
+            "Inhalte aus Wissensgraph",
+            value=True,
+            help="Automatisch passende Inhalte aus dem Wissensgraphen einfügen"
+        )
+    with col_pdf3:
         st.write("")  # Spacer
         if st.button("PDF generieren", type="primary"):
             if not course.get("Kapitel"):
@@ -244,7 +424,12 @@ def show_course_generator():
                 
                 try:
                     with st.spinner("Generiere PDF..."):
-                        result_path = generate_course_pdf(course, str(output_path))
+                        result_path = generate_course_pdf(
+                            course, 
+                            str(output_path),
+                            neo=neo if include_content else None,
+                            include_content=include_content
+                        )
                     st.success(f"✅ PDF erfolgreich erstellt: {output_path.name}")
                     
                     # Download-Button
