@@ -142,6 +142,85 @@ def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict
             existing_para_ids.add(pid)
 
 
+def _vsearch_concepts(neo: Neo4jClient, embedding: List[float], k: int = 10, min_score: float = 0.7) -> List[Dict[str, Any]]:
+    """
+    Vector-Suche über Concept-Index. Findet die relevantesten Konzepte zur Query.
+    """
+    rows = neo.run(
+        """
+        CALL db.index.vector.queryNodes('concept_embedding_index', $k, $embedding)
+        YIELD node, score
+        WHERE score >= $min_score
+        RETURN
+          node.concept_id   AS concept_id,
+          node.name         AS concept_name,
+          node.description  AS description,
+          toFloat(score)    AS score
+        ORDER BY score DESC
+        LIMIT $k
+        """,
+        {"embedding": embedding, "k": k, "min_score": min_score},
+    )
+    return rows or []
+
+
+def _paragraphs_via_concepts(neo: Neo4jClient, concept_ids: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+    """
+    Graph-Traversierung: Von Concepts zu Paragraphs über MENTIONS-Beziehung.
+    Holt Paragraphs die relevante Concepts erwähnen.
+    """
+    if not concept_ids:
+        return []
+    
+    rows = neo.run(
+        """
+        UNWIND $concept_ids AS cid
+        MATCH (c:Concept {concept_id: cid})<-[m:MENTIONS]-(para:Paragraph)
+        MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
+        OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
+        WITH DISTINCT para, p, sec, m, c
+        RETURN
+          'paragraph'              AS type,
+          para.paragraph_id        AS paragraph_id,
+          para.text                AS text,
+          para.page                AS page,
+          p.paper_id               AS paper_id,
+          p.title                  AS paper_title,
+          p.doi                    AS doi,
+          p.url                    AS url,
+          sec.section_id           AS section_id,
+          sec.title                AS section_title,
+          coalesce(m.confidence, 0.8) AS score,
+          c.name                   AS matched_concept
+        ORDER BY score DESC
+        LIMIT $limit
+        """,
+        {"concept_ids": concept_ids, "limit": limit},
+    )
+    return rows or []
+
+
+def _expand_via_semantic_relations(neo: Neo4jClient, concept_ids: List[str], k: int = 5) -> List[str]:
+    """
+    Erweitert Concept-Liste über SEMANTIC_RELATION (IS_A, PART_OF, etc.).
+    Findet verwandte Concepts die ebenfalls relevant sein könnten.
+    """
+    if not concept_ids:
+        return []
+    
+    rows = neo.run(
+        """
+        UNWIND $concept_ids AS cid
+        MATCH (c1:Concept {concept_id: cid})-[r:SEMANTIC_RELATION]-(c2:Concept)
+        WHERE r.relation_type IN ['IS_A', 'PART_OF', 'RELATED_TO']
+        RETURN DISTINCT c2.concept_id AS concept_id
+        LIMIT $k
+        """,
+        {"concept_ids": concept_ids, "k": k},
+    )
+    return [r["concept_id"] for r in rows if r.get("concept_id")]
+
+
 # =========================
 # Öffentliche API
 # =========================
@@ -152,6 +231,7 @@ def hybrid_retrieve(
     k_paragraphs: int = 18,
     k_figures: int = 6,
     add_figure_context: bool = True,
+    use_concept_based: bool = False,
 ) -> Dict[str, Any]:
     """
     Hybrid-Retrieval:
@@ -181,3 +261,97 @@ def hybrid_retrieve(
             log.warning("Figure-Kontext konnte nicht erweitert werden: %s", e)
 
     return {"supports": supports}
+
+
+def concept_based_retrieve(
+    neo: Neo4jClient,
+    query: str,
+    *,
+    k_concepts: int = 10,
+    k_paragraphs_direct: int = 15,
+    k_paragraphs_via_concepts: int = 20,
+    k_figures: int = 6,
+    expand_semantic: bool = True,
+    add_figure_context: bool = True,
+    min_concept_score: float = 0.7,
+) -> Dict[str, Any]:
+    """
+    Intelligentes Concept-basiertes Retrieval:
+      1) Embed Query
+      2) Vector-Suche auf Concepts → findet relevante Konzepte
+      3) Graph-Traversierung: Concepts → MENTIONS ← Paragraphs
+      4) (optional) Semantic Relations: erweitere Concepts über IS_A/PART_OF/RELATED_TO
+      5) Vector-Suche Paragraphs (direkter Match als Fallback)
+      6) Vector-Suche Figures
+      7) Deduplizierung & Merge
+      
+    Rückgabe:
+      {"supports": [...], "matched_concepts": [...], "debug": {...}}
+    """
+    emb = _embed_query(query)
+    debug: Dict[str, Any] = {}
+    
+    # 1) Finde relevante Concepts via Vector-Suche
+    concepts = _vsearch_concepts(neo, emb, k=k_concepts, min_score=min_concept_score)
+    concept_ids = [c["concept_id"] for c in concepts]
+    debug["matched_concepts_count"] = len(concept_ids)
+    debug["matched_concepts"] = [c["concept_name"] for c in concepts[:5]]  # Top 5 für Debug
+    
+    # 2) Erweitere über semantische Relationen
+    if expand_semantic and concept_ids:
+        related_ids = _expand_via_semantic_relations(neo, concept_ids, k=5)
+        if related_ids:
+            concept_ids.extend(related_ids)
+            concept_ids = list(set(concept_ids))  # Deduplizieren
+            debug["expanded_via_relations"] = len(related_ids)
+    
+    # 3) Hole Paragraphs über Concept-MENTIONS-Beziehung
+    paras_via_concepts = []
+    if concept_ids:
+        paras_via_concepts = _paragraphs_via_concepts(neo, concept_ids, limit=k_paragraphs_via_concepts)
+        debug["paragraphs_via_concepts"] = len(paras_via_concepts)
+    
+    # 4) Direkte Vector-Suche Paragraphs (als Ergänzung)
+    paras_direct = _vsearch_paragraphs(neo, emb, k=k_paragraphs_direct)
+    debug["paragraphs_direct"] = len(paras_direct)
+    
+    # 5) Vector-Suche Figures
+    figs = _vsearch_figures(neo, emb, k=k_figures)
+    debug["figures"] = len(figs)
+    
+    # 6) Merge & Deduplizierung
+    supports: List[Dict[str, Any]] = []
+    seen_para_ids = set()
+    
+    # Concept-basierte Paragraphs zuerst (höhere Priorität)
+    for p in paras_via_concepts:
+        pid = p.get("paragraph_id")
+        if pid and pid not in seen_para_ids:
+            supports.append(p)
+            seen_para_ids.add(pid)
+    
+    # Dann direkte Paragraph-Matches
+    for p in paras_direct:
+        pid = p.get("paragraph_id")
+        if pid and pid not in seen_para_ids:
+            supports.append(p)
+            seen_para_ids.add(pid)
+    
+    # Figures hinzufügen
+    supports.extend(figs)
+    
+    # 7) Figure-Kontext ergänzen
+    if add_figure_context:
+        try:
+            _expand_figure_context_with_paragraphs(neo, supports, limit=200)
+        except Exception as e:
+            log.warning("Figure-Kontext konnte nicht erweitert werden: %s", e)
+    
+    debug["total_supports"] = len(supports)
+    
+    return {
+        "supports": supports,
+        "matched_concepts": concepts,
+        "debug": debug
+    }
+

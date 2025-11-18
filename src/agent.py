@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 import os, re, json
 
 from .neo import Neo4jClient
-from .retriever import hybrid_retrieve
+from .retriever import hybrid_retrieve, concept_based_retrieve
 from .openai_client import grounded_answer
 
 # ---------------- Config / Defaults ----------------
@@ -120,6 +120,7 @@ def answer_query(
     web_mode: str | None = None,   # "auto" | "force" | "off"
     k_paragraphs: int = 24,
     k_figures: int = 8,
+    use_concept_retrieval: bool = True,
 ) -> Dict[str, Any]:
     """
     web_mode:
@@ -130,11 +131,13 @@ def answer_query(
     
     k_paragraphs: Anzahl der Paragraphen beim Retrieval (default: 24)
     k_figures: Anzahl der Abbildungen beim Retrieval (default: 8)
+    use_concept_retrieval: Nutze intelligentes Concept-basiertes Retrieval (default: True)
     """
     debug: Dict[str, Any] = {
         "web_mode": (web_mode or "auto"),
         "k_paragraphs": k_paragraphs,
         "k_figures": k_figures,
+        "use_concept_retrieval": use_concept_retrieval,
         "provider": WEB_SEARCH_PROVIDER,
         "min_supports": min_supports,
         "min_supports_score": min_supports_score,
@@ -152,7 +155,18 @@ def answer_query(
 
     # 2) OFF → nur Graph
     if (web_mode or "").lower() in {"off", "none", "disabled"}:
-        ret = hybrid_retrieve(neo, query, k_paragraphs=k_paragraphs, k_figures=k_figures)
+        if use_concept_retrieval:
+            ret = concept_based_retrieve(
+                neo, query, 
+                k_paragraphs_direct=k_paragraphs, 
+                k_figures=k_figures,
+                k_concepts=10,
+                k_paragraphs_via_concepts=20
+            )
+            debug.update(ret.get("debug", {}))
+        else:
+            ret = hybrid_retrieve(neo, query, k_paragraphs=k_paragraphs, k_figures=k_figures)
+        
         supports = (ret.get("supports") or [])[:12]
         eff = _effective_supports(supports, min_supports_score)
         debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff, "decision": "graph_only"})
@@ -161,7 +175,18 @@ def answer_query(
         return {"mode": mode, "answer": answer, "supports": supports, "debug": debug}
 
     # 3) AUTO → erst Graph, dann ggf. Web
-    ret = hybrid_retrieve(neo, query, k_paragraphs=k_paragraphs, k_figures=k_figures)
+    if use_concept_retrieval:
+        ret = concept_based_retrieve(
+            neo, query,
+            k_paragraphs_direct=k_paragraphs,
+            k_figures=k_figures,
+            k_concepts=10,
+            k_paragraphs_via_concepts=20
+        )
+        debug.update(ret.get("debug", {}))
+    else:
+        ret = hybrid_retrieve(neo, query, k_paragraphs=k_paragraphs, k_figures=k_figures)
+    
     supports = (ret.get("supports") or [])[:12]
     eff = _effective_supports(supports, min_supports_score)
     debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff})

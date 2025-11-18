@@ -785,10 +785,22 @@ def visualize_with_plotly(
 
 
 # ---------- Query orchestrator (UI helper) ----------
-def run_query(q: str, web_mode_ui: str, k_paragraphs: int = 24, k_figures: int = 8) -> Dict[str, Any]:
+def run_query(
+    q: str, 
+    web_mode_ui: str, 
+    k_paragraphs: int = 24, 
+    k_figures: int = 8,
+    use_concept_retrieval: bool = True
+) -> Dict[str, Any]:
     neo = get_neo()
     mapping = {"Auto": "auto", "Erzwingen": "force", "Aus": "off"}
-    return answer_query(q, neo, web_mode=mapping.get(web_mode_ui, "auto"), k_paragraphs=k_paragraphs, k_figures=k_figures)
+    return answer_query(
+        q, neo, 
+        web_mode=mapping.get(web_mode_ui, "auto"), 
+        k_paragraphs=k_paragraphs, 
+        k_figures=k_figures,
+        use_concept_retrieval=use_concept_retrieval
+    )
 
 import math
 import numpy as np
@@ -1433,6 +1445,13 @@ with tab_query:
     
     # Retrieval-Einstellungen
     with st.expander("⚙️ Retrieval-Einstellungen", expanded=False):
+        use_concept_retrieval = st.checkbox(
+            "Concept-basiertes Retrieval (empfohlen)",
+            value=True,
+            help="Nutzt extrahierte Concepts + Graph-Traversierung für intelligenteres Retrieval. "
+                 "Deaktivieren für reines Vector-Retrieval auf Paragraphs."
+        )
+        
         col_r1, col_r2 = st.columns(2)
         with col_r1:
             k_paragraphs = st.number_input(
@@ -1468,7 +1487,13 @@ with tab_query:
             st.warning("Bitte eine Frage eingeben.")
         else:
             with st.spinner("Suche & Synthese …"):
-                res = run_query(q, web_mode_ui=web_mode_ui, k_paragraphs=k_paragraphs, k_figures=k_figures)
+                res = run_query(
+                    q, 
+                    web_mode_ui=web_mode_ui, 
+                    k_paragraphs=k_paragraphs, 
+                    k_figures=k_figures,
+                    use_concept_retrieval=use_concept_retrieval
+                )
             st.session_state["last_result"] = res
             st.session_state["last_query"] = q
 
