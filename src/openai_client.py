@@ -28,13 +28,18 @@ def _image_to_data_url(path: str) -> str:
 
 def describe_image(path: str) -> Dict[str, Any]:
     data_url = _image_to_data_url(path)
-    system = "Du bist ein wissenschaftlicher Bild-Analyst. Antworte strikt als kompaktes JSON."
+    system = (
+        "Du bist ein wissenschaftlicher Bild-Analyst für akademische Publikationen. "
+        "Antworte strikt als kompaktes JSON. "
+        "WICHTIG: Verwende KEINE Emojis, keine dekorativen Zeichen, nur sachliche Beschreibungen."
+    )
     user_parts = [
         {"type": "text", "text": (
-            "Beschreibe das Bild präzise. "
+            "Beschreibe das Bild präzise und wissenschaftlich. "
             "Ermittle figure_type (chart|diagram|photo|table-scan|other). "
             "Gib entities (Schlüsselbegriffe) als Liste an. "
             "Wenn erkennbar, extrahiere kurze ocr_hints (max 5). "
+            "KEINE Emojis verwenden! Nur sachliche, wissenschaftliche Sprache. "
             "Antworte als JSON mit Schlüsseln: caption, figure_type, entities, ocr_hints."
         )},
         {"type": "image_url", "image_url": {"url": data_url}},
@@ -52,6 +57,24 @@ def describe_image(path: str) -> Dict[str, Any]:
         data = json.loads(text)
     except Exception:
         data = {"caption": text, "figure_type": "other", "entities": [], "ocr_hints": []}
+    
+    # Post-processing: Entferne Emojis falls doch welche durchgekommen sind
+    import re
+    caption = data.get("caption", "")
+    if caption:
+        # Emoji-Pattern: alle Unicode-Emojis entfernen
+        emoji_pattern = re.compile(
+            "["
+            "\U0001F600-\U0001F64F"  # Emoticons
+            "\U0001F300-\U0001F5FF"  # Symbole & Piktogramme
+            "\U0001F680-\U0001F6FF"  # Transport & Karten
+            "\U0001F1E0-\U0001F1FF"  # Flaggen
+            "\U00002702-\U000027B0"  # Dingbats
+            "\U000024C2-\U0001F251"  # Eingeschlossene Zeichen
+            "]+", flags=re.UNICODE
+        )
+        data["caption"] = emoji_pattern.sub("", caption).strip()
+    
     return data
 
 def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
@@ -60,7 +83,10 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
         "Erkläre die Inhalte didaktisch aufbereitet, strukturiert und verständlich für Studierende. "
         "Antworte NUR auf Basis der gelieferten Belege. Erfinde nichts. "
         "Nutze eine klare, lehrende Sprache mit Beispielen wo möglich. "
-        "Strukturiere deine Antwort logisch (z.B. Definition → Erklärung → Anwendung → Zusammenfassung)."
+        "Strukturiere deine Antwort logisch (z.B. Definition → Erklärung → Anwendung → Zusammenfassung). "
+        "WICHTIG: Wenn Abbildungen ([F...]) verfügbar sind, verweise DIREKT im Fließtext darauf, "
+        "z.B. 'Wie Abbildung [F12345] zeigt...' oder 'In [F67890] ist dargestellt...'. "
+        "Die Bilder werden dann automatisch an dieser Stelle im PDF eingefügt."
     )
     # Kontext mit strukturierter Provenance
     bib = {}
@@ -101,6 +127,9 @@ Anweisung als Dozent:
 - Strukturiere die Antwort logisch (z.B. Definition → Erklärung → Beispiele → Zusammenhänge).
 - Nutze eine klare, lehrende Sprache: Führe Studierende schrittweise durch das Thema.
 - Jede Kernaussage mit [Pxxx] / [Fxxx] belegen (Quellenangabe in eckigen Klammern).
+- **WICHTIG für Abbildungen [F...]:** Wenn eine Abbildung relevant ist, verweise DIREKT im Fließtext darauf! 
+  Beispiel: "Abbildung [F12345] zeigt den Aufbau..." oder "Wie in [F67890] dargestellt..."
+  Die Abbildungen werden dann automatisch unter dem Text eingefügt.
 - Wenn möglich, verdeutliche Zusammenhänge und Anwendungsbereiche.
 - Wenn Belege widersprüchlich oder zu dünn sind, sage das klar und erkläre was fehlt.
 

@@ -17,6 +17,10 @@ def _mk_styles():
     styles.add(ParagraphStyle(name="Heading", parent=styles["Heading2"], spaceBefore=12, spaceAfter=6))
     styles.add(ParagraphStyle(name="Body", parent=styles["BodyText"], leading=14, spaceAfter=6))
     styles.add(ParagraphStyle(name="Small", parent=styles["BodyText"], fontSize=9, leading=11))
+    styles.add(ParagraphStyle(name="Caption", parent=styles["BodyText"], fontSize=9, leading=11, 
+                             leftIndent=12, rightIndent=12, spaceAfter=6, fontName="Helvetica-Oblique"))
+    styles.add(ParagraphStyle(name="Reference", parent=styles["BodyText"], fontSize=9, leading=12,
+                             leftIndent=24, firstLineIndent=-24, spaceAfter=8))
     return styles
 
 def _escape(text: str) -> str:
@@ -45,29 +49,58 @@ def _make_scaled_image(path: str, max_width_pt: float, max_height_pt: float):
     except Exception as e:
         return Paragraph(f"(Bild konnte nicht geladen werden: {_escape(path)} – {e})", getSampleStyleSheet()["Small"])
 
-def _sources_list(supports: List[Dict[str, Any]], styles):
+def _sources_list(supports: List[Dict[str, Any]], id_mapping: Dict[str, int], styles):
+    """
+    Erstellt ein wissenschaftliches Literaturverzeichnis mit nummerierten Einträgen.
+    Format: [1] Autor (Jahr). Titel. DOI: xxx. S. yyy.
+    """
     entries = []
     seen = set()
-    for s in supports:
+    
+    # Sortiere nach Referenznummer
+    sorted_supports = sorted(supports, key=lambda s: id_mapping.get(
+        f"{'P' if s.get('type')=='paragraph' else 'F'}{s.get('paragraph_id') or s.get('figure_id')}", 999
+    ))
+    
+    for s in sorted_supports:
         sid = f"{'P' if s.get('type')=='paragraph' else 'F'}{s.get('paragraph_id') or s.get('figure_id')}"
         if sid in seen:
             continue
         seen.add(sid)
-        line = (
-            f"[{sid}] {_escape(s.get('paper_title') or '—')} — "
-            f"DOI: {_escape(s.get('doi') or '—')} — "
-            f"URL: {_escape(s.get('url') or '—')} — "
-            f"Seite: {_escape(str(s.get('page') or '—'))} — "
-            f"Abschnitt: {_escape(s.get('section_title') or '—')}"
-        )
-        entries.append(Paragraph(line, styles["Small"]))
-    return ListFlowable([ListItem(e) for e in entries], bulletType="bullet", leftIndent=12)
+        
+        ref_num = id_mapping.get(sid, "?")
+        title = s.get('paper_title') or 'Ohne Titel'
+        doi = s.get('doi')
+        url = s.get('url')
+        page = s.get('page')
+        section = s.get('section_title')
+        
+        # Wissenschaftliches Format
+        parts = [f"[{ref_num}]", f"<b>{_escape(title)}</b>"]
+        
+        if section and section != '—':
+            parts.append(f"Abschnitt: {_escape(section)}.")
+        
+        if page and page != '—':
+            parts.append(f"S. {_escape(str(page))}.")
+        
+        if doi and doi != '—':
+            parts.append(f"DOI: {_escape(doi)}.")
+        elif url and url != '—':
+            parts.append(f"URL: {_escape(url)}.")
+        
+        line = " ".join(parts)
+        entries.append(Paragraph(line, styles["Reference"]))
+    
+    return entries
 
 def _append_inline_figures_for_line(
     story: List,
     line: str,
     fig_by_id: Dict[str, Dict[str, Any]],
     used_fig_ids: List[str],
+    id_mapping: Dict[str, int],
+    fig_counter: Dict[str, int],
     styles,
     max_width_pt: float,
     max_height_pt: float,
@@ -75,7 +108,7 @@ def _append_inline_figures_for_line(
 ):
     """
     Findet alle [F<id>]-Referenzen in der Zeile und fügt unmittelbar darunter
-    die entsprechenden (skalierten) Bilder + Captions ein. Vermeidet Duplikate.
+    die entsprechenden (skalierten) Bilder + wissenschaftliche Captions ein.
     """
     # pattern match: [Fxxxxxxxx-xxxx-....]  (ID ist alles außer ])
     refs = re.findall(r"\[F([^\]]+)\]", line)
@@ -89,11 +122,33 @@ def _append_inline_figures_for_line(
         if key in used_fig_ids:
             continue
 
+        # Bild einfügen
+        story.append(Spacer(1, 6))
         img_flow = _make_scaled_image(fig.get("image_uri"), max_width_pt, max_height_pt)
         story.append(img_flow)
-        cap = fig.get("caption") or fig.get("figure_label") or ""
-        cap_txt = f"[{key}] {_escape(cap)} (Seite {fig.get('page') or '—'})"
-        story.append(Paragraph(cap_txt, styles["Small"]))
+        
+        # Wissenschaftliche Caption: "Figure 1: Caption text [Ref]"
+        fig_counter['count'] += 1
+        fig_num = fig_counter['count']
+        ref_num = id_mapping.get(key, "?")
+        
+        caption_text = fig.get("caption") or fig.get("figure_label") or "Ohne Beschreibung"
+        paper_title = fig.get("paper_title", "")
+        page = fig.get("page")
+        
+        # Format: Figure X: Caption [Ref] (Quelle, S. Y)
+        cap_parts = [f"<b>Figure {fig_num}:</b>", _escape(caption_text)]
+        cap_parts.append(f"[{ref_num}]")
+        
+        if paper_title:
+            source_info = f"({_escape(paper_title)}"
+            if page and page != '—':
+                source_info += f", S. {page}"
+            source_info += ")"
+            cap_parts.append(source_info)
+        
+        cap_txt = " ".join(cap_parts)
+        story.append(Paragraph(cap_txt, styles["Caption"]))
         story.append(Spacer(1, 8))
         used_fig_ids.append(key)
 
@@ -108,6 +163,7 @@ def write_answer_pdf(
     fallback_append_top_k_if_no_refs: int = 3
 ) -> str:
     """
+    Erstellt ein wissenschaftlich formatiertes PDF mit nummerierten Referenzen.
     - inline_figures=True: Bilder werden dort eingefügt, wo [F<id>] im Text steht.
     - max_inline_figures_total: optionales globales Limit (None = kein Limit).
     - fallback_append_top_k_if_no_refs: wenn im Text gar keine [F...] vorkommen,
@@ -121,7 +177,33 @@ def write_answer_pdf(
         leftMargin=2*cm, rightMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm
     )
 
-    # Map: "F<id>" -> Figure-Support
+    # 1) Erstelle ID-Mapping: [Pxxxxx] -> [1], [Fxxxxx] -> [2], etc.
+    id_mapping = {}
+    counter = 1
+    
+    # Extrahiere alle IDs aus dem Text in Reihenfolge
+    all_refs = re.findall(r'\[([PF][^\]]+)\]', answer_text)
+    seen_ids = set()
+    
+    for ref_id in all_refs:
+        if ref_id not in seen_ids:
+            id_mapping[ref_id] = counter
+            counter += 1
+            seen_ids.add(ref_id)
+    
+    # Füge auch alle Supports hinzu (falls nicht im Text erwähnt)
+    for s in supports:
+        sid = f"{'P' if s.get('type')=='paragraph' else 'F'}{s.get('paragraph_id') or s.get('figure_id')}"
+        if sid not in id_mapping:
+            id_mapping[sid] = counter
+            counter += 1
+    
+    # 2) Konvertiere Text: [Pxxxxx] -> [1], [Fxxxxx] -> [2]
+    converted_text = answer_text
+    for old_id, new_num in sorted(id_mapping.items(), key=lambda x: len(x[0]), reverse=True):
+        converted_text = converted_text.replace(f"[{old_id}]", f"[{new_num}]")
+
+    # Map: "F<id>" -> Figure-Support (mit original IDs für Matching)
     fig_by_id = {
         f"F{f['figure_id']}": f
         for f in supports if f.get("type") == "figure"
@@ -135,35 +217,43 @@ def write_answer_pdf(
     story.append(Paragraph("Frage", styles["Heading"]))
     story.append(Paragraph(_escape(query), styles["Body"]))
 
-    # Antwort: Zeile für Zeile, danach ggf. inline Figuren einfügen
+    # Antwort: Zeile für Zeile mit konvertierten Referenzen
     story.append(Spacer(1, 8))
     story.append(Paragraph("Antwort (mit Belegen)", styles["Heading"]))
 
     used_fig_ids: List[str] = []
+    fig_counter = {'count': 0}  # Zähler für Figure-Nummern (Figure 1, Figure 2, ...)
     any_inline_figs = False
 
-    for raw_line in answer_text.split("\n"):
-        line = raw_line.strip()
+    # Verarbeite beide Versionen parallel (original für Figure-Matching, konvertiert für Anzeige)
+    original_lines = answer_text.split("\n")
+    converted_lines = converted_text.split("\n")
+    
+    for orig_line, conv_line in zip(original_lines, converted_lines):
+        line = conv_line.strip()
         if not line:
             story.append(Spacer(1, 6))
             continue
-        # Text-Paragraph einfügen (Referenzen [P…]/[F…] bleiben sichtbar)
+        
+        # Text-Paragraph mit nummerierten Referenzen [1], [2], etc.
         story.append(Paragraph(_escape(line).replace("  ", "&nbsp;&nbsp;"), styles["Body"]))
-        # Inline-Figuren direkt darunter einfügen
+        
+        # Inline-Figuren direkt darunter einfügen (suche im ORIGINAL-Text nach [Fxxxxx])
         if inline_figures and fig_by_id:
             before_count = len(used_fig_ids)
             _append_inline_figures_for_line(
-                story, line, fig_by_id, used_fig_ids, styles,
+                story, orig_line, fig_by_id, used_fig_ids, id_mapping, fig_counter, styles,
                 max_width_pt=doc.width, max_height_pt=doc.height,
                 max_inline_total=max_inline_figures_total,
             )
             if len(used_fig_ids) > before_count:
                 any_inline_figs = True
 
-    # Quellenblock
+    # Quellenverzeichnis (wissenschaftlich formatiert)
     story.append(Spacer(1, 10))
-    story.append(Paragraph("Quellen", styles["Heading"]))
-    story.append(_sources_list(supports, styles))
+    story.append(Paragraph("Literaturverzeichnis", styles["Heading"]))
+    for ref_entry in _sources_list(supports, id_mapping, styles):
+        story.append(ref_entry)
 
     # Fallback: Wenn keine Inline-Referenzen genutzt wurden, optional Top-K Figuren ans Ende
     if not any_inline_figs and fallback_append_top_k_if_no_refs and fallback_append_top_k_if_no_refs > 0 and fig_by_id:
@@ -172,11 +262,34 @@ def write_answer_pdf(
         figs = figs[:fallback_append_top_k_if_no_refs]
         story.append(PageBreak())
         story.append(Paragraph(f"Verwendete Abbildungen (Top {len(figs)})", styles["Heading"]))
+        
         for f in figs:
+            fig_counter['count'] += 1
+            fig_num = fig_counter['count']
+            
+            story.append(Spacer(1, 6))
             img_flow = _make_scaled_image(f.get("image_uri"), doc.width, doc.height)
             story.append(img_flow)
-            cap = f.get("caption") or f.get("figure_label") or ""
-            story.append(Paragraph(f"[F{f['figure_id']}] {_escape(cap)} (Seite {f.get('page') or '—'})", styles["Small"]))
+            
+            # Wissenschaftliche Caption
+            sid = f"F{f['figure_id']}"
+            ref_num = id_mapping.get(sid, "?")
+            caption_text = f.get("caption") or f.get("figure_label") or "Ohne Beschreibung"
+            paper_title = f.get("paper_title", "")
+            page = f.get("page")
+            
+            cap_parts = [f"<b>Figure {fig_num}:</b>", _escape(caption_text)]
+            cap_parts.append(f"[{ref_num}]")
+            
+            if paper_title:
+                source_info = f"({_escape(paper_title)}"
+                if page and page != '—':
+                    source_info += f", S. {page}"
+                source_info += ")"
+                cap_parts.append(source_info)
+            
+            cap_txt = " ".join(cap_parts)
+            story.append(Paragraph(cap_txt, styles["Caption"]))
             story.append(Spacer(1, 8))
 
     doc.build(story)

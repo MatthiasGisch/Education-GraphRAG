@@ -167,7 +167,11 @@ def answer_query(
         else:
             ret = hybrid_retrieve(neo, query, k_paragraphs=k_paragraphs, k_figures=k_figures)
         
-        supports = (ret.get("supports") or [])[:12]
+        # Separate Paragraphs und Figures, dann kombinieren (Figures sollen nicht abgeschnitten werden)
+        all_supports = ret.get("supports") or []
+        paragraphs = [s for s in all_supports if s.get("type") == "paragraph"]
+        figures = [s for s in all_supports if s.get("type") == "figure"]
+        supports = paragraphs[:12] + figures  # Max 12 Paragraphen + alle Figures
         eff = _effective_supports(supports, min_supports_score)
         debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff, "decision": "graph_only"})
         answer = grounded_answer(query, supports)
@@ -187,7 +191,11 @@ def answer_query(
     else:
         ret = hybrid_retrieve(neo, query, k_paragraphs=k_paragraphs, k_figures=k_figures)
     
-    supports = (ret.get("supports") or [])[:12]
+    # Separate Paragraphs und Figures, dann kombinieren (Figures sollen nicht abgeschnitten werden)
+    all_supports = ret.get("supports") or []
+    paragraphs = [s for s in all_supports if s.get("type") == "paragraph"]
+    figures = [s for s in all_supports if s.get("type") == "figure"]
+    supports = paragraphs[:12] + figures  # Max 12 Paragraphen + alle Figures
     eff = _effective_supports(supports, min_supports_score)
     debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff})
 
