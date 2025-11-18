@@ -1031,11 +1031,11 @@ with tab_synthesia:
                     except Exception as e:
                         st.error(f"Fehler beim Synthesia-Aufruf: {e}")
 
-# ---- Tab: Konzepte (Topic + Seed-Liste, Pre-Ingest) ----
+# ---- Tab: Konzepte (Topic + Strategie, Pre-Ingest) ----
 with tab_concepts:
     st.subheader("Topic & Konzepte festlegen")
     default_topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-    topic = st.text_input("Umbrella-Topic", value=default_topic)
+    topic = st.text_input("Topic-Name", value=default_topic)
     st.session_state["concept_topic"] = topic
 
     mode = st.radio(
@@ -1063,107 +1063,23 @@ with tab_concepts:
     with colC2:
         st.info("Konzepte werden automatisch beim Ingest extrahiert. Wähle oben den gewünschten Modus.")
 
-
-        st.info("Seeds werden beim Ingest genutzt. Modus und Topic kannst du hier vorgeben.")
-
-
     st.markdown("---")
     st.subheader("🔁 Nachträgliche Verarbeitung")
 
-    colR1, colR2 = st.columns(2)
-    with colR1:
-        if st.button("Konzepte aus bestehenden Papern extrahieren"):
-            with st.spinner("Extrahiere Konzepte & verknüpfe Absätze …"):
-                topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-                strategy = st.session_state.get("concept_mode", "Hybrid (NER + LLM + Relationen)")
-                rep = rebuild_concepts_for_all(topic, strategy)
-            st.success(f"Fertig: {rep['total_concepts']} Konzepte, {rep['total_links']} Links.")
-            with st.expander("Details pro Paper"):
-                st.json(rep["per_paper"])
-
-    with colR2:
-        sim = st.slider("Ähnlichkeits-Threshold (Cosine) für Umbrellas", 0.70, 0.99, 0.86, 0.01)
-        minc = st.number_input("Min. Clustergröße", min_value=2, max_value=20, value=2, step=1)
-        if st.button("Umbrella-Konzepte clustern"):
-            with st.spinner("Clustere Concepts zu Umbrellas (mit LLM-Namen) …"):
-                topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-                rep = cluster_concepts_into_umbrellas(topic, sim_threshold=float(sim), min_cluster_size=int(minc))
-            st.success(f"{rep['umbrellas_created']} Umbrellas erzeugt, {rep['assigned']} Konzepte zugeordnet.")
-            st.json(rep)
-
-    st.markdown("---")
-    st.subheader("🏷️ Umbrella-Verwaltung")
-    
-    topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-    neo = get_neo()
-    
-    # List umbrellas
-    umbrellas = neo.list_umbrellas_for_topic(topic)
-    
-    if not umbrellas:
-        st.info(f"Keine Umbrellas für Topic '{topic}' gefunden. Führe zuerst Clustering aus.")
-    else:
-        st.markdown(f"**{len(umbrellas)} Umbrella(s) für Topic '{topic}'**")
-        
-        for umb in umbrellas:
-            with st.expander(f"📁 {umb['name']} ({umb['concept_count']} Concepts)"):
-                st.json({"umbrella_id": umb['umbrella_id'], "keywords": umb.get('keywords', [])[:10]})
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    new_name = st.text_input("Neuer Name", value=umb['name'], key=f"rename_{umb['umbrella_id']}")
-                    if st.button("Umbenennen", key=f"btn_rename_{umb['umbrella_id']}"):
-                        try:
-                            neo.rename_umbrella(umb['umbrella_id'], new_name)
-                            st.success(f"Umbenannt zu '{new_name}'")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Fehler: {e}")
-                
-                with col2:
-                    # Merge with another umbrella
-                    other_umbrellas = [u for u in umbrellas if u['umbrella_id'] != umb['umbrella_id']]
-                    if other_umbrellas:
-                        merge_target = st.selectbox(
-                            "Mergen mit",
-                            options=[u['umbrella_id'] for u in other_umbrellas],
-                            format_func=lambda uid: next(u['name'] for u in other_umbrellas if u['umbrella_id'] == uid),
-                            key=f"merge_target_{umb['umbrella_id']}"
-                        )
-                        merge_name = st.text_input("Name nach Merge", value=umb['name'], key=f"merge_name_{umb['umbrella_id']}")
-                        if st.button("Mergen", key=f"btn_merge_{umb['umbrella_id']}"):
-                            try:
-                                result = neo.merge_umbrellas([umb['umbrella_id'], merge_target], merge_name)
-                                st.success(f"Gemerged: {result}")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Fehler: {e}")
-                
-                with col3:
-                    st.warning("Löschen entfernt Umbrella, nicht Concepts")
-                    if other_umbrellas:
-                        reassign_to = st.selectbox(
-                            "Concepts verschieben nach",
-                            options=["(löschen ohne verschieben)"] + [u['umbrella_id'] for u in other_umbrellas],
-                            format_func=lambda uid: "(löschen ohne verschieben)" if uid == "(löschen ohne verschieben)" else next(u['name'] for u in other_umbrellas if u['umbrella_id'] == uid),
-                            key=f"reassign_{umb['umbrella_id']}"
-                        )
-                        reassign_id = None if reassign_to == "(löschen ohne verschieben)" else reassign_to
-                    else:
-                        reassign_id = None
-                    
-                    if st.button("🗑️ Löschen", key=f"btn_delete_{umb['umbrella_id']}"):
-                        try:
-                            result = neo.delete_umbrella(umb['umbrella_id'], reassign_id)
-                            st.success(f"Gelöscht: {result}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Fehler: {e}")
+    if st.button("Konzepte aus bestehenden Papern extrahieren"):
+        with st.spinner("Extrahiere Konzepte & verknüpfe Absätze …"):
+            topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
+            strategy = st.session_state.get("concept_mode", "Hybrid (NER + LLM + Relationen)")
+            rep = rebuild_concepts_for_all(topic, strategy)
+        st.success(f"Fertig: {rep['total_concepts']} Konzepte, {rep['total_links']} Links.")
+        with st.expander("Details pro Paper"):
+            st.json(rep["per_paper"])
 
     st.markdown("---")
     st.subheader("📝 Concept-Verwaltung")
     
+    topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
+    neo = get_neo()
     concepts = neo.list_concepts_for_topic(topic)
     
     if not concepts:
@@ -1171,20 +1087,8 @@ with tab_concepts:
     else:
         st.markdown(f"**{len(concepts)} Concept(s) für Topic '{topic}'**")
         
-        # Filter options
-        show_all = st.checkbox("Alle anzeigen", value=False)
-        filter_umbrella = st.selectbox(
-            "Filter nach Umbrella",
-            options=["(alle)"] + [u['name'] for u in umbrellas],
-            disabled=show_all
-        )
-        
-        filtered_concepts = concepts if show_all or filter_umbrella == "(alle)" else [
-            c for c in concepts if c.get('umbrella') == filter_umbrella
-        ]
-        
         # Show as table with actions
-        for i, concept in enumerate(filtered_concepts[:50]):  # Limit to 50 for performance
+        for i, concept in enumerate(concepts[:50]):  # Limit to 50 for performance
             with st.expander(f"🏷️ {concept['name']} ({concept.get('mentions', 0)} mentions)"):
                 col1, col2 = st.columns([2, 1])
                 
@@ -1208,17 +1112,16 @@ with tab_concepts:
                             st.error(f"Fehler: {e}")
                 
                 with col2:
-                    st.markdown(f"**Umbrella:** {concept.get('umbrella', '(keine)')}")
                     st.markdown(f"**ID:** `{concept['concept_id'][:20]}...`")
                     
                     # Merge with another concept
                     merge_target_name = st.selectbox(
                         "Mergen in",
-                        options=[c['name'] for c in filtered_concepts if c['concept_id'] != concept['concept_id']],
+                        options=[c['name'] for c in concepts if c['concept_id'] != concept['concept_id']],
                         key=f"merge_c_{i}"
                     )
                     if st.button("Mergen", key=f"btn_merge_c_{i}"):
-                        target = next((c for c in filtered_concepts if c['name'] == merge_target_name), None)
+                        target = next((c for c in concepts if c['name'] == merge_target_name), None)
                         if target:
                             try:
                                 result = neo.merge_concepts(concept['concept_id'], target['concept_id'])
@@ -1362,8 +1265,9 @@ with tab_ingest:
         if links:
             try:
                 neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
-            except Exception:
-                pass
+                st.success(f"✅ {len(links)} Paragraph-Concept-Links erstellt")
+            except Exception as e:
+                st.error(f"⚠️ Fehler beim Erstellen der MENTIONS-Links: {e}")
         # Falls genau ein Umbrella existiert, ordne neue (noch unassigned) Konzepte automatisch zu
         try:
             auto_umbrella_res = neo.attach_concepts_to_existing_umbrella(topic)
@@ -1441,46 +1345,63 @@ with tab_query:
     st.subheader("Frage stellen")
     q = st.text_area("Deine Frage", placeholder="Erkläre Green AI mit Belegen.")
     
-    # Retrieval-Einstellungen
-    with st.expander("⚙️ Retrieval-Einstellungen", expanded=False):
-        use_concept_retrieval = st.checkbox(
-            "Concept-basiertes Retrieval (empfohlen)",
-            value=True,
-            help="Nutzt extrahierte Concepts + Graph-Traversierung für intelligenteres Retrieval. "
-                 "Deaktivieren für reines Vector-Retrieval auf Paragraphs."
-        )
+    # Kombinierte Einstellungen in einem Expander
+    with st.expander("⚙️ Einstellungen", expanded=False):
+        st.markdown("**Retrieval-Optionen**")
         
         col_r1, col_r2 = st.columns(2)
         with col_r1:
+            use_concept_retrieval = st.checkbox(
+                "Concept-basiertes Retrieval",
+                value=True,
+                help="Nutzt extrahierte Concepts + Graph-Traversierung für intelligenteres Retrieval."
+            )
             k_paragraphs = st.number_input(
                 "Anzahl Paragraphen",
                 min_value=5,
                 max_value=50,
                 value=24,
                 step=1,
-                help="Wie viele Paragraphen sollen aus der Datenbank abgerufen werden? (Standard: 24)"
+                help="Wie viele Paragraphen sollen abgerufen werden?"
             )
         with col_r2:
+            web_mode_ui = st.selectbox(
+                "Websuche",
+                ["Auto", "Erzwingen", "Aus"],
+                index=0,
+                help="Auto: Websuche bei zu wenig Graph-Belegen. Erzwingen: Immer Web. Aus: Nur Graph."
+            )
             k_figures = st.number_input(
                 "Anzahl Abbildungen",
-                min_value=2,
+                min_value=0,
                 max_value=20,
                 value=8,
                 step=1,
-                help="Wie viele Abbildungen sollen aus der Datenbank abgerufen werden? (Standard: 8)"
+                help="Wie viele Abbildungen sollen abgerufen werden?"
             )
-    
-    col1, col2, col3, col4 = st.columns([1,1,1,1])
-    with col1:
-        inline_figs = st.checkbox("Bilder inline einfügen", value=True)
-    with col2:
-        fallback_k = st.number_input("Fallback: Top-K Figuren (wenn keine Inline-Refs)", min_value=0, max_value=10, value=3, step=1)
-    with col3:
-        export_pdf = st.checkbox("Antwort als PDF exportieren", value=True)
-    with col4:
-        web_mode_ui = st.selectbox("Websuche", ["Auto", "Erzwingen", "Aus"], index=0)
+        
+        st.markdown("---")
+        st.markdown("**PDF-Export-Optionen**")
+        
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            export_pdf = st.checkbox("Antwort als PDF exportieren", value=True)
+            inline_figs = st.checkbox(
+                "Bilder inline einfügen",
+                value=True,
+                help="Bilder werden direkt unter der Referenz im Text eingefügt."
+            )
+        with col_p2:
+            fallback_k = st.number_input(
+                "Fallback: Top-K Figuren anhängen",
+                min_value=0,
+                max_value=10,
+                value=3,
+                step=1,
+                help="Wenn keine Inline-Refs vorhanden, werden die Top-K Figuren am Ende angehängt (0 = deaktiviert)."
+            )
 
-    if st.button("Antwort abrufen"):
+    if st.button("Antwort abrufen", type="primary"):
         if not q.strip():
             st.warning("Bitte eine Frage eingeben.")
         else:
