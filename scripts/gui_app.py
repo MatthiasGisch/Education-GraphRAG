@@ -426,10 +426,14 @@ def _extract_params_from_textarea(json_text: str) -> dict:
         pass
     return {}
 
-def run_cypher_with_params(query_text: str) -> list[dict]:
+def run_cypher_with_params(query_text: str, for_graph: bool = False) -> list[dict]:
     """
     Erlaubt Browser-Style :param-Zeilen und/oder JSON-Param-Textbox.
     Setzt, falls nicht vorhanden, automatisch ein Topic aus der DB.
+    
+    Args:
+        query_text: Cypher Query mit optionalen :param Zeilen
+        for_graph: Wenn True, verwende run_graph() für Graph-Visualisierung (behält Neo4j-Objekte)
     """
     neo = get_neo()
     lines = query_text.splitlines()
@@ -452,7 +456,11 @@ def run_cypher_with_params(query_text: str) -> list[dict]:
     if ";" in cypher.strip():
         cypher = cypher.split(";", 1)[0]
 
-    return neo.run(cypher, params)
+    # Für Graph-Visualisierung: rohe Neo4j-Objekte behalten
+    if for_graph:
+        return neo.run_graph(cypher, params)
+    else:
+        return neo.run(cypher, params)
 
 
 def visualize_with_plotly(
@@ -565,8 +573,11 @@ def visualize_with_plotly(
         else:
             _walk(rec)
     
+    # Debug-Ausgabe
+    st.info(f"🔍 Debug: {len(processed_nodes)} Knoten, {len(processed_edges)} Kanten gefunden")
+    
     if not processed_nodes:
-        st.warning("Keine Knoten gefunden zum Visualisieren.")
+        st.warning("⚠️ Keine Knoten gefunden zum Visualisieren. Prüfe ob die Query Nodes/Paths zurückgibt.")
         return
     
     # 2) NetworkX Graph aufbauen
@@ -579,8 +590,11 @@ def visualize_with_plotly(
         if src in G and dst in G:
             G.add_edge(src, dst, relation=rel_type)
     
+    # Debug-Ausgabe
+    st.info(f"📊 NetworkX Graph: {len(G.nodes())} Knoten, {len(G.edges())} Kanten")
+    
     if len(G.nodes()) == 0:
-        st.warning("Graph ist leer.")
+        st.warning("⚠️ Graph ist leer nach NetworkX-Erstellung.")
         return
     
     # 3) Layout berechnen
@@ -1788,21 +1802,34 @@ with tab_query:
 
         # Simplified presets (kept small for clarity)
         presets = {
-            "Umbrella → Concept → Paragraphs & Figures":
+            "Topic → Concepts → Paragraphs & Figures":
             """\
     :param topic => "Künstliche Intelligenz";
-    MATCH p1 = (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)-[:NARROWER]->(c:Concept)
+    MATCH p1 = (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
     OPTIONAL MATCH p2 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
     OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
     OPTIONAL MATCH p4 = (para)-[:HAS_FIGURE]->(figS:Figure)
     RETURN p1, p2, p3, p4
     LIMIT 500
     """,
-            "Alle Paper → Paragraphen (einfach)":
+            "Alle Paper → Paragraphen":
             """\
     MATCH p = (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
     RETURN p
     LIMIT 400
+    """,
+            "Papers → ABOUT → Concepts":
+            """\
+    MATCH p = (paper:Paper)-[ab:ABOUT]->(c:Concept)
+    WHERE ab.weight > 0.5
+    RETURN p
+    LIMIT 300
+    """,
+            "Concepts mit SEMANTIC_RELATION":
+            """\
+    MATCH p = (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
+    RETURN p
+    LIMIT 200
     """,
         }
 
@@ -1861,22 +1888,26 @@ with tab_query:
         with colQ1:
             if st.button("Query ausführen"):
                 try:
-                    recs = run_cypher_with_params(cypher_in)
-                    st.success(f"{len(recs)} Record(s) erhalten.")
+                    # Für Visualisierung: rohe Neo4j-Objekte holen
+                    recs_graph = run_cypher_with_params(cypher_in, for_graph=True)
+                    # Für Daten-Anzeige: normale Daten
+                    recs_data = run_cypher_with_params(cypher_in, for_graph=False)
+                    
+                    st.success(f"{len(recs_data)} Record(s) erhalten.")
                     with st.expander("Rohdaten anzeigen"):
-                        st.write(recs)
+                        st.write(recs_data)
                     
                     # Visualisierung basierend auf gewählter Engine
                     if viz_engine == "Plotly (empfohlen)":
                         visualize_with_plotly(
-                            recs, 
+                            recs_graph, 
                             height=650,
                             layout=layout_algo,
                             show_edge_labels=show_edge_labels,
                             color_by=color_by
                         )
                     else:
-                        visualize_records_as_graph(recs, height=650)
+                        visualize_records_as_graph(recs_graph, height=650)
                 except Exception as e:
                     st.error(f"Cypher-Fehler: {e}")
                     st.code(cypher_in, language="cypher")
@@ -1931,34 +1962,42 @@ with tab_query:
                 st.json(diag)
 
         with colQ2:
-            # One-click Umbrella view (keeps the UI simple)
-            if st.button("Show Umbrellas + Concepts + Paragraphs/Figures"):
+            # One-click Topic->Concepts view (simplified - no Umbrellas needed)
+            if st.button("Show Topic + Concepts + Paragraphs/Figures"):
                 try:
                     cy = """
     :param topic => "Künstliche Intelligenz";
-    MATCH p1 = (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)-[:NARROWER]->(c:Concept)
+    // Haupt-Pfad: Topic -> Concepts
+    MATCH p1 = (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
+    // Optional: Concepts <- MENTIONS von Paragraphs <- HAS_PARAGRAPH von Papers
     OPTIONAL MATCH p2 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
+    // Optional: Papers mit Figures
     OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
+    // Optional: Paragraphs mit Figures
     OPTIONAL MATCH p4 = (para)-[:HAS_FIGURE]->(figS:Figure)
     RETURN p1, p2, p3, p4
     LIMIT 500
                     """
-                    recs = run_cypher_with_params(cy)
-                    st.success(f"{len(recs)} Record(s) erhalten.")
-                    with st.expander("Rohdaten anzeigen (Umbrellas→Concepts)"):
-                        st.write(recs)
+                    # Für Visualisierung: rohe Neo4j-Objekte holen
+                    recs_graph = run_cypher_with_params(cy, for_graph=True)
+                    # Für Daten-Anzeige: normale Daten
+                    recs_data = run_cypher_with_params(cy, for_graph=False)
+                    
+                    st.success(f"{len(recs_data)} Record(s) erhalten.")
+                    with st.expander("Rohdaten anzeigen (Topic→Concepts)"):
+                        st.write(recs_data)
                     
                     # Visualisierung basierend auf gewählter Engine
                     if viz_engine == "Plotly (empfohlen)":
                         visualize_with_plotly(
-                            recs, 
+                            recs_graph, 
                             height=700,
                             layout=layout_algo,
                             show_edge_labels=show_edge_labels,
                             color_by=color_by
                         )
                     else:
-                        visualize_records_as_graph(recs, height=700)
+                        visualize_records_as_graph(recs_graph, height=700)
                 except Exception as e:
                     st.error(f"Fehler beim Laden der Umbrella-Ansicht: {e}")
 

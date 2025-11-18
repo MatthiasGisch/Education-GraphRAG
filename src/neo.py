@@ -18,6 +18,23 @@ class Neo4jClient:
         with self.driver.session() as session:
             result = session.run(cypher, params or {})
             return [r.data() for r in result]
+    
+    def run_graph(self, cypher: str, params: Dict[str, Any] | None = None) -> List[Any]:
+        """
+        Führt Cypher-Query aus und gibt die rohen Neo4j-Records zurück (inkl. Nodes, Paths, Relationships).
+        Wichtig für Graph-Visualisierung!
+        """
+        with self.driver.session() as session:
+            result = session.run(cypher, params or {})
+            records = []
+            for r in result:
+                # Jeder Record kann mehrere Felder haben (z.B. p1, p2, p3)
+                # Wir wollen alle Felder behalten
+                record_dict = {}
+                for key in r.keys():
+                    record_dict[key] = r[key]
+                records.append(record_dict)
+            return records
 
     # --- WICHTIG: robuste Schema-Anlage (Kommentare rausfiltern, Semikolons splitten)
     def ensure_schema(self, schema_cypher: str) -> None:
