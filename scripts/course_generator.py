@@ -11,7 +11,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from pathlib import Path
 import datetime
 
-def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None) -> dict:
+def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None, retrieval_hints: dict = None) -> dict:
     """
     Holt relevante Inhalte aus dem Wissensgraphen für ein Kapitel.
     Nutzt das bewährte Retrieval-System aus dem Fragen-Tab.
@@ -20,6 +20,7 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         neo: Neo4j Client
         chapter_title: Titel des Kapitels
         topic: Optional das Topic für bessere Zuordnung
+        retrieval_hints: Optional dict mit Abschnitt-Index -> Retrieval-Hinweis
         
     Returns:
         Dict mit answer_text, paragraphs, figures, related_concepts
@@ -36,7 +37,15 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         # Erstelle eine strukturierte Frage für das Retrieval
         query = f"Erkläre das Konzept '{chapter_title}' ausführlich und didaktisch verständlich für Studierende."
         
+        # Füge Retrieval-Hinweise zur Query hinzu, falls vorhanden
+        if retrieval_hints:
+            hints_text = " ".join([hint for hint in retrieval_hints.values() if hint.strip()])
+            if hints_text:
+                query += f" Berücksichtige dabei folgende Aspekte: {hints_text}"
+        
         print(f"DEBUG: Fetching content for chapter '{chapter_title}' using answer_query")
+        if retrieval_hints:
+            print(f"DEBUG: Using retrieval hints: {retrieval_hints}")
         
         # Nutze das bewährte Retrieval-System
         response = answer_query(
@@ -386,8 +395,11 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         # Hole Inhalte aus dem Wissensgraphen
         content = {}
         if include_content and neo:
+            # Hole Retrieval-Hinweise für dieses Kapitel
+            retrieval_hints = kapitel.get("Retrieval_Hinweise", {})
+            
             print(f"DEBUG: Fetching content for chapter {idx}: '{chapter_title}' (neo={neo}, include_content={include_content})")
-            content = fetch_content_for_chapter(neo, chapter_title)
+            content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints)
             print(f"DEBUG: Content retrieved: answer_text length={len(content.get('answer_text', ''))}, {len(content.get('paragraphs', []))} paragraphs, {len(content.get('figures', []))} figures")
             
             # Sammle Quellen für das Quellenverzeichnis
@@ -569,7 +581,7 @@ def show_course_generator():
         if concepts and st.button("Alle Konzepte als Kapitel übernehmen"):
             # Nur übernehmen, wenn explizit geklickt
             st.session_state["course_struct"]["Kapitel"] = [
-                {"Titel": c["name"], "Lernziele": [], "Abschnitte": []} for c in concepts
+                {"Titel": c["name"], "Lernziele": [], "Abschnitte": [], "Retrieval_Hinweise": {}} for c in concepts
             ]
             st.rerun()
     
@@ -594,7 +606,8 @@ def show_course_generator():
         course["Kapitel"].append({
             "Titel": f"Kapitel {len(course['Kapitel'])+1}",
             "Lernziele": [],
-            "Abschnitte": []
+            "Abschnitte": [],
+            "Retrieval_Hinweise": {}
         })
 
     # Kapitel bearbeiten
@@ -621,8 +634,29 @@ def show_course_generator():
 
             # Abschnitte bearbeiten
             st.markdown("**Abschnitte (Unterkapitel):**")
+            # Initialisiere Retrieval_Hinweise falls nicht vorhanden
+            if "Retrieval_Hinweise" not in kapitel:
+                kapitel["Retrieval_Hinweise"] = {}
+            
             for aidx, abschnitt in enumerate(kapitel["Abschnitte"]):
-                kapitel["Abschnitte"][aidx] = st.text_input(f"Abschnitt {aidx+1} (Kapitel {idx+1})", value=abschnitt, key=f"abs_{idx}_{aidx}")
+                col_abs_title, col_abs_hint = st.columns([2, 3])
+                with col_abs_title:
+                    kapitel["Abschnitte"][aidx] = st.text_input(
+                        f"Abschnitt {aidx+1}", 
+                        value=abschnitt, 
+                        key=f"abs_{idx}_{aidx}",
+                        help="Titel des Abschnitts"
+                    )
+                with col_abs_hint:
+                    # Retrieval-Hinweis für diesen Abschnitt
+                    current_hint = kapitel["Retrieval_Hinweise"].get(str(aidx), "")
+                    kapitel["Retrieval_Hinweise"][str(aidx)] = st.text_input(
+                        f"Retrieval-Fokus",
+                        value=current_hint,
+                        key=f"hint_{idx}_{aidx}",
+                        placeholder="z.B. 'Fokus auf praktische Anwendungen', 'mathematische Grundlagen', 'historischer Kontext'",
+                        help="Optionale Anweisungen für die Inhaltssuche"
+                    )
 
             col_a1, col_a2 = st.columns(2)
             with col_a1:

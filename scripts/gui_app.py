@@ -40,6 +40,15 @@ from src.concept_extract import (
     extract_and_embed_concepts,
     extract_and_embed_concepts_hybrid
 )
+from src.ingest_enhanced import (
+    calculate_dynamic_parameters,
+    infer_topic_from_title,
+    check_for_duplicates,
+    extract_enhanced_metadata,
+    filter_low_quality_concepts,
+    validate_ingestion_quality,
+    create_ingestion_summary
+)
 
 # Import für Gamma API
 from src.gamma import GammaClient, to_gamma_input_text
@@ -1153,19 +1162,119 @@ with tab_concepts:
                         except Exception as e:
                             st.error(f"Fehler: {e}")
 
-# ---- Tab: Ingest ----
+# ---- Tab: Ingest (Enhanced) ----
 with tab_ingest:
-    st.subheader("PDFs ingestieren")
-    uploaded = st.file_uploader("PDF-Dateien auswählen", type=["pdf"], accept_multiple_files=True)
-
-    # Kleines Status-Banner zu Konzept-Einstellungen
-    st.markdown(f"**Aktuelles Topic:** `{st.session_state.get('concept_topic','—')}`  •  "
-                f"**Strategie:** `{st.session_state.get('concept_mode','Hybrid (NER + LLM + Relationen)')}`")
-
-    def ingest_one_pdf(path: Path) -> Dict[str, Any]:
+    st.subheader("📥 PDFs ingestieren (Erweitert)")
+    
+    # === Erweiterte Einstellungen ===
+    with st.expander("⚙️ Ingest-Einstellungen", expanded=True):
+        col_topic, col_strategy = st.columns(2)
+        
+        with col_topic:
+            # Topic-Auswahl mit Auto-Inference
+            neo = get_neo()
+            existing_topics = [r["name"] for r in neo.run("MATCH (t:Topic) RETURN DISTINCT t.name AS name ORDER BY name")]
+            
+            if not existing_topics:
+                existing_topics = ["Künstliche Intelligenz"]
+            
+            use_auto_topic = st.checkbox("📌 Topic automatisch aus Titel ableiten", value=False)
+            
+            if not use_auto_topic:
+                selected_topic = st.selectbox(
+                    "Topic zuordnen",
+                    options=existing_topics,
+                    index=0 if "Künstliche Intelligenz" in existing_topics else 0,
+                    key="ingest_topic_select"
+                )
+                st.session_state["concept_topic"] = selected_topic
+            else:
+                st.info("Topic wird automatisch aus dem Dokumenttitel abgeleitet")
+                selected_topic = None
+            
+            # Option für neues Topic
+            new_topic = st.text_input("➕ Oder neues Topic erstellen", key="new_topic_input")
+            if new_topic:
+                st.session_state["concept_topic"] = new_topic
+                selected_topic = new_topic
+        
+        with col_strategy:
+            strategy = st.radio(
+                "Konzept-Extraktions-Strategie",
+                ["Hybrid (NER + LLM + Relationen)", "LLM"],
+                index=0,
+                help="Hybrid nutzt Named Entity Recognition + LLM und extrahiert semantische Relationen. Empfohlen für wissenschaftliche Texte."
+            )
+            st.session_state["concept_mode"] = strategy
+            
+            use_scispacy = st.checkbox("🔬 SciSpacy verwenden", value=True, help="Optimiert für wissenschaftliche Texte")
+        
+        col_params1, col_params2 = st.columns(2)
+        with col_params1:
+            auto_params = st.checkbox("🎯 Parameter automatisch anpassen", value=True, 
+                                      help="Passt max_entities/max_relations an Dokumentgröße an")
+            if not auto_params:
+                max_entities = st.slider("Max. Entitäten", 10, 100, 30)
+                max_relations = st.slider("Max. Relationen", 5, 50, 20)
+            else:
+                st.info("Parameter werden dynamisch berechnet")
+                max_entities = None
+                max_relations = None
+        
+        with col_params2:
+            check_duplicates = st.checkbox("🔍 Duplikate erkennen", value=True,
+                                          help="Prüft auf SHA256, DOI und Titel-Duplikate")
+            quality_filter = st.checkbox("✨ Qualitätsfilter aktivieren", value=True,
+                                        help="Filtert Konzepte mit niedriger Confidence")
+            if quality_filter:
+                min_confidence = st.slider("Min. Confidence", 0.0, 1.0, 0.6, 0.05)
+            else:
+                min_confidence = 0.0
+    
+    st.markdown("---")
+    
+    # === File Upload ===
+    uploaded = st.file_uploader("📄 PDF-Dateien auswählen", type=["pdf"], accept_multiple_files=True)
+    
+    # Enhanced ingest function
+    def ingest_one_pdf_enhanced(path: Path, use_auto_topic_param: bool, topic_param: str) -> Dict[str, Any]:
         neo = get_neo()
+        
+        # Read PDF
         paper_meta, sections, paragraphs, figures = read_pdf_text_and_images(str(path))
-
+        
+        # Extract enhanced metadata
+        paper_meta = extract_enhanced_metadata(path, paper_meta)
+        
+        # Check for duplicates
+        if check_duplicates:
+            duplicate = check_for_duplicates(neo, paper_meta)
+            if duplicate:
+                return {
+                    "status": "duplicate",
+                    "duplicate_info": duplicate,
+                    "title": paper_meta.get("title"),
+                    "file_name": path.name
+                }
+        
+        # Infer topic if needed
+        if use_auto_topic_param:
+            topic = infer_topic_from_title(paper_meta.get("title", ""))
+            st.info(f"📌 Auto-Topic: {topic}")
+        else:
+            topic = topic_param or "Künstliche Intelligenz"
+        
+        # Calculate dynamic parameters
+        if auto_params:
+            params = calculate_dynamic_parameters(len(paragraphs))
+            max_ent = params["max_entities"]
+            max_rel = params["max_relations"]
+            st.info(f"🎯 Dynamische Parameter: max_entities={max_ent}, max_relations={max_rel}")
+        else:
+            max_ent = max_entities
+            max_rel = max_relations
+        
+        # Upsert paper
         neo.upsert_paper(
             paper_meta["paper_id"],
             paper_meta.get("title"),
@@ -1174,15 +1283,20 @@ with tab_ingest:
                 "doi": paper_meta.get("doi"),
                 "url": paper_meta.get("url"),
                 "file_sha256": paper_meta.get("file_sha256"),
+                "file_size": paper_meta.get("file_size"),
+                "ingested_at": paper_meta.get("ingested_at"),
+                "page_count": paper_meta.get("page_count"),
                 **paper_meta.get("meta", {}),
             },
         )
+        
         if sections:
             neo.add_sections(paper_meta["paper_id"], sections)
-
+        
         paragraphs_emb = embed_paragraphs(paragraphs)
         neo.add_paragraphs(paper_meta["paper_id"], paragraphs_emb)
-
+        
+        # Figures
         figs_analysed = analyze_and_embed_figures(figures) if figures else []
         by_id = {f["figure_id"]: f for f in figures}
         figs_ready = []
@@ -1203,122 +1317,127 @@ with tab_ingest:
             })
         if figs_ready:
             neo.add_figures(paper_meta["paper_id"], figs_ready)
-
-        # ---- Konzepte je nach Strategie ----
-        topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-        strategy = st.session_state.get("concept_mode", "Hybrid (NER + LLM + Relationen)")
         
+        # Extract concepts
         hybrid_mode = (strategy == "Hybrid (NER + LLM + Relationen)")
         
         if hybrid_mode:
-            # Hybrid: NER + LLM + Relationen
             full_text = "\n\n".join([p.get("text", "") for p in paragraphs_emb])
             result = extract_and_embed_concepts_hybrid(
                 paper_title=paper_meta.get("title") or "",
                 paper_text=full_text,
                 paragraphs=paragraphs_emb,
                 topic_hint=topic,
-                max_entities=30,
-                max_relations=20,
-                use_scispacy=True,
+                max_entities=max_ent,
+                max_relations=max_rel,
+                use_scispacy=use_scispacy,
                 neo_client=neo,
                 persist_to_topic=True
             )
             concepts = result.get('concepts', [])
-            links = result.get('links', [])
+            links = result.get('paragraph_links', [])
         else:
-            # LLM-only mode
             concepts, links = extract_and_embed_concepts(
                 paper_title=paper_meta.get("title") or "",
                 paragraphs=paragraphs_emb,
                 topic_hint=topic,
-                max_concepts=30,
+                max_concepts=max_ent,
                 seed_names=None,
                 allow_new=True,
                 neo_client=neo,
                 persist_to_topic=True
             )
-
-        # Konzepte wurden (falls vorhanden) bereits persistiert (persist_to_topic=True)
-        if concepts:
-            # Calculate confidence stats from links
-            concept_confidence = {}
-            for link in links:
-                cid = link.get('concept_id')
-                conf = link.get('confidence', 0.0)
-                if cid not in concept_confidence:
-                    concept_confidence[cid] = []
-                concept_confidence[cid].append(conf)
-            
-            # Add avg confidence to concepts for display
-            concepts_with_conf = []
-            for c in concepts:
-                cid = c.get('concept_id')
-                confs = concept_confidence.get(cid, [])
-                avg_conf = sum(confs) / len(confs) if confs else 0.0
-                mention_count = len(confs)
-                concepts_with_conf.append({
-                    **c,
-                    'avg_confidence': round(avg_conf, 2),
-                    'mention_count': mention_count,
-                    'confidence_level': '🟢 Hoch' if avg_conf >= 0.7 else '🟡 Mittel' if avg_conf >= 0.5 else '🔴 Niedrig'
-                })
-            
-            # Sort by confidence (high to low)
-            concepts_with_conf.sort(key=lambda x: x.get('avg_confidence', 0), reverse=True)
-            
-            with st.expander(f"✅ Konzepte (automatisch gespeichert) ({len(concepts)})"):
-                st.markdown("**Legende:** 🟢 Hoch (≥0.7) | 🟡 Mittel (≥0.5) | 🔴 Niedrig (<0.5)")
-                for c in concepts_with_conf:
-                    st.markdown(
-                        f"- **{c['name']}** {c.get('confidence_level', '')} "
-                        f"(Ø Conf: {c.get('avg_confidence', 0):.2f}, {c.get('mention_count', 0)} mentions)"
-                    )
-                with st.expander("JSON Details"):
-                    st.json(concepts_with_conf)
-        # Paragraph↔Concept Links jetzt schreiben (falls vorhanden)
+        
+        # Quality filter
+        if quality_filter and concepts:
+            concepts, links = filter_low_quality_concepts(concepts, min_confidence, links)
+        
+        # Link paragraphs to concepts
         if links:
             try:
                 neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
-                st.success(f"✅ {len(links)} Paragraph-Concept-Links erstellt")
             except Exception as e:
-                st.error(f"⚠️ Fehler beim Erstellen der MENTIONS-Links: {e}")
-        # Falls genau ein Umbrella existiert, ordne neue (noch unassigned) Konzepte automatisch zu
+                st.warning(f"⚠️ Link-Fehler: {e}")
+        
+        # Auto-attach to umbrella
         try:
-            auto_umbrella_res = neo.attach_concepts_to_existing_umbrella(topic)
-            if auto_umbrella_res.get("attached"):
-                st.info(f"{auto_umbrella_res['attached']} Konzepte automatisch dem einzigen Umbrella zugeordnet.")
+            neo.attach_concepts_to_existing_umbrella(topic)
         except Exception:
             pass
-
-        return {
+        
+        report = {
+            "status": "success",
             "paper_id": paper_meta["paper_id"],
             "title": paper_meta.get("title"),
-            "doi": paper_meta.get("doi"),
-            "url": paper_meta.get("url"),
-            "file_sha256": paper_meta.get("file_sha256"),
+            "topic": topic,
             "n_sections": len(sections),
             "n_paragraphs": len(paragraphs_emb),
             "n_figures": len(figs_ready),
-            "n_concepts_added": len(concepts),
+            "n_concepts": len(concepts),
             "n_links": len(links),
+            "file_name": path.name
         }
-
+        
+        return report
+    
+    # === Ingest Button ===
     if uploaded:
-        if st.button("Ingest starten"):
+        if st.button("🚀 Ingest starten", type="primary"):
             reports = []
+            duplicates = []
             errors = []
-            with st.spinner("Ingest läuft …"):
-                for f in uploaded:
-                    try:
-                        out_path = UPLOAD_DIR / f.name
-                        out_path.write_bytes(f.read())
-                        rep = ingest_one_pdf(out_path)
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for idx, f in enumerate(uploaded):
+                try:
+                    status_text.text(f"📄 Verarbeite {idx+1}/{len(uploaded)}: {f.name}")
+                    
+                    out_path = UPLOAD_DIR / f.name
+                    out_path.write_bytes(f.read())
+                    
+                    rep = ingest_one_pdf_enhanced(out_path, use_auto_topic, selected_topic)
+                    
+                    if rep.get("status") == "duplicate":
+                        duplicates.append(rep)
+                        st.warning(f"⚠️ Duplikat übersprungen: {rep['title']}")
+                    else:
                         reports.append(rep)
-                    except Exception as e:
-                        errors.append({"file": f.name, "error": str(e), "trace": traceback.format_exc()})
-            st.success(f"Fertig. {len(reports)} ok, {len(errors)} Fehler.")
-            st.json({"ok": reports, "errors": errors})
+                        
+                        # Validation
+                        validation = validate_ingestion_quality(rep)
+                        
+                        # Show summary
+                        with st.expander(f"✅ {rep['title']} ({validation['quality_label']})"):
+                            summary = create_ingestion_summary(rep, validation)
+                            st.markdown(summary)
+                    
+                except Exception as e:
+                    errors.append({"file": f.name, "error": str(e), "trace": traceback.format_exc()})
+                    st.error(f"❌ Fehler bei {f.name}: {e}")
+                
+                progress_bar.progress((idx + 1) / len(uploaded))
+            
+            status_text.empty()
+            progress_bar.empty()
+            
+            # Final summary
+            st.markdown("---")
+            st.success(f"🎉 Fertig! {len(reports)} erfolgreich, {len(duplicates)} Duplikate, {len(errors)} Fehler")
+            
+            if reports:
+                avg_quality = sum(validate_ingestion_quality(r)["quality_score"] for r in reports) / len(reports)
+                st.metric("Durchschnittliche Qualität", f"{avg_quality:.0f}/100")
+            
+            if duplicates:
+                with st.expander("⚠️ Duplikate"):
+                    for dup in duplicates:
+                        st.markdown(f"- **{dup['file_name']}**: {dup['duplicate_info']['message']}")
+            
+            if errors:
+                with st.expander("❌ Fehler"):
+                    st.json(errors)
 
     st.markdown("---")
     st.subheader("🧵 Graph stitchen & Dienstprogramme")
