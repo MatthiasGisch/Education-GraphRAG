@@ -7,11 +7,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 from pathlib import Path
 import datetime
 
-def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None, retrieval_hints: dict = None) -> dict:
+def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None, retrieval_hints: dict = None, section_title: str = None) -> dict:
     """
     Holt relevante Inhalte aus dem Wissensgraphen für ein Kapitel.
     Nutzt das bewährte Retrieval-System aus dem Fragen-Tab.
@@ -35,17 +35,38 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
     
     try:
         # Erstelle eine strukturierte Frage für das Retrieval
-        query = f"Erkläre das Konzept '{chapter_title}' ausführlich und didaktisch verständlich für Studierende."
+        if section_title:
+            # Für einen spezifischen Abschnitt
+            query = f"Erkläre zum Konzept '{chapter_title}' den Aspekt '{section_title}' ausführlich und didaktisch verständlich für Studierende."
+        else:
+            # Für das gesamte Kapitel
+            query = f"Erkläre das Konzept '{chapter_title}' ausführlich und didaktisch verständlich für Studierende."
         
         # Füge Retrieval-Hinweise zur Query hinzu, falls vorhanden
         if retrieval_hints:
-            hints_text = " ".join([hint for hint in retrieval_hints.values() if hint.strip()])
-            if hints_text:
-                query += f" Berücksichtige dabei folgende Aspekte: {hints_text}"
+            # Sammle alle Fokus-Hinweise aus den dict-Strukturen
+            all_fokus_hints = []
+            
+            for hint_data in retrieval_hints.values():
+                if isinstance(hint_data, dict):
+                    # Sammle alle drei Fokus-Felder
+                    for key in ["fokus1", "fokus2", "fokus3"]:
+                        if hint_data.get(key, "").strip():
+                            all_fokus_hints.append(hint_data[key].strip())
+                    # Legacy support für alte Felder (fokus, kontext, ausschluss)
+                    for key in ["fokus", "kontext", "ausschluss"]:
+                        if key in hint_data and hint_data[key].strip():
+                            all_fokus_hints.append(hint_data[key].strip())
+                elif isinstance(hint_data, str) and hint_data.strip():
+                    # Legacy support für alte String-Hinweise
+                    all_fokus_hints.append(hint_data.strip())
+            
+            # Füge alle Fokus-Hinweise zur Query hinzu
+            if all_fokus_hints:
+                query += f" Berücksichtige dabei folgende Aspekte: {', '.join(all_fokus_hints)}."
         
-        print(f"DEBUG: Fetching content for chapter '{chapter_title}' using answer_query")
-        if retrieval_hints:
-            print(f"DEBUG: Using retrieval hints: {retrieval_hints}")
+        print(f"DEBUG: Fetching content for chapter '{chapter_title}'" + (f", section '{section_title}'" if section_title else ""))
+        print(f"DEBUG: Query: {query[:200]}...")
         
         # Nutze das bewährte Retrieval-System
         response = answer_query(
@@ -64,11 +85,12 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         import re
         
         # Entferne alle Arten von Quellenverweisen, die vom System eingefügt wurden
-        # Pattern 1: [paper_id: 123] oder [paper_id:123]
-        result["answer_text"] = re.sub(r'\[paper_id:\s*\d+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        # Pattern 1: [paper_id: 123] oder [paper_id:123] - auch ohne Leerzeichen
+        result["answer_text"] = re.sub(r'\[paper_id:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        result["answer_text"] = re.sub(r'\[paperid:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
         
         # Pattern 2: [source: ...] beliebiger Inhalt
-        result["answer_text"] = re.sub(r'\[source:[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        result["answer_text"] = re.sub(r'\[source:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
         
         # Pattern 3: [para_id: 123] oder ähnliche ID-Formate
         result["answer_text"] = re.sub(r'\[para_id:\s*\d+\]', '', result["answer_text"], flags=re.IGNORECASE)
@@ -84,14 +106,20 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         # Entferne nur wenn sie NICHT am Ende eines Satzes stehen (kein Punkt/Zeilenende davor)
         result["answer_text"] = re.sub(r'(?<![.!?])\s*\[\d+(?:,\s*\d+)*\](?!\s*$)', '', result["answer_text"])
         
-        # Pattern 7: UUIDs oder lange IDs in eckigen Klammern
-        result["answer_text"] = re.sub(r'\[[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\]', '', result["answer_text"], flags=re.IGNORECASE)
+        # Pattern 7: UUIDs oder lange IDs in eckigen Klammern (auch mit Präfix wie P, F, etc.)
+        result["answer_text"] = re.sub(r'\[[A-Z]?[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\]', '', result["answer_text"], flags=re.IGNORECASE)
         
         # Pattern 8: Generische [id: ...] oder [ID: ...]
         result["answer_text"] = re.sub(r'\[i?d:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
         
         # Pattern 9: [Quelle: ...] oder [Source: ...]
         result["answer_text"] = re.sub(r'\[(?:Quelle|Source):[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 10: Beliebige IDs mit Doppelpunkten [beliebig_id: ...]
+        result["answer_text"] = re.sub(r'\[[a-z_]+_id:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 11: Standalone Zahlen-IDs am Satzanfang oder mitten im Text
+        result["answer_text"] = re.sub(r'(?<!\.)\s*\[\d+\](?!\s*$|\s*\.)', ' ', result["answer_text"])
         
         # Entferne **fett** Formatierung
         result["answer_text"] = result["answer_text"].replace("**", "")
@@ -103,9 +131,12 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         result["answer_text"] = result["answer_text"].replace("___", "")
         result["answer_text"] = result["answer_text"].replace("---", "")
         
-        # Bereinige mehrfache Leerzeichen, die durch Entfernung entstanden sind
-        result["answer_text"] = re.sub(r'\s+', ' ', result["answer_text"])
-        result["answer_text"] = re.sub(r'\n\s*\n\s*\n+', '\n\n', result["answer_text"])  # Max 2 Zeilenumbrüche
+        # Bereinige mehrfache Leerzeichen IN Zeilen, aber behalte Zeilenumbrüche
+        lines = result["answer_text"].split('\n')
+        lines = [re.sub(r' +', ' ', line) for line in lines]  # Mehrfache Leerzeichen pro Zeile
+        result["answer_text"] = '\n'.join(lines)
+        # Normalisiere Absätze: Max 2 Zeilenumbrüche (= 1 Leerzeile zwischen Absätzen)
+        result["answer_text"] = re.sub(r'\n{3,}', '\n\n', result["answer_text"])
         
         # Extrahiere die Supports (Paragraphen und Figuren)
         supports = response.get("supports", [])
@@ -385,14 +416,16 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
     
     story.append(PageBreak())
     
-    # Content-Style
+    # Content-Style mit Blocksatz
     content_style = ParagraphStyle(
         'Content',
         parent=styles['BodyText'],
         fontSize=11,
-        spaceAfter=10,
-        alignment=TA_LEFT,
-        fontName='Helvetica'
+        spaceAfter=14,  # Mehr Abstand zwischen Absätzen
+        spaceBefore=2,
+        alignment=TA_JUSTIFY,  # Blocksatz
+        fontName='Helvetica',
+        leading=16  # Zeilenabstand
     )
     
     citation_style = ParagraphStyle(
@@ -449,55 +482,75 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                     story.append(Paragraph(f"• {ziel}", objective_style))
             story.append(Spacer(1, 0.5*cm))
         
+        # Initialisiere chapter_refs für Zitationen
+        chapter_refs = []
+        cited_titles = set()  # Tracking welche Titel bereits zitiert wurden
+        
         # Abschnitte mit Inhalten
-        answer_text = content.get("answer_text", "")
         abschnitte = kapitel.get("Abschnitte", [])
+        retrieval_hints = kapitel.get("Retrieval_Hinweise", {})
         
-        # Erstelle Mapping von Quellentiteln zu Zitationsnummern
-        chapter_sources = {}
-        chapter_refs = []  # Liste der Referenznummern für dieses Kapitel
-        if content.get("sources"):
-            sorted_all_sources = sorted(all_sources.keys())
-            for source in content["sources"]:
-                title = source.get("title", "")
-                if title and title in sorted_all_sources:
-                    ref_num = sorted_all_sources.index(title) + 1
-                    chapter_sources[title] = ref_num
-                    if ref_num not in chapter_refs:
-                        chapter_refs.append(ref_num)
-        
-        if abschnitte and answer_text:
-            # Verteile den Inhalt auf die Abschnitte
-            # Teile den generierten Text grob in Teile entsprechend der Anzahl der Abschnitte
-            paragraphs_text = [p.strip() for p in answer_text.split('\n\n') if p.strip()]
+        if abschnitte and include_content and neo:
+            # Filtere nur Abschnitte mit Titel
+            non_empty_sections = [(i, sec) for i, sec in enumerate(abschnitte, 1) if sec.strip()]
             
-            # Berechne, wie viele Absätze pro Abschnitt
-            num_sections = len(abschnitte)
-            paras_per_section = max(1, len(paragraphs_text) // num_sections)
+            print(f"DEBUG: Processing {len(non_empty_sections)} non-empty sections")
             
-            for aidx, abschnitt in enumerate(abschnitte, 1):
-                if abschnitt.strip():
+            if non_empty_sections:
+                for section_idx, (aidx, abschnitt) in enumerate(non_empty_sections):
                     # Abschnittstitel
                     story.append(Paragraph(f"{idx}.{aidx} {abschnitt}", section_style))
                     
-                    # Weise diesem Abschnitt entsprechende Absätze zu
-                    start_idx = (aidx - 1) * paras_per_section
-                    end_idx = start_idx + paras_per_section if aidx < num_sections else len(paragraphs_text)
+                    # Hole spezifische Hinweise für diesen Abschnitt
+                    section_hints = {}
+                    section_key = str(aidx - 1)  # Index im Array
+                    if section_key in retrieval_hints:
+                        section_hints[section_key] = retrieval_hints[section_key]
                     
-                    section_paras = paragraphs_text[start_idx:end_idx]
-                    for para_text in section_paras:
-                        # Füge Zitationen am Ende des Absatzes ein
-                        if chapter_refs and aidx == num_sections:
-                            # Nur beim letzten Abschnitt des Kapitels die Quellen anfügen
-                            refs_str = ','.join(map(str, sorted(chapter_refs)))
-                            para_with_citation = f"{para_text} [{refs_str}]"
-                            story.append(Paragraph(para_with_citation, content_style))
-                        else:
-                            story.append(Paragraph(para_text, content_style))
+                    # Hole Inhalt speziell für diesen Abschnitt
+                    print(f"DEBUG: Fetching content for section {aidx}: '{abschnitt}'")
+                    section_content = fetch_content_for_chapter(
+                        neo, 
+                        chapter_title, 
+                        retrieval_hints=section_hints,
+                        section_title=abschnitt
+                    )
+                    
+                    section_text = section_content.get("answer_text", "")
+                    
+                    if section_text:
+                        # Teile in Absätze
+                        paragraphs_text = [p.strip() for p in section_text.split('\n\n') if p.strip()]
+                        print(f"DEBUG: Section {aidx} got {len(paragraphs_text)} paragraphs")
+                        
+                        for para_idx, para_text in enumerate(paragraphs_text):
+                            # Füge Zitationen am Ende des letzten Absatzes des letzten Abschnitts ein
+                            if chapter_refs and section_idx == len(non_empty_sections) - 1 and para_idx == len(paragraphs_text) - 1:
+                                refs_str = ','.join(map(str, sorted(chapter_refs)))
+                                para_with_citation = f"{para_text} [{refs_str}]"
+                                story.append(Paragraph(para_with_citation, content_style))
+                            else:
+                                story.append(Paragraph(para_text, content_style))
+                        
+                        # Sammle Quellen aus diesem Abschnitt
+                        if section_content.get("sources"):
+                            for source in section_content["sources"]:
+                                title = source.get("title", "")
+                                if title and title not in all_sources:
+                                    all_sources[title] = source
+                                if title and title not in cited_titles:
+                                    cited_titles.add(title)
+                                    # Berechne die Zitationsnummer basierend auf alphabetischer Sortierung
+                                    sorted_all_sources = sorted(all_sources.keys())
+                                    if title in sorted_all_sources:
+                                        ref_num = sorted_all_sources.index(title) + 1
+                                        chapter_refs.append(ref_num)
+                    else:
+                        story.append(Paragraph("(Keine Inhalte für diesen Abschnitt gefunden)", content_style))
                     
                     story.append(Spacer(1, 0.3*cm))
         
-        elif abschnitte and not answer_text:
+        elif abschnitte and not include_content:
             # Nur Abschnitte ohne Inhalt
             story.append(Paragraph("Abschnitte:", section_style))
             for aidx, abschnitt in enumerate(abschnitte, 1):
@@ -505,20 +558,39 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                     story.append(Paragraph(f"{idx}.{aidx} {abschnitt}", objective_style))
             story.append(Spacer(1, 0.5*cm))
         
-        elif answer_text and not abschnitte:
-            # Inhalt ohne Abschnitte - als Ganzes einfügen
-            story.append(Paragraph("Inhalt:", section_style))
-            paragraphs_text = answer_text.split('\n\n')
-            for para_idx, para_text in enumerate(paragraphs_text):
-                if para_text.strip():
-                    # Füge Zitationen am Ende des letzten Absatzes ein
-                    if chapter_refs and para_idx == len(paragraphs_text) - 1:
-                        refs_str = ','.join(map(str, sorted(chapter_refs)))
-                        para_with_citation = f"{para_text.strip()} [{refs_str}]"
-                        story.append(Paragraph(para_with_citation, content_style))
-                    else:
-                        story.append(Paragraph(para_text.strip(), content_style))
-            story.append(Spacer(1, 0.5*cm))
+        elif not abschnitte and include_content and neo:
+            # Kein Abschnitte, aber Inhalt gewünscht - hole für gesamtes Kapitel
+            print(f"DEBUG: No sections, fetching content for entire chapter")
+            full_content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints)
+            answer_text = full_content.get("answer_text", "")
+            
+            if answer_text:
+                # Inhalt ohne Abschnitte - als Ganzes einfügen
+                story.append(Paragraph("Inhalt:", section_style))
+                paragraphs_text = answer_text.split('\n\n')
+                for para_idx, para_text in enumerate(paragraphs_text):
+                    if para_text.strip():
+                        # Füge Zitationen am Ende des letzten Absatzes ein
+                        if chapter_refs and para_idx == len(paragraphs_text) - 1:
+                            refs_str = ','.join(map(str, sorted(chapter_refs)))
+                            para_with_citation = f"{para_text.strip()} [{refs_str}]"
+                            story.append(Paragraph(para_with_citation, content_style))
+                        else:
+                            story.append(Paragraph(para_text.strip(), content_style))
+                story.append(Spacer(1, 0.5*cm))
+                
+                # Sammle Quellen
+                if full_content.get("sources"):
+                    for source in full_content["sources"]:
+                        title = source.get("title", "")
+                        if title and title not in all_sources:
+                            all_sources[title] = source
+                        if title and title not in cited_titles:
+                            cited_titles.add(title)
+                            sorted_all_sources = sorted(all_sources.keys())
+                            if title in sorted_all_sources:
+                                ref_num = sorted_all_sources.index(title) + 1
+                                chapter_refs.append(ref_num)
         
         # Pagebreak nach jedem Kapitel (außer dem letzten)
         if idx < len(course.get("Kapitel", [])):
@@ -661,24 +733,69 @@ def show_course_generator():
                 kapitel["Retrieval_Hinweise"] = {}
             
             for aidx, abschnitt in enumerate(kapitel["Abschnitte"]):
-                col_abs_title, col_abs_hint = st.columns([2, 3])
-                with col_abs_title:
-                    kapitel["Abschnitte"][aidx] = st.text_input(
-                        f"Abschnitt {aidx+1}", 
-                        value=abschnitt, 
-                        key=f"abs_{idx}_{aidx}",
-                        help="Titel des Abschnitts"
+                # Abschnittstitel
+                kapitel["Abschnitte"][aidx] = st.text_input(
+                    f"📌 Abschnitt {aidx+1} - Titel", 
+                    value=abschnitt, 
+                    key=f"abs_{idx}_{aidx}",
+                    help="Titel des Abschnitts"
+                )
+                
+                # Drei gleichwertige Fokus-Felder für Retrieval
+                st.markdown(f"*Retrieval-Fokus für Abschnitt {aidx+1}:*")
+                
+                # Initialisiere dict für diesen Abschnitt falls nicht vorhanden
+                if str(aidx) not in kapitel["Retrieval_Hinweise"]:
+                    kapitel["Retrieval_Hinweise"][str(aidx)] = {
+                        "fokus1": "",
+                        "fokus2": "",
+                        "fokus3": ""
+                    }
+                
+                col_r1, col_r2, col_r3 = st.columns(3)
+                
+                with col_r1:
+                    # Fokus-Feld 1
+                    current_fokus1 = kapitel["Retrieval_Hinweise"][str(aidx)].get("fokus1", "") if isinstance(kapitel["Retrieval_Hinweise"][str(aidx)], dict) else ""
+                    fokus1 = st.text_input(
+                        f"🎯 Fokus 1",
+                        value=current_fokus1,
+                        key=f"fokus1_{idx}_{aidx}",
+                        placeholder="z.B. 'praktische Anwendungen'",
+                        help="Erster Schwerpunkt für die Inhaltssuche"
                     )
-                with col_abs_hint:
-                    # Retrieval-Hinweis für diesen Abschnitt
-                    current_hint = kapitel["Retrieval_Hinweise"].get(str(aidx), "")
-                    kapitel["Retrieval_Hinweise"][str(aidx)] = st.text_input(
-                        f"Retrieval-Fokus",
-                        value=current_hint,
-                        key=f"hint_{idx}_{aidx}",
-                        placeholder="z.B. 'Fokus auf praktische Anwendungen', 'mathematische Grundlagen', 'historischer Kontext'",
-                        help="Optionale Anweisungen für die Inhaltssuche"
+                    if isinstance(kapitel["Retrieval_Hinweise"][str(aidx)], dict):
+                        kapitel["Retrieval_Hinweise"][str(aidx)]["fokus1"] = fokus1
+                    else:
+                        kapitel["Retrieval_Hinweise"][str(aidx)] = {"fokus1": fokus1, "fokus2": "", "fokus3": ""}
+                
+                with col_r2:
+                    # Fokus-Feld 2
+                    current_fokus2 = kapitel["Retrieval_Hinweise"][str(aidx)].get("fokus2", "") if isinstance(kapitel["Retrieval_Hinweise"][str(aidx)], dict) else ""
+                    fokus2 = st.text_input(
+                        f"🎯 Fokus 2",
+                        value=current_fokus2,
+                        key=f"fokus2_{idx}_{aidx}",
+                        placeholder="z.B. 'mathematische Grundlagen'",
+                        help="Zweiter Schwerpunkt für die Inhaltssuche"
                     )
+                    if isinstance(kapitel["Retrieval_Hinweise"][str(aidx)], dict):
+                        kapitel["Retrieval_Hinweise"][str(aidx)]["fokus2"] = fokus2
+                
+                with col_r3:
+                    # Fokus-Feld 3
+                    current_fokus3 = kapitel["Retrieval_Hinweise"][str(aidx)].get("fokus3", "") if isinstance(kapitel["Retrieval_Hinweise"][str(aidx)], dict) else ""
+                    fokus3 = st.text_input(
+                        f"🎯 Fokus 3",
+                        value=current_fokus3,
+                        key=f"fokus3_{idx}_{aidx}",
+                        placeholder="z.B. 'historischer Kontext'",
+                        help="Dritter Schwerpunkt für die Inhaltssuche"
+                    )
+                    if isinstance(kapitel["Retrieval_Hinweise"][str(aidx)], dict):
+                        kapitel["Retrieval_Hinweise"][str(aidx)]["fokus3"] = fokus3
+                
+                st.markdown("---")  # Trenner zwischen Abschnitten
 
             col_a1, col_a2 = st.columns(2)
             with col_a1:
