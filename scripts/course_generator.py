@@ -64,12 +64,34 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         import re
         
         # Entferne alle Arten von Quellenverweisen, die vom System eingefügt wurden
-        # z.B. [paper_id: 123], [1], [source: ...], etc.
-        result["answer_text"] = re.sub(r'\[paper_id:\s*\d+\]', '', result["answer_text"])
-        result["answer_text"] = re.sub(r'\[source:[^\]]+\]', '', result["answer_text"])
-        result["answer_text"] = re.sub(r'\[\d+\]', '', result["answer_text"])  # Entferne alte numerische Referenzen
-        result["answer_text"] = re.sub(r'\[fig_id:\s*\d+\]', '', result["answer_text"])
-        result["answer_text"] = re.sub(r'\[Figure\s+\d+\]', '', result["answer_text"])
+        # Pattern 1: [paper_id: 123] oder [paper_id:123]
+        result["answer_text"] = re.sub(r'\[paper_id:\s*\d+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 2: [source: ...] beliebiger Inhalt
+        result["answer_text"] = re.sub(r'\[source:[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 3: [para_id: 123] oder ähnliche ID-Formate
+        result["answer_text"] = re.sub(r'\[para_id:\s*\d+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        result["answer_text"] = re.sub(r'\[paragraph_id:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 4: [fig_id: 123] oder [figure_id: 123]
+        result["answer_text"] = re.sub(r'\[fig(?:ure)?_id:\s*\d+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 5: [Figure 1], [Fig. 1], [Abbildung 1]
+        result["answer_text"] = re.sub(r'\[(?:Figure|Fig\.?|Abbildung)\s+\d+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 6: Standalone numerische Referenzen wie [1], [2], [1,2,3] (aber nicht am Ende von Sätzen wo wir sie wollen)
+        # Entferne nur wenn sie NICHT am Ende eines Satzes stehen (kein Punkt/Zeilenende davor)
+        result["answer_text"] = re.sub(r'(?<![.!?])\s*\[\d+(?:,\s*\d+)*\](?!\s*$)', '', result["answer_text"])
+        
+        # Pattern 7: UUIDs oder lange IDs in eckigen Klammern
+        result["answer_text"] = re.sub(r'\[[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 8: Generische [id: ...] oder [ID: ...]
+        result["answer_text"] = re.sub(r'\[i?d:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
+        # Pattern 9: [Quelle: ...] oder [Source: ...]
+        result["answer_text"] = re.sub(r'\[(?:Quelle|Source):[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
         
         # Entferne **fett** Formatierung
         result["answer_text"] = result["answer_text"].replace("**", "")
