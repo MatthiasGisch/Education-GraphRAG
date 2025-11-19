@@ -138,6 +138,23 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         # Normalisiere Absätze: Max 2 Zeilenumbrüche (= 1 Leerzeile zwischen Absätzen)
         result["answer_text"] = re.sub(r'\n{3,}', '\n\n', result["answer_text"])
         
+        # Markiere Fokus-Begriffe im Text fett (falls retrieval_hints vorhanden)
+        if retrieval_hints:
+            for hint_data in retrieval_hints.values():
+                if isinstance(hint_data, dict):
+                    for key in ["fokus1", "fokus2", "fokus3"]:
+                        fokus_term = hint_data.get(key, "").strip()
+                        if fokus_term:
+                            # Ersetze den Begriff im Text mit fetter Version (case-insensitive)
+                            # Verwende Word Boundaries damit nur ganze Wörter/Phrasen ersetzt werden
+                            pattern = r'\b' + re.escape(fokus_term) + r'\b'
+                            result["answer_text"] = re.sub(
+                                pattern, 
+                                f'<b>{fokus_term}</b>', 
+                                result["answer_text"], 
+                                flags=re.IGNORECASE
+                            )
+        
         # Extrahiere die Supports (Paragraphen und Figuren)
         supports = response.get("supports", [])
         
@@ -161,12 +178,26 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     "paper_title": paper_title
                 })
             
-            # Sammle eindeutige Quellen
+            # Sammle eindeutige Quellen (ignoriere 'Document' und leere Titel)
             if paper_title and paper_title not in sources_dict:
+                # Filtere ungültige Titel
+                if paper_title.strip().lower() in ['document', 'unknown', '']:
+                    continue  # Überspringe ungültige Einträge
+                
+                # Extrahiere Jahr aus pdf_creation_date falls vorhanden
+                year_raw = support.get("year", "")
+                year = ""
+                if year_raw:
+                    # Versuche Jahr aus Datum zu extrahieren (z.B. "D:20210315..." -> "2021")
+                    import re
+                    year_match = re.search(r'(\d{4})', str(year_raw))
+                    if year_match:
+                        year = year_match.group(1)
+                
                 sources_dict[paper_title] = {
                     "title": paper_title,
                     "authors": support.get("authors", ""),
-                    "year": support.get("year", ""),
+                    "year": year,
                     "doi": support.get("doi", ""),
                     "source": support.get("source", "")
                 }
@@ -175,6 +206,9 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         
         print(f"DEBUG: Retrieved answer length: {len(result['answer_text'])} chars")
         print(f"DEBUG: Found {len(result['paragraphs'])} paragraphs, {len(result['figures'])} figures")
+        print(f"DEBUG: Collected {len(result['sources'])} valid sources")
+        if result['sources']:
+            print(f"DEBUG: Source titles: {[s.get('title', 'NO_TITLE') for s in result['sources'][:3]]}")
         
         # Versuche zusätzlich, die Konzeptbeschreibung zu holen
         concept_query = """
@@ -461,6 +495,9 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             if content.get("sources"):
                 for source in content["sources"]:
                     title = source.get("title", "")
+                    # Filtere ungültige Titel
+                    if not title or title.strip().lower() in ['document', 'unknown']:
+                        continue
                     if title and title not in all_sources:
                         all_sources[title] = source
                         # Weise eine Zitationsnummer zu (sortiert alphabetisch später)
@@ -536,6 +573,9 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                         if section_content.get("sources"):
                             for source in section_content["sources"]:
                                 title = source.get("title", "")
+                                # Filtere ungültige Titel
+                                if not title or title.strip().lower() in ['document', 'unknown']:
+                                    continue
                                 if title and title not in all_sources:
                                     all_sources[title] = source
                                 if title and title not in cited_titles:
@@ -583,6 +623,9 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                 if full_content.get("sources"):
                     for source in full_content["sources"]:
                         title = source.get("title", "")
+                        # Filtere ungültige Titel
+                        if not title or title.strip().lower() in ['document', 'unknown']:
+                            continue
                         if title and title not in all_sources:
                             all_sources[title] = source
                         if title and title not in cited_titles:
