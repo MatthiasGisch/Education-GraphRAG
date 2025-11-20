@@ -157,12 +157,22 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         
         # Extrahiere die Supports (Paragraphen und Figuren)
         supports = response.get("supports", [])
+        print(f"DEBUG: Processing {len(supports)} supports from answer_query")
         
-        # Sammle Quellen mit vollständigen Informationen
+        # Sammle Quellen mit vollständigen Informationen UND Zuordnung zu Supports
         sources_dict = {}  # paper_title -> full citation info
+        source_to_number = {}  # paper_title -> citation number (für inline citations)
         
-        for support in supports:
-            paper_title = support.get("paper_title", "")
+        for idx, support in enumerate(supports):
+            paper_title = support.get("paper_title", "").strip()
+            paper_id = support.get("paper_id", "")
+            
+            # Fallback: Wenn paper_title leer ist, nutze paper_id
+            if not paper_title and paper_id:
+                paper_title = f"Document {paper_id[:8]}"  # Gekürzte paper_id als Fallback
+            
+            if idx < 5:  # Zeige die ersten 5 Supports
+                print(f"DEBUG: Support {idx+1} - Type: {support.get('type')}, Paper: '{paper_title}', ID: {paper_id[:20] if paper_id else 'None'}")
             
             if support.get("type") == "paragraph":
                 result["paragraphs"].append({
@@ -178,10 +188,10 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     "paper_title": paper_title
                 })
             
-            # Sammle eindeutige Quellen (ignoriere 'Document' und leere Titel)
+            # Sammle eindeutige Quellen
             if paper_title and paper_title not in sources_dict:
-                # Filtere ungültige Titel
-                if paper_title.strip().lower() in ['document', 'unknown', '']:
+                # Filtere nur komplett leere Titel
+                if not paper_title or paper_title.strip().lower() in ['unknown', '']:
                     continue  # Überspringe ungültige Einträge
                 
                 # Extrahiere Jahr aus pdf_creation_date falls vorhanden
@@ -202,12 +212,75 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     "source": support.get("source", "")
                 }
         
+        # Weise Zitationsnummern zu NACHDEM alle Quellen gesammelt wurden
+        sorted_titles = sorted(sources_dict.keys())
+        for i, title in enumerate(sorted_titles):
+            source_to_number[title] = i + 1
+        
+        print(f"DEBUG: Collected {len(sources_dict)} valid sources")
+        print(f"DEBUG: source_to_number mapping: {source_to_number}")
+        
+        # Füge inline Zitationen zum Text hinzu basierend auf Supports
+        # Strategie: Verteile Zitationen für alle verwendeten Quellen über den Text
+        if supports and source_to_number:
+            sentences = result["answer_text"].split('. ')
+            cited_sources = set()
+            new_sentences = []
+            
+            # Sammle alle Paper-Titel aus Supports (inkl. "Document XYZ" Fallbacks)
+            support_titles = []
+            for s in supports:
+                title = s.get("paper_title", "").strip()
+                paper_id = s.get("paper_id", "")
+                # Verwende den gleichen Fallback wie oben
+                if not title and paper_id:
+                    title = f"Document {paper_id[:8]}"
+                if title and title.lower() not in ['document', 'unknown']:  # Nur "document" ohne ID ausschließen
+                    support_titles.append(title)
+            
+            unique_titles = list(dict.fromkeys(support_titles))  # Preserve order, remove duplicates
+            # Sortiere nach Zitatnummern für aufsteigende Reihenfolge im Text
+            unique_titles.sort(key=lambda t: source_to_number.get(t, 999))
+            print(f"DEBUG: Unique titles for inline citations: {len(unique_titles)} - {unique_titles[:3]}")
+            
+            # Verteile Zitationen über den Text
+            citation_interval = max(1, len(sentences) // len(unique_titles)) if unique_titles else len(sentences)
+            print(f"DEBUG: Citation interval: {citation_interval} sentences (total: {len(sentences)}, unique titles: {len(unique_titles)})")
+            
+            for i, sentence in enumerate(sentences):
+                new_sentences.append(sentence)
+                
+                # Füge Zitation nach bestimmten Intervallen ein
+                if unique_titles and (i + 1) % citation_interval == 0:
+                    title_idx = min((i + 1) // citation_interval - 1, len(unique_titles) - 1)
+                    title = unique_titles[title_idx]
+                    if title in source_to_number and title not in cited_sources:
+                        cite_num = source_to_number[title]
+                        new_sentences[-1] += f"<sup>[{cite_num}]</sup>"
+                        cited_sources.add(title)
+                        print(f"DEBUG: Added inline citation [{cite_num}] after sentence {i+1}")
+            
+            # Füge restliche nicht-zitierte Quellen am Ende hinzu
+            remaining_citations = [source_to_number[t] for t in unique_titles if t in source_to_number and t not in cited_sources]
+            if remaining_citations:
+                refs_str = ','.join(map(str, sorted(remaining_citations)))
+                new_sentences[-1] += f"<sup>[{refs_str}]</sup>"
+                print(f"DEBUG: Added remaining citations [{refs_str}] at end")
+            
+            result["answer_text"] = '. '.join(new_sentences)
+            print(f"DEBUG: Inline citations applied. Final text length: {len(result['answer_text'])}")
+        else:
+            print(f"DEBUG: No inline citations - supports: {len(supports)}, sources: {len(source_to_number)}")
+        
         result["sources"] = list(sources_dict.values())
         
         print(f"DEBUG: Retrieved answer length: {len(result['answer_text'])} chars")
         print(f"DEBUG: Found {len(result['paragraphs'])} paragraphs, {len(result['figures'])} figures")
         print(f"DEBUG: Collected {len(result['sources'])} valid sources")
         if result['sources']:
+            print(f"DEBUG: Source titles: {[s.get('title', 'NO_TITLE') for s in result['sources'][:5]]}")
+        else:
+            print(f"DEBUG: WARNING - No sources collected! Check if papers have valid titles.")
             print(f"DEBUG: Source titles: {[s.get('title', 'NO_TITLE') for s in result['sources'][:3]]}")
         
         # Versuche zusätzlich, die Konzeptbeschreibung zu holen
@@ -495,8 +568,8 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             if content.get("sources"):
                 for source in content["sources"]:
                     title = source.get("title", "")
-                    # Filtere ungültige Titel
-                    if not title or title.strip().lower() in ['document', 'unknown']:
+                    # Filtere nur komplett leere oder 'unknown' Titel
+                    if not title or title.strip().lower() in ['unknown']:
                         continue
                     if title and title not in all_sources:
                         all_sources[title] = source
@@ -555,36 +628,38 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                     
                     section_text = section_content.get("answer_text", "")
                     
+                    # Sammle ZUERST Quellen aus diesem Abschnitt (vor dem Paragraph-Loop!)
+                    if section_content.get("sources"):
+                        print(f"DEBUG: Section {aidx} has {len(section_content['sources'])} sources")
+                        for source in section_content["sources"]:
+                            title = source.get("title", "")
+                            # Filtere ungültige Titel
+                            if not title or title.strip().lower() in ['document', 'unknown']:
+                                print(f"DEBUG: Skipping invalid source title: '{title}'")
+                                continue
+                            if title and title not in all_sources:
+                                all_sources[title] = source
+                                print(f"DEBUG: Added source: {title[:50]}...")
+                            if title and title not in cited_titles:
+                                cited_titles.add(title)
+                                # Berechne die Zitationsnummer basierend auf alphabetischer Sortierung
+                                sorted_all_sources = sorted(all_sources.keys())
+                                if title in sorted_all_sources:
+                                    ref_num = sorted_all_sources.index(title) + 1
+                                    chapter_refs.append(ref_num)
+                                    print(f"DEBUG: Assigned citation number {ref_num} to '{title[:30]}...'")
+                    else:
+                        print(f"DEBUG: Section {aidx} has NO sources!")
+                    
                     if section_text:
                         # Teile in Absätze
                         paragraphs_text = [p.strip() for p in section_text.split('\n\n') if p.strip()]
                         print(f"DEBUG: Section {aidx} got {len(paragraphs_text)} paragraphs")
+                        print(f"DEBUG: chapter_refs before adding citations: {chapter_refs}")
                         
                         for para_idx, para_text in enumerate(paragraphs_text):
-                            # Füge Zitationen am Ende des letzten Absatzes des letzten Abschnitts ein
-                            if chapter_refs and section_idx == len(non_empty_sections) - 1 and para_idx == len(paragraphs_text) - 1:
-                                refs_str = ','.join(map(str, sorted(chapter_refs)))
-                                para_with_citation = f"{para_text} [{refs_str}]"
-                                story.append(Paragraph(para_with_citation, content_style))
-                            else:
-                                story.append(Paragraph(para_text, content_style))
-                        
-                        # Sammle Quellen aus diesem Abschnitt
-                        if section_content.get("sources"):
-                            for source in section_content["sources"]:
-                                title = source.get("title", "")
-                                # Filtere ungültige Titel
-                                if not title or title.strip().lower() in ['document', 'unknown']:
-                                    continue
-                                if title and title not in all_sources:
-                                    all_sources[title] = source
-                                if title and title not in cited_titles:
-                                    cited_titles.add(title)
-                                    # Berechne die Zitationsnummer basierend auf alphabetischer Sortierung
-                                    sorted_all_sources = sorted(all_sources.keys())
-                                    if title in sorted_all_sources:
-                                        ref_num = sorted_all_sources.index(title) + 1
-                                        chapter_refs.append(ref_num)
+                            # Zitationen sind bereits inline im Text, direkt hinzufügen
+                            story.append(Paragraph(para_text, content_style))
                     else:
                         story.append(Paragraph("(Keine Inhalte für diesen Abschnitt gefunden)", content_style))
                     
@@ -644,6 +719,10 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
     story.append(Paragraph("Quellenverzeichnis", chapter_style))
     story.append(Spacer(1, 0.5*cm))
     
+    print(f"DEBUG: Creating bibliography with {len(all_sources)} sources")
+    if all_sources:
+        print(f"DEBUG: Source titles: {list(all_sources.keys())[:3]}")
+    
     # Erstelle wissenschaftliches Literaturverzeichnis
     reference_style = ParagraphStyle(
         'Reference',
@@ -694,6 +773,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             
             story.append(Paragraph(citation_text, reference_style))
     else:
+        print("DEBUG: No sources to display in bibliography!")
         story.append(Paragraph("Keine Quellen aus dem Wissensgraph verwendet.", objective_style))
     
     # PDF erstellen

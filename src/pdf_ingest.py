@@ -53,6 +53,67 @@ def extract_sections(doc) -> list[dict]:
         })
     return sections
 
+
+def extract_title_from_first_page(doc) -> str | None:
+    """
+    Extrahiere den Titel aus der ersten Seite durch Analyse der Textformatierung.
+    Sucht nach dem größten/fettesten Text am Anfang der Seite.
+    
+    Returns:
+        Extrahierter Titel oder None
+    """
+    if len(doc) == 0:
+        return None
+    
+    page = doc[0]
+    try:
+        # Hole Text mit Formatierungsinformationen
+        blocks = page.get_text("dict").get("blocks", [])
+        
+        # Sammle Kandidaten: Textblöcke mit großer Schriftgröße
+        candidates = []
+        for block in blocks:
+            if block.get("type") != 0:  # Nur Textblöcke
+                continue
+            
+            lines = block.get("lines", [])
+            for line in lines:
+                spans = line.get("spans", [])
+                for span in spans:
+                    text = span.get("text", "").strip()
+                    if not text or len(text) < 10:  # Zu kurz für Titel
+                        continue
+                    
+                    size = span.get("size", 0)
+                    flags = span.get("flags", 0)
+                    is_bold = bool(flags & 2**4)  # Flag 16 = bold
+                    
+                    # Bewerte: Größere Schrift + Bold = wahrscheinlicher Titel
+                    score = size * (1.5 if is_bold else 1.0)
+                    
+                    candidates.append({
+                        "text": text,
+                        "score": score,
+                        "y_pos": span.get("bbox", [0, 0, 0, 0])[1]  # Y-Position
+                    })
+        
+        if not candidates:
+            return None
+        
+        # Sortiere nach Score (höchster zuerst) und dann nach Y-Position (oben zuerst)
+        candidates.sort(key=lambda c: (-c["score"], c["y_pos"]))
+        
+        # Nimm den besten Kandidaten, aber nur wenn er deutlich größer ist
+        best = candidates[0]
+        if best["score"] > 12:  # Mindestens Schriftgröße ~12pt
+            return best["text"]
+        
+    except Exception as e:
+        print(f"Warning: Could not extract title from first page: {e}")
+    
+    return None
+
+
 def section_for_page(sections: list[dict], page_num1: int) -> dict|None:
     for s in sections:
         if s["page_start"] <= page_num1 <= s["page_end"]:
@@ -276,7 +337,16 @@ def read_pdf_text_and_images(path: str):
     doi, url = extract_doi_and_url(doc)
     paper_id = str(uuid.uuid4())
     meta = doc.metadata or {}
-    title = meta.get("title") or os.path.basename(path)
+    
+    # Intelligente Titel-Extraktion mit mehreren Fallbacks
+    title = meta.get("title")
+    if not title or not title.strip():
+        # Fallback 1: Extrahiere von erster Seite basierend auf Formatierung
+        title = extract_title_from_first_page(doc)
+    if not title or not title.strip():
+        # Fallback 2: Nutze Dateinamen (ohne Erweiterung)
+        title = os.path.splitext(os.path.basename(path))[0]
+    
     paper_meta = {
         "paper_id": paper_id,
         "title": title,
