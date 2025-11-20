@@ -121,6 +121,15 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         # Pattern 11: Standalone Zahlen-IDs am Satzanfang oder mitten im Text
         result["answer_text"] = re.sub(r'(?<!\.)\s*\[\d+\](?!\s*$|\s*\.)', ' ', result["answer_text"])
         
+        # Pattern 12: Entferne kompletten "Quellen"-Block am Ende (falls LLM ihn trotzdem erstellt)
+        # Dieser Block beginnt mit "Quellen" und enthält Listen mit DOI, URL, Seite etc.
+        result["answer_text"] = re.sub(
+            r'\n\s*Quellen[:\s]*\n[\s\S]*?(?=\n\n|\Z)', 
+            '', 
+            result["answer_text"], 
+            flags=re.MULTILINE | re.IGNORECASE
+        )
+        
         # Entferne **fett** Formatierung
         result["answer_text"] = result["answer_text"].replace("**", "")
         # Entferne *kursiv* Formatierung (aber behalte einzelne * wenn sie nicht für Formatierung sind)
@@ -209,8 +218,19 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     "authors": support.get("authors", ""),
                     "year": year,
                     "doi": support.get("doi", ""),
-                    "source": support.get("source", "")
+                    "source": support.get("source", ""),
+                    "url": support.get("url", "")
                 }
+                
+                # Debug: Zeige erste Quelle mit allen Feldern
+                if len(sources_dict) == 1:
+                    print(f"DEBUG: First source metadata:")
+                    print(f"  - title: {paper_title[:50]}")
+                    print(f"  - authors: {support.get('authors', 'NONE')}")
+                    print(f"  - year: {year or 'NONE'}")
+                    print(f"  - doi: {support.get('doi', 'NONE')}")
+                    print(f"  - source: {support.get('source', 'NONE')}")
+                    print(f"  - url: {support.get('url', 'NONE')}")
         
         # Weise Zitationsnummern zu NACHDEM alle Quellen gesammelt wurden
         sorted_titles = sorted(sources_dict.keys())
@@ -716,60 +736,82 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
     
     # Quellenverzeichnis am Ende
     story.append(PageBreak())
-    story.append(Paragraph("Quellenverzeichnis", chapter_style))
+    story.append(Paragraph("Literaturverzeichnis", chapter_style))
     story.append(Spacer(1, 0.5*cm))
     
     print(f"DEBUG: Creating bibliography with {len(all_sources)} sources")
     if all_sources:
         print(f"DEBUG: Source titles: {list(all_sources.keys())[:3]}")
     
-    # Erstelle wissenschaftliches Literaturverzeichnis
+    # Erstelle wissenschaftliches Literaturverzeichnis im APA-Stil
     reference_style = ParagraphStyle(
         'Reference',
         parent=styles['BodyText'],
         fontSize=10,
-        leftIndent=20,
-        firstLineIndent=-20,  # Hängender Einzug
-        spaceAfter=10,
-        fontName='Helvetica'
+        leftIndent=36,  # 0.5 inch für hängenden Einzug
+        firstLineIndent=-36,
+        spaceAfter=12,
+        spaceBefore=0,
+        fontName='Helvetica',
+        alignment=TA_JUSTIFY
     )
     
     if all_sources:
-        # Sortiere alphabetisch nach Titel
+        # Sortiere alphabetisch nach Titel (APA: normalerweise nach Autor, aber wir haben oft keine Autoren)
         sorted_sources = sorted(all_sources.items(), key=lambda x: x[0])
         
         for idx, (title, source_info) in enumerate(sorted_sources, 1):
-            # Erstelle bibliographische Angabe im wissenschaftlichen Format
-            citation_parts = [f"[{idx}]"]
+            # APA Format: Autor(en). (Jahr). Titel. Quelle. DOI/URL
+            citation_parts = []
             
-            # Autoren (falls vorhanden)
-            authors = source_info.get("authors", "")
+            # Zitatnummer in eckigen Klammern
+            citation_parts.append(f"[{idx}]")
+            
+            # Autoren (APA: Nachname, Initialen.)
+            authors = (source_info.get("authors") or "").strip()
             if authors:
-                citation_parts.append(authors)
-            
-            # Jahr (falls vorhanden)
-            year = source_info.get("year", "")
-            if year:
-                citation_parts.append(f"({year})")
-            
-            # Titel (fett)
-            citation_parts.append(f"<b>{title}</b>")
-            
-            # Quelle/Publikation (falls vorhanden)
-            source_pub = source_info.get("source", "")
-            if source_pub:
-                citation_parts.append(f"<i>{source_pub}</i>")
-            
-            # DOI (falls vorhanden)
-            doi = source_info.get("doi", "")
-            if doi:
-                citation_parts.append(f"DOI: {doi}")
-            
-            # Füge zusammen
-            if len(citation_parts) > 1:
-                citation_text = " ".join(citation_parts)
+                # Wenn mehrere Autoren durch Semikolon getrennt
+                if ";" in authors:
+                    author_list = [a.strip() for a in authors.split(";")]
+                    authors = ", ".join(author_list)
+                citation_parts.append(f"{authors}.")
             else:
-                citation_text = f"[{idx}] {title}"
+                # Kein Autor: Nutze Titel als Ersatz (APA-Konvention)
+                pass
+            
+            # Jahr in Klammern (APA)
+            year = (source_info.get("year") or "").strip()
+            if year:
+                citation_parts.append(f"({year}).")
+            else:
+                citation_parts.append("(o. J.).")  # "ohne Jahr" auf Deutsch
+            
+            # Titel (APA: kursiv bei Büchern/Reports, normal bei Artikeln - wir nutzen fett für Lesbarkeit)
+            citation_parts.append(f"<i>{title}</i>.")
+            
+            # Quelle/Publikation (z.B. Journal, Konferenz)
+            source_pub = (source_info.get("source") or "").strip()
+            if source_pub:
+                citation_parts.append(f"{source_pub}.")
+            
+            # DOI (APA: https://doi.org/...)
+            doi = (source_info.get("doi") or "").strip()
+            if doi:
+                # Entferne "https://doi.org/" falls schon vorhanden
+                doi_clean = doi.replace("https://doi.org/", "").replace("http://doi.org/", "")
+                citation_parts.append(f"https://doi.org/{doi_clean}")
+            
+            # URL (falls kein DOI vorhanden)
+            elif (source_info.get("url") or "").strip():
+                url = (source_info.get("url") or "").strip()
+                citation_parts.append(f"Abgerufen von {url}")
+            
+            # Zusammensetzen
+            citation_text = " ".join(citation_parts)
+            
+            # Fallback falls gar nichts da ist
+            if len(citation_parts) <= 3:  # Nur [idx], Jahr und Titel
+                citation_text = f"[{idx}] {title}. (Details nicht verfügbar)"
             
             story.append(Paragraph(citation_text, reference_style))
     else:

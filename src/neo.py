@@ -31,9 +31,26 @@ class Neo4jClient:
             return False
 
     def run(self, cypher: str, params: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
-        with self.driver.session() as session:
-            result = session.run(cypher, params or {})
-            return [r.data() for r in result]
+        """Führt Cypher Query aus mit Retry-Logik bei Connection Fehlern."""
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                with self.driver.session() as session:
+                    # Setze Transaction Timeout auf 5 Minuten
+                    result = session.run(cypher, params or {}, timeout=300)
+                    return [r.data() for r in result]
+            except Exception as e:
+                error_msg = str(e).lower()
+                # Bei Connection-Problemen: Retry
+                if attempt < max_retries - 1 and ('defunct' in error_msg or 'connection' in error_msg):
+                    print(f"⚠️  Neo4j connection issue, retrying ({attempt + 1}/{max_retries})...")
+                    try:
+                        self.driver.verify_connectivity()
+                    except:
+                        pass  # Verbindung ist tot, aber Driver wird bei nächstem Versuch neue Session erstellen
+                    continue
+                # Andernfalls: Exception durchreichen
+                raise
     
     def run_graph(self, cypher: str, params: Dict[str, Any] | None = None) -> List[Any]:
         """
@@ -97,67 +114,83 @@ class Neo4jClient:
 
     def add_paragraphs(self, paper_id: str, paragraphs: list[dict]) -> None:
         """Fügt Paragraphen in Batches hinzu, um Timeouts zu vermeiden."""
-        batch_size = 50  # Verarbeite max 50 Paragraphen pro Query
+        batch_size = 25  # Konservative Batch-Größe (jeder Paragraph hat 1536-dim Embedding!)
+        total_batches = (len(paragraphs) - 1) // batch_size + 1
+        
+        print(f"  Inserting {len(paragraphs)} paragraphs in {total_batches} batches...")
         
         for i in range(0, len(paragraphs), batch_size):
             batch = paragraphs[i:i+batch_size]
-            self.run(
-                """
-                UNWIND $paragraphs AS row
-                MATCH (p:Paper {paper_id:$paper_id})
-                MERGE (para:Paragraph {paragraph_id: row.paragraph_id})
-                SET para.text = row.text,
-                    para.paper_id = $paper_id,
-                    para.page = row.page,
-                    para.order_in_page = row.order_in_page,
-                    para.char_start = row.char_start,
-                    para.char_end = row.char_end,
-                    para.bbox = row.bbox,
-                    para.page_width = row.page_width,
-                    para.page_height = row.page_height,
-                    para.sha256 = row.sha256,
-                    para.embedding = row.embedding
-                MERGE (p)-[:HAS_PARAGRAPH]->(para)
-                WITH p, para, row
-                OPTIONAL MATCH (sec:Section {section_id: row.section_id_ref})
-                FOREACH (_ IN CASE WHEN sec IS NOT NULL THEN [1] ELSE [] END |
-                    MERGE (sec)-[:HAS_PARAGRAPH]->(para)
-                )
-                """,
-                {"paper_id": paper_id, "paragraphs": batch},
-            )
+            batch_num = i // batch_size + 1
             
-            if len(paragraphs) > batch_size:
-                print(f"    Batch {i//batch_size + 1}/{(len(paragraphs)-1)//batch_size + 1} done ({len(batch)} paragraphs)")
+            try:
+                self.run(
+                    """
+                    UNWIND $paragraphs AS row
+                    MATCH (p:Paper {paper_id:$paper_id})
+                    MERGE (para:Paragraph {paragraph_id: row.paragraph_id})
+                    SET para.text = row.text,
+                        para.paper_id = $paper_id,
+                        para.page = row.page,
+                        para.order_in_page = row.order_in_page,
+                        para.char_start = row.char_start,
+                        para.char_end = row.char_end,
+                        para.bbox = row.bbox,
+                        para.page_width = row.page_width,
+                        para.page_height = row.page_height,
+                        para.sha256 = row.sha256,
+                        para.embedding = row.embedding
+                    MERGE (p)-[:HAS_PARAGRAPH]->(para)
+                    WITH p, para, row
+                    OPTIONAL MATCH (sec:Section {section_id: row.section_id_ref})
+                    FOREACH (_ IN CASE WHEN sec IS NOT NULL THEN [1] ELSE [] END |
+                        MERGE (sec)-[:HAS_PARAGRAPH]->(para)
+                    )
+                    """,
+                    {"paper_id": paper_id, "paragraphs": batch},
+                )
+                print(f"    ✓ Batch {batch_num}/{total_batches} ({len(batch)} paragraphs)")
+            except Exception as e:
+                print(f"    ✗ Batch {batch_num}/{total_batches} failed: {e}")
+                raise
 
     def add_figures(self, paper_id: str, figures: list[dict]) -> None:
         """Fügt Figuren in Batches hinzu, um Timeouts zu vermeiden."""
-        batch_size = 20  # Verarbeite max 20 Figuren pro Query
+        batch_size = 10  # Konservativ, da Figuren große Embeddings haben
+        total_batches = (len(figures) - 1) // batch_size + 1
+        
+        if total_batches > 1:
+            print(f"  Inserting {len(figures)} figures in {total_batches} batches...")
         
         for i in range(0, len(figures), batch_size):
             batch = figures[i:i+batch_size]
-            self.run(
-                """
-                UNWIND $figures AS row
-                MATCH (p:Paper {paper_id:$paper_id})
-                MERGE (f:Figure {figure_id: row.figure_id})
-                SET f.caption = row.caption,
-                    f.page = row.page,
-                    f.image_uri = row.image_uri,
-                    f.image_path = coalesce(row.image_path, row.image_uri),
-                    f.analysis_json = row.analysis_json,
-                    f.embedding = row.embedding,
-                    f.bbox = row.bbox,
-                    f.page_width = row.page_width,
-                    f.page_height = row.page_height,
-                    f.figure_label = row.figure_label
-                MERGE (p)-[:HAS_FIGURE]->(f)
-                """,
-                {"paper_id": paper_id, "figures": batch},
-            )
+            batch_num = i // batch_size + 1
             
-            if len(figures) > batch_size:
-                print(f"    Batch {i//batch_size + 1}/{(len(figures)-1)//batch_size + 1} done ({len(batch)} figures)")
+            try:
+                self.run(
+                    """
+                    UNWIND $figures AS row
+                    MATCH (p:Paper {paper_id:$paper_id})
+                    MERGE (f:Figure {figure_id: row.figure_id})
+                    SET f.caption = row.caption,
+                        f.page = row.page,
+                        f.image_uri = row.image_uri,
+                        f.image_path = coalesce(row.image_path, row.image_uri),
+                        f.analysis_json = row.analysis_json,
+                        f.embedding = row.embedding,
+                        f.bbox = row.bbox,
+                        f.page_width = row.page_width,
+                        f.page_height = row.page_height,
+                        f.figure_label = row.figure_label
+                    MERGE (p)-[:HAS_FIGURE]->(f)
+                    """,
+                    {"paper_id": paper_id, "figures": batch},
+                )
+                if total_batches > 1:
+                    print(f"    ✓ Batch {batch_num}/{total_batches} ({len(batch)} figures)")
+            except Exception as e:
+                print(f"    ✗ Figure batch {batch_num}/{total_batches} failed: {e}")
+                raise
 
     # --- Vector-Retrieval ---
     def vector_search_paragraphs(self, embedding: List[float], k: int = 12) -> List[Dict[str, Any]]:

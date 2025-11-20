@@ -132,13 +132,12 @@ Anweisung als Dozent:
   Die Abbildungen werden dann automatisch unter dem Text eingefügt.
 - Wenn möglich, verdeutliche Zusammenhänge und Anwendungsbereiche.
 - Wenn Belege widersprüchlich oder zu dünn sind, sage das klar und erkläre was fehlt.
+- FÜGE KEINEN separaten "Quellen"-Block am Ende hinzu - Quellenangaben werden automatisch erstellt.
 
 Zitierformat:
-- Jede Kernaussage belege in eckigen Klammern z.B. [P..., F...]
-- Am Ende einen Block "Quellen" mit Zeilen:
-  - [ID] Titel — DOI: <doi> — URL: <url> — Seite: <p> — Abschnitt: <section>
+- Verwende die ID-Kürzel [Pxxx] oder [Fxxx] direkt im Text um auf Belege zu verweisen.
 
-Bibliographie-Map (nicht verändern, nur nutzen):
+Bibliographie-Map (nur zur Information, nicht im Text verwenden):
 {bib_json}
 """
     resp = client().chat.completions.create(
