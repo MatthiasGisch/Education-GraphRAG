@@ -154,9 +154,61 @@ def stitch_graph() -> dict:
     return neo.stitch_document_hierarchy()
 
 def clear_graph() -> dict:
+    """Löscht alle Nodes und Relationships in kleinen Batches (verhindert Memory-Fehler)."""
     neo = get_neo()
-    neo.run("MATCH (n) DETACH DELETE n")
+    
+    # Sehr konservative Batch-Größe für große Graphen
+    batch_size = 1000
+    deleted_total = 0
+    max_iterations = 10000  # Safety limit
+    
+    print("Starting graph deletion in batches...")
+    
+    for iteration in range(max_iterations):
+        try:
+            result = neo.run(
+                f"""
+                CALL {{
+                    MATCH (n)
+                    WITH n LIMIT {batch_size}
+                    DETACH DELETE n
+                    RETURN count(n) AS deleted
+                }} IN TRANSACTIONS OF 100 ROWS
+                RETURN sum(deleted) AS deleted
+                """
+            )
+            deleted = result[0]["deleted"] if result and result[0]["deleted"] else 0
+            deleted_total += deleted
+            
+            if deleted == 0:
+                break  # Keine Nodes mehr übrig
+            
+            if iteration % 10 == 0:
+                print(f"  Deleted {deleted_total} nodes so far...")
+                
+        except Exception as e:
+            # Fallback: Versuche noch kleinere Batches ohne TRANSACTIONS
+            print(f"  Switching to simpler deletion method...")
+            try:
+                result = neo.run(
+                    f"""
+                    MATCH (n)
+                    WITH n LIMIT 100
+                    DETACH DELETE n
+                    RETURN count(n) AS deleted
+                    """
+                )
+                deleted = result[0]["deleted"] if result else 0
+                deleted_total += deleted
+                
+                if deleted == 0:
+                    break
+            except Exception as e2:
+                print(f"  Error during deletion: {e2}")
+                break
+    
     return {
+        "deleted_total": deleted_total,
         "nodes_after": get_single_value(neo, "MATCH (n) RETURN count(n) AS c"),
         "rels_after":  get_single_value(neo, "MATCH ()-[r]->() RETURN count(r) AS c")
     }

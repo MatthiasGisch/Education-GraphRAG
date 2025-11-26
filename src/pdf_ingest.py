@@ -338,15 +338,9 @@ def read_pdf_text_and_images(path: str):
     paper_id = str(uuid.uuid4())
     meta = doc.metadata or {}
     
-    # Titel-Extraktion: Nutze Dateinamen als primäre Quelle (ohne .pdf Extension)
-    # Dies ist zuverlässiger als PDF-Metadaten oder Formatierungsanalyse
+    # Titel-Extraktion: Stets Dateiname (ohne .pdf Extension) verwenden
+    # Wunsch: Metadaten weiterhin nutzen, aber den Namen des Papers aus dem Upload-Filename setzen
     title = os.path.splitext(os.path.basename(path))[0]
-    
-    # Optional: Prüfe ob PDF-Metadaten einen besseren Titel haben
-    meta_title = meta.get("title")
-    if meta_title and meta_title.strip() and len(meta_title.strip()) > 10:
-        # Nur wenn Meta-Titel aussagekräftig ist (länger als 10 Zeichen)
-        title = meta_title.strip()
     
     paper_meta = {
         "paper_id": paper_id,

@@ -119,11 +119,7 @@ def ingest_one(pdf_path: Path, neo: Neo4jClient) -> Dict[str, Any]:
     
     print(f"  Extracted: {len(concepts)} concepts, {len(relations)} relations")
     
-    # Konzepte wurden (falls vorhanden) direkt persistiert
-    try:
-        neo.attach_concepts_to_existing_umbrella("Künstliche Intelligenz")
-    except Exception:
-        pass
+    # Verknüpfe Paragraphen mit Konzepten
     if links:
         neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
 

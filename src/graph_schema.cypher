@@ -11,9 +11,6 @@ FOR (p:Paragraph) REQUIRE p.paragraph_id IS UNIQUE;
 CREATE CONSTRAINT figure_id IF NOT EXISTS
 FOR (f:Figure) REQUIRE f.figure_id IS UNIQUE;
 
-CREATE CONSTRAINT umbrella_id IF NOT EXISTS
-FOR (u:Umbrella) REQUIRE u.umbrella_id IS UNIQUE;
-
 // ---------- Vector Indexes (3072-D, text-embedding-3-large) ----------
 CREATE VECTOR INDEX paragraph_embedding_index IF NOT EXISTS
 FOR (p:Paragraph) ON (p.embedding)
