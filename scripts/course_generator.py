@@ -1,4 +1,3 @@
-
 import streamlit as st
 from src.neo import Neo4jClient
 from src.agent import answer_query
@@ -213,13 +212,19 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     if year_match:
                         year = year_match.group(1)
                 
+                # Sammle Seitenzahlen für diese Quelle
+                pages = set()
+                if support.get("page"):
+                    pages.add(support.get("page"))
+                
                 sources_dict[paper_title] = {
                     "title": paper_title,
                     "authors": support.get("authors", ""),
                     "year": year,
                     "doi": support.get("doi", ""),
                     "source": support.get("source", ""),
-                    "url": support.get("url", "")
+                    "url": support.get("url", ""),
+                    "pages": pages  # Set of page numbers
                 }
                 
                 # Debug: Zeige erste Quelle mit allen Feldern
@@ -231,6 +236,11 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     print(f"  - doi: {support.get('doi', 'NONE')}")
                     print(f"  - source: {support.get('source', 'NONE')}")
                     print(f"  - url: {support.get('url', 'NONE')}")
+                    print(f"  - page: {support.get('page', 'NONE')}")
+            else:
+                # Quelle existiert bereits, füge weitere Seiten hinzu
+                if paper_title in sources_dict and support.get("page"):
+                    sources_dict[paper_title]["pages"].add(support.get("page"))
         
         # Weise Zitationsnummern zu NACHDEM alle Quellen gesammelt wurden
         sorted_titles = sorted(sources_dict.keys())
@@ -571,7 +581,15 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
     # Kapitel
     for idx, kapitel in enumerate(course.get("Kapitel", []), 1):
         chapter_title = kapitel.get('Titel', '')
-        story.append(Paragraph(f"Kapitel {idx}: {chapter_title}", chapter_style))
+        chapter_number = kapitel.get('Nummer', '').strip()
+        
+        # Baue Kapitelüberschrift: Mit Nummer falls vorhanden, sonst nur Titel
+        if chapter_number:
+            chapter_heading = f"{chapter_number} {chapter_title}"
+        else:
+            chapter_heading = chapter_title
+        
+        story.append(Paragraph(chapter_heading, chapter_style))
         story.append(Spacer(1, 0.3*cm))
         
         # Hole Inhalte aus dem Wissensgraphen
@@ -647,6 +665,15 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                     )
                     
                     section_text = section_content.get("answer_text", "")
+                    
+                    # Entferne Überschrift am Anfang falls LLM sie wiederholt hat
+                    # Z.B. wenn Abschnittstitel "Was ist KI?" ist und Text mit "Was ist KI?" beginnt
+                    if section_text and abschnitt:
+                        # Entferne Abschnittstitel am Anfang (mit/ohne Nummerierung)
+                        import re
+                        # Pattern: Optional "1.1 " oder ähnlich, dann der Titel
+                        pattern = r'^(?:\d+\.?\d*\s+)?' + re.escape(abschnitt.strip()) + r'\s*\n*'
+                        section_text = re.sub(pattern, '', section_text, flags=re.IGNORECASE | re.MULTILINE)
                     
                     # Sammle ZUERST Quellen aus diesem Abschnitt (vor dem Paragraph-Loop!)
                     if section_content.get("sources"):
@@ -794,6 +821,18 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             if source_pub:
                 citation_parts.append(f"{source_pub}.")
             
+            # Seitenzahlen (falls vorhanden)
+            pages = source_info.get("pages", set())
+            if pages and len(pages) > 0:
+                sorted_pages = sorted(pages)
+                if len(sorted_pages) == 1:
+                    citation_parts.append(f"S. {sorted_pages[0]}.")
+                elif len(sorted_pages) <= 5:
+                    citation_parts.append(f"S. {', '.join(map(str, sorted_pages))}.")
+                else:
+                    # Viele Seiten: Zeige Bereich
+                    citation_parts.append(f"S. {sorted_pages[0]}–{sorted_pages[-1]}.")
+            
             # DOI (APA: https://doi.org/...)
             doi = (source_info.get("doi") or "").strip()
             if doi:
@@ -863,7 +902,8 @@ def show_course_generator():
     st.subheader("Kapitel")
     if st.button("Neues Kapitel hinzufügen"):
         course["Kapitel"].append({
-            "Titel": f"Kapitel {len(course['Kapitel'])+1}",
+            "Nummer": "",
+            "Titel": "Kapitel",
             "Lernziele": [],
             "Abschnitte": [],
             "Retrieval_Hinweise": {}
@@ -872,22 +912,47 @@ def show_course_generator():
     # Kapitel bearbeiten
 
     for idx, kapitel in enumerate(course["Kapitel"]):
-        with st.expander(f"Kapitel {idx+1}: {kapitel['Titel']}", expanded=True):
-            kapitel["Titel"] = st.text_input(f"Kapitel-Titel {idx+1}", value=kapitel["Titel"], key=f"titel_{idx}")
+        # Stelle sicher, dass "Nummer" existiert (für bestehende Kapitel)
+        if "Nummer" not in kapitel:
+            kapitel["Nummer"] = ""
+        
+        # Zeige Kapitelnummer im Expander-Titel falls vorhanden
+        chapter_num = kapitel.get('Nummer', '').strip()
+        if chapter_num:
+            expander_title = f"{chapter_num}: {kapitel['Titel']}"
+        else:
+            expander_title = f"Kapitel: {kapitel['Titel']}"
+        
+        with st.expander(expander_title, expanded=True):
+            col_num, col_title = st.columns([1, 3])
+            with col_num:
+                kapitel["Nummer"] = st.text_input(
+                    "Nummer", 
+                    value=kapitel.get("Nummer", ""), 
+                    key=f"nummer_{idx}",
+                    placeholder="z.B. 1, 2.1, A",
+                    help="Optional: Kapitelnummer oder Bezeichnung"
+                )
+            with col_title:
+                kapitel["Titel"] = st.text_input(
+                    "Kapitel-Titel", 
+                    value=kapitel["Titel"], 
+                    key=f"titel_{idx}"
+                )
 
             # Lernziele bearbeiten
             st.markdown("**Lernziele:**")
             for lidx, ziel in enumerate(kapitel["Lernziele"]):
-                kapitel["Lernziele"][lidx] = st.text_input(f"Lernziel {lidx+1} (Kapitel {idx+1})", value=ziel, key=f"ziel_{idx}_{lidx}")
+                kapitel["Lernziele"][lidx] = st.text_input(f"Lernziel {lidx+1}", value=ziel, key=f"ziel_{idx}_{lidx}")
 
             col_z1, col_z2 = st.columns(2)
             with col_z1:
-                if st.button(f"Lernziel hinzufügen (Kapitel {idx+1})", key=f"add_ziel_{idx}"):
+                if st.button(f"Lernziel hinzufügen", key=f"add_ziel_{idx}"):
                     kapitel["Lernziele"].append("")
                     st.rerun()
             with col_z2:
                 if kapitel["Lernziele"]:
-                    if st.button(f"Letztes Lernziel entfernen (Kapitel {idx+1})", key=f"del_ziel_{idx}"):
+                    if st.button(f"Letztes Lernziel entfernen", key=f"del_ziel_{idx}"):
                         kapitel["Lernziele"].pop()
                         st.rerun()
 
@@ -964,17 +1029,17 @@ def show_course_generator():
 
             col_a1, col_a2 = st.columns(2)
             with col_a1:
-                if st.button(f"Abschnitt hinzufügen (Kapitel {idx+1})", key=f"add_abs_{idx}"):
+                if st.button(f"Abschnitt hinzufügen", key=f"add_abs_{idx}"):
                     kapitel["Abschnitte"].append("")
                     st.rerun()
             with col_a2:
                 if kapitel["Abschnitte"]:
-                    if st.button(f"Letzten Abschnitt entfernen (Kapitel {idx+1})", key=f"del_abs_{idx}"):
+                    if st.button(f"Letzten Abschnitt entfernen", key=f"del_abs_{idx}"):
                         kapitel["Abschnitte"].pop()
                         st.rerun()
 
             # Kapitel entfernen
-            if st.button(f"Kapitel entfernen (Kapitel {idx+1})", key=f"del_kap_{idx}"):
+            if st.button(f"Kapitel entfernen", key=f"del_kap_{idx}"):
                 course["Kapitel"].pop(idx)
                 st.rerun()
 
@@ -1031,3 +1096,374 @@ def show_course_generator():
                     st.error(f"❌ Fehler beim Erstellen der PDF: {e}")
                     import traceback
                     st.code(traceback.format_exc())
+    
+    # Gamma-Export-Bereich
+    st.markdown("---")
+    st.subheader("🎞️ Kurs als Gamma-Präsentation exportieren")
+    
+    with st.expander("⚙️ Gamma-Einstellungen", expanded=False):
+        col_g1, col_g2, col_g3 = st.columns(3)
+        
+        with col_g1:
+            # Theme-Auswahl
+            from pathlib import Path
+            import json
+            exports_dir = Path(__file__).parent.parent / "exports"
+            themes_file = exports_dir / "gamma_themes.json"
+            
+            if themes_file.exists():
+                themes = json.loads(themes_file.read_text(encoding="utf-8"))
+            else:
+                themes = ["Oasis", "Corporate", "Minimal", "ISTE"]
+            
+            gamma_theme = st.selectbox(
+                "Theme",
+                options=themes,
+                index=0,
+                help="Gamma Präsentations-Theme"
+            )
+        
+        with col_g2:
+            gamma_lang = st.selectbox(
+                "Sprache",
+                options=["de", "en", "fr", "es", "it"],
+                index=0,
+                help="Sprache der Präsentation"
+            )
+        
+        with col_g3:
+            gamma_img_source = st.selectbox(
+                "Bildquelle",
+                options=["noImages", "aiGenerated", "unsplash", "webFreeToUse"],
+                index=0,
+                help="Quelle für Bilder in der Präsentation"
+            )
+        
+        col_g4, col_g5 = st.columns(2)
+        with col_g4:
+            gamma_split = st.radio(
+                "Folienaufteilung",
+                options=["auto", "inputTextBreaks"],
+                index=0,
+                horizontal=True,
+                help="auto = Gamma entscheidet; inputTextBreaks = nach --- trennen"
+            )
+        
+        with col_g5:
+            gamma_cards = st.number_input(
+                "Anzahl Folien (bei auto)",
+                min_value=5,
+                max_value=100,
+                value=20,
+                step=5,
+                help="Zielanzahl der Folien bei automatischer Aufteilung"
+            )
+    
+    if st.button("🚀 Gamma-Präsentation generieren", type="primary"):
+        if not course.get("Kapitel"):
+            st.warning("Bitte füge mindestens ein Kapitel hinzu.")
+        else:
+            try:
+                from src.gamma import GammaClient
+                import re
+                
+                with st.spinner("Generiere Kursinhalte für Gamma..."):
+                    # Baue Gamma-Input-Text aus dem Kurs
+                    gamma_parts = []
+                    
+                    # Titelfolie
+                    gamma_parts.append(f"# {course['Kursname']}\n* Vorlesungsunterlagen basierend auf dem Wissensgraphen")
+                    
+                    # Für jedes Kapitel
+                    for kap_idx, kapitel in enumerate(course["Kapitel"]):
+                        chapter_number = kapitel.get('Nummer', '').strip()
+                        chapter_title = kapitel['Titel']
+                        
+                        # Baue vollständigen Kapiteltitel
+                        if chapter_number:
+                            full_chapter_title = f"{chapter_number} {chapter_title}"
+                        else:
+                            full_chapter_title = chapter_title
+                        
+                        # Kapitel-Titelfolie
+                        kap_content = [f"# {full_chapter_title}"]
+                        
+                        # Lernziele als Bullets
+                        if kapitel.get("Lernziele"):
+                            kap_content.append("\n**Lernziele:**")
+                            for ziel in kapitel["Lernziele"]:
+                                if ziel.strip():
+                                    kap_content.append(f"* {ziel}")
+                        
+                        gamma_parts.append("\n".join(kap_content))
+                        
+                        # Hole Inhalte aus dem Wissensgraphen
+                        if include_content:
+                            chapter_data = fetch_content_for_chapter(
+                                neo, 
+                                kapitel["Titel"],
+                                retrieval_hints=kapitel.get("Retrieval_Hinweise", {})
+                            )
+                            
+                            # Füge Hauptinhalt hinzu
+                            if chapter_data.get("answer_text"):
+                                # Teile den Text in Absätze und erstelle Folien
+                                answer = chapter_data["answer_text"]
+                                
+                                # Entferne Überschriften die dem Kapiteltitel entsprechen
+                                # (werden sonst doppelt angezeigt)
+                                answer = re.sub(
+                                    r'^#+\s*' + re.escape(kapitel['Titel']) + r'\s*$',
+                                    '',
+                                    answer,
+                                    flags=re.MULTILINE | re.IGNORECASE
+                                )
+                                
+                                # Split nach Absätzen für bessere Folienaufteilung
+                                paragraphs = [p.strip() for p in answer.split("\n\n") if p.strip()]
+                                
+                                # Gruppiere Absätze zu Folien (max 3 Absätze pro Folie)
+                                for i in range(0, len(paragraphs), 3):
+                                    slide_content = "\n\n".join(paragraphs[i:i+3])
+                                    # Konvertiere zu Bullet-Points wenn nicht schon Listen
+                                    lines = []
+                                    for line in slide_content.split("\n"):
+                                        line = line.strip()
+                                        if not line:
+                                            continue
+                                        if line.startswith(("-", "*", "•")) or re.match(r"^\d+\.", line):
+                                            lines.append(line)
+                                        elif line.startswith("#"):
+                                            lines.append(line)  # Überschriften beibehalten
+                                        else:
+                                            lines.append(f"* {line}")
+                                    
+                                    if lines:
+                                        gamma_parts.append("\n".join(lines))
+                        
+                        # Abschnitte (falls vorhanden)
+                        if kapitel.get("Abschnitte"):
+                            for abs_idx, abschnitt in enumerate(kapitel["Abschnitte"]):
+                                if not abschnitt.strip():
+                                    continue
+                                
+                                # Abschnitts-Folie
+                                gamma_parts.append(f"## {abschnitt}")
+                                
+                                # Hole spezifische Inhalte für den Abschnitt
+                                if include_content:
+                                    section_hints = kapitel.get("Retrieval_Hinweise", {}).get(str(abs_idx), {})
+                                    section_data = fetch_content_for_chapter(
+                                        neo,
+                                        kapitel["Titel"],
+                                        retrieval_hints={str(abs_idx): section_hints},
+                                        section_title=abschnitt
+                                    )
+                                    
+                                    if section_data.get("answer_text"):
+                                        answer = section_data["answer_text"]
+                                        
+                                        # Entferne doppelte Überschriften
+                                        answer = re.sub(
+                                            r'^#+\s*' + re.escape(abschnitt) + r'\s*$',
+                                            '',
+                                            answer,
+                                            flags=re.MULTILINE | re.IGNORECASE
+                                        )
+                                        
+                                        paragraphs = [p.strip() for p in answer.split("\n\n") if p.strip()]
+                                        
+                                        # Gruppiere zu Folien
+                                        for i in range(0, len(paragraphs), 3):
+                                            slide_content = "\n\n".join(paragraphs[i:i+3])
+                                            lines = []
+                                            for line in slide_content.split("\n"):
+                                                line = line.strip()
+                                                if not line:
+                                                    continue
+                                                if line.startswith(("-", "*", "•")) or re.match(r"^\d+\.", line):
+                                                    lines.append(line)
+                                                elif line.startswith("#"):
+                                                    lines.append(line)
+                                                else:
+                                                    lines.append(f"* {line}")
+                                            
+                                            if lines:
+                                                gamma_parts.append("\n".join(lines))
+                    
+                    # Quellen-Folie (sammle alle verwendeten Paper)
+                    if include_content:
+                        all_sources = set()
+                        for kapitel in course["Kapitel"]:
+                            chapter_data = fetch_content_for_chapter(
+                                neo,
+                                kapitel["Titel"],
+                                retrieval_hints=kapitel.get("Retrieval_Hinweise", {})
+                            )
+                            for para in chapter_data.get("paragraphs", []):
+                                if para.get("paper_title"):
+                                    all_sources.add(para["paper_title"])
+                        
+                        if all_sources:
+                            sources_slide = ["# Quellen"]
+                            for src in sorted(all_sources):
+                                sources_slide.append(f"* {src}")
+                            gamma_parts.append("\n".join(sources_slide))
+                    
+                    # Kombiniere alle Teile mit --- als Folientrenner
+                    gamma_input = "\n---\n".join(gamma_parts)
+                    
+                    # Debug: Zeige Preview
+                    with st.expander("📄 Gamma Input Preview (erste 2000 Zeichen)"):
+                        st.code(gamma_input[:2000] + ("..." if len(gamma_input) > 2000 else ""))
+                
+                # Gamma API Call
+                with st.spinner("Sende an Gamma API..."):
+                    try:
+                        g = GammaClient()
+                    except Exception as e:
+                        st.error(f"❌ GammaClient konnte nicht initialisiert werden: {e}")
+                        st.info("Stelle sicher, dass GAMMA_API_KEY in der .env Datei gesetzt ist.")
+                        g = None
+                    
+                    if g is not None:
+                        # Erstelle nur eine Präsentation mit PPTX-Export
+                        export_format = "pptx"
+                        downloaded_files = []
+                        
+                        body = {
+                            "inputText": gamma_input,
+                            "textMode": "preserve",
+                            "format": "presentation",
+                            "themeName": gamma_theme,
+                            "cardSplit": gamma_split,
+                            "numCards": int(gamma_cards) if gamma_split == "auto" else len(gamma_parts),
+                            "exportAs": export_format,
+                            "textOptions": {"language": gamma_lang, "amount": "medium"},
+                            "imageOptions": {"source": gamma_img_source},
+                            "cardOptions": {"dimensions": "16x9"},
+                            "sharingOptions": {"externalAccess": "view", "workspaceAccess": "view"},
+                        }
+                        
+                        with st.spinner(f"Generiere Präsentation..."):
+                            try:
+                                gen_id = g.generate(body)
+                                st.info(f"Generation ID: {gen_id}")
+                                
+                                status = g.poll(gen_id, interval_sec=5, timeout_sec=600)
+                                
+                                # Zeige vollständigen Status für Debugging
+                                with st.expander("🔍 Debug: Vollständiger Gamma Status"):
+                                    st.json(status)
+                                
+                                # Suche nach gammaUrl rekursiv im Status-Objekt
+                                def find_gamma_url(obj):
+                                    """Suche rekursiv nach gammaUrl im Status-Objekt"""
+                                    if isinstance(obj, dict):
+                                        if "gammaUrl" in obj:
+                                            return obj["gammaUrl"]
+                                        for value in obj.values():
+                                            result = find_gamma_url(value)
+                                            if result:
+                                                return result
+                                    elif isinstance(obj, list):
+                                        for item in obj:
+                                            result = find_gamma_url(item)
+                                            if result:
+                                                return result
+                                    return None
+                                
+                                gamma_url = find_gamma_url(status)
+                                
+                                if gamma_url:
+                                    st.success(f"🌐 Präsentation auf Gamma verfügbar!")
+                                    st.markdown(f"### [🔗 Präsentation in Gamma öffnen]({gamma_url})")
+                                    st.caption("Klicke auf den Link, um die Präsentation direkt im Browser zu bearbeiten oder anzusehen.")
+                                else:
+                                    st.warning("⚠️ Keine Gamma-URL im Status gefunden. Siehe Debug-Informationen oben.")
+                                
+                                # Versuche Download-URL zu extrahieren
+                                def find_file_url(obj, format_ext):
+                                    """Suche nach downloadUrl, pptxUrl, pdfUrl etc. und jede URL, die auf das Format endet."""
+                                    import re
+                                    if isinstance(obj, dict):
+                                        for key, value in obj.items():
+                                            # Prüfe explizite Felder
+                                            if key in [f"{format_ext}Url", "downloadUrl", "fileUrl", "url"] and isinstance(value, str) and value:
+                                                return value
+                                            # Prüfe alle Strings auf passende Endung
+                                            if isinstance(value, str) and re.search(rf"\\.{format_ext}$", value):
+                                                return value
+                                            # Rekursiv suchen
+                                            result = find_file_url(value, format_ext)
+                                            if result:
+                                                return result
+                                    elif isinstance(obj, list):
+                                        for item in obj:
+                                            result = find_file_url(item, format_ext)
+                                            if result:
+                                                return result
+                                    return None
+                                
+                                file_url = find_file_url(status, export_format)
+                                
+                                if file_url:
+                                    st.success(f"📥 PPTX verfügbar!")
+                                    
+                                    # Versuche herunterzuladen
+                                    try:
+                                        safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", course['Kursname'])[:50]
+                                        out_file = g.download_file(
+                                            file_url,
+                                            out_dir=str(exports_dir / "gamma"),
+                                            filename=f"{safe_name}.pptx"
+                                        )
+                                        st.success(f"✅ PPTX heruntergeladen: {out_file}")
+                                        
+                                        # Download-Button
+                                        with open(out_file, "rb") as f:
+                                            st.download_button(
+                                                label="📥 PPTX herunterladen",
+                                                data=f.read(),
+                                                file_name=f"{safe_name}.pptx",
+                                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                                            )
+                                        
+                                    except Exception as e:
+                                        st.warning(f"Download fehlgeschlagen: {e}")
+                                        st.info(f"URL: {file_url}")
+                                else:
+                                    st.warning(f"Keine Download-URL automatisch gefunden")
+                                    with st.expander(f"📊 Status Details - Kopiere URL manuell"):
+                                        st.json(status)
+                                        st.info("💡 Tipp: Suche im JSON nach einer URL, die auf .pptx endet, und füge sie unten ein.")
+                                        
+                                        # Manueller URL-Input als Fallback
+                                        manual_url = st.text_input(
+                                            f"Manuelle PPTX-URL", 
+                                            key=f"manual_url_pptx",
+                                            placeholder=f"https://...pptx"
+                                        )
+                                        if manual_url and st.button(f"Download PPTX", key=f"manual_dl_pptx"):
+                                            try:
+                                                safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", course['Kursname'])[:50]
+                                                out_file = g.download_file(
+                                                    manual_url,
+                                                    out_dir=str(exports_dir / "gamma"),
+                                                    filename=f"{safe_name}.pptx"
+                                                )
+                                                st.success(f"✅ PPTX manuell heruntergeladen: {out_file}")
+                                                st.rerun()
+                                            except Exception as e:
+                                                st.error(f"Manueller Download fehlgeschlagen: {e}")
+                            
+                            except Exception as e:
+                                st.error(f"❌ Fehler bei der Präsentations-Generierung: {e}")
+                            except Exception as e:
+                                st.error(f"❌ Fehler bei der Präsentations-Generierung: {e}")
+                
+            except Exception as e:
+                st.error(f"❌ Fehler beim Vorbereiten der Gamma-Präsentation: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+

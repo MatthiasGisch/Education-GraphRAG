@@ -1294,9 +1294,11 @@ with tab_ingest:
         
         # Read PDF
         paper_meta, sections, paragraphs, figures = read_pdf_text_and_images(str(path))
+        print(f"🔍 DEBUG after read_pdf: title = '{paper_meta.get('title')}', path = {path}")
         
         # Extract enhanced metadata
         paper_meta = extract_enhanced_metadata(path, paper_meta)
+        print(f"🔍 DEBUG after extract_enhanced: title = '{paper_meta.get('title')}'")
         
         # Check for duplicates
         if check_duplicates:
@@ -1327,6 +1329,12 @@ with tab_ingest:
             max_rel = max_relations
         
         # Upsert paper
+        print(f"🔍 DEBUG before upsert_paper: title = '{paper_meta.get('title')}'")
+        
+        # Build meta dict, but exclude 'title' from PDF metadata to prevent override
+        pdf_meta = paper_meta.get("meta", {}).copy()
+        pdf_meta.pop("title", None)  # Remove title from PDF metadata
+        
         neo.upsert_paper(
             paper_meta["paper_id"],
             paper_meta.get("title"),
@@ -1338,7 +1346,7 @@ with tab_ingest:
                 "file_size": paper_meta.get("file_size"),
                 "ingested_at": paper_meta.get("ingested_at"),
                 "page_count": paper_meta.get("page_count"),
-                **paper_meta.get("meta", {}),
+                **pdf_meta,
             },
         )
         

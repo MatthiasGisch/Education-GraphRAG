@@ -90,8 +90,8 @@ class Neo4jClient:
         self.run(
             """
             MERGE (p:Paper {paper_id:$paper_id})
-            SET p.title = coalesce($title, p.title),
-                p += $meta
+            SET p += $meta,
+                p.title = coalesce($title, p.title)
             """,
             {"paper_id": paper_id, "title": title, "meta": meta},
         )
