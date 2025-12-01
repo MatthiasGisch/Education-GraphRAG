@@ -1375,8 +1375,13 @@ def show_course_generator():
                             "exportAs": export_format,
                             "textOptions": {"language": gamma_lang, "amount": "medium"},
                             "imageOptions": {"source": gamma_img_source},
-                            "cardOptions": {"dimensions": "16x9"},
-                            "sharingOptions": {"externalAccess": "view", "workspaceAccess": "view"},
+                            "cardOptions": {
+                                "dimensions": "16x9"  # Konsistente Aspect Ratio für alle Folien
+                            },
+                            "sharingOptions": {
+                                "externalAccess": "view",  # Du kannst über den Link zugreifen
+                                "workspaceAccess": "edit"  # Editierbar im Workspace
+                            }
                         }
                         
                         with st.spinner(f"Generiere Präsentation..."):
@@ -1416,30 +1421,8 @@ def show_course_generator():
                                 else:
                                     st.warning("⚠️ Keine Gamma-URL im Status gefunden. Siehe Debug-Informationen oben.")
                                 
-                                # Versuche Download-URL zu extrahieren
-                                def find_file_url(obj, format_ext):
-                                    """Suche nach downloadUrl, pptxUrl, pdfUrl etc. und jede URL, die auf das Format endet."""
-                                    import re
-                                    if isinstance(obj, dict):
-                                        for key, value in obj.items():
-                                            # Prüfe explizite Felder
-                                            if key in [f"{format_ext}Url", "downloadUrl", "fileUrl", "url"] and isinstance(value, str) and value:
-                                                return value
-                                            # Prüfe alle Strings auf passende Endung
-                                            if isinstance(value, str) and re.search(rf"\\.{format_ext}$", value):
-                                                return value
-                                            # Rekursiv suchen
-                                            result = find_file_url(value, format_ext)
-                                            if result:
-                                                return result
-                                    elif isinstance(obj, list):
-                                        for item in obj:
-                                            result = find_file_url(item, format_ext)
-                                            if result:
-                                                return result
-                                    return None
-                                
-                                file_url = find_file_url(status, export_format)
+                                # Download-URL direkt aus dem Status holen
+                                file_url = status.get("exportUrl")
                                 
                                 if file_url:
                                     st.success(f"📥 PPTX verfügbar!")
