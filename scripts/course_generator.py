@@ -108,6 +108,9 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         # Pattern 7: UUIDs oder lange IDs in eckigen Klammern (auch mit Präfix wie P, F, etc.)
         result["answer_text"] = re.sub(r'\[[A-Z]?[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\]', '', result["answer_text"], flags=re.IGNORECASE)
         
+        # Pattern 7b: Kurze Paper/Figure IDs wie [P9693640d] oder [Pee7505a7]
+        result["answer_text"] = re.sub(r'\[[A-Z][a-z0-9]{7,12}\]', '', result["answer_text"], flags=re.IGNORECASE)
+        
         # Pattern 8: Generische [id: ...] oder [ID: ...]
         result["answer_text"] = re.sub(r'\[i?d:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
         
@@ -1291,23 +1294,54 @@ def show_course_generator():
                                             if lines:
                                                 gamma_parts.append("\n".join(lines))
                     
-                    # Quellen-Folie (sammle alle verwendeten Paper)
+                    # Quellen-Folie (sammle alle verwendeten Paper mit Zitationsnummern)
                     if include_content:
-                        all_sources = set()
+                        # Sammle alle Quellen mit vollständigen Informationen
+                        sources_dict = {}
+                        
                         for kapitel in course["Kapitel"]:
                             chapter_data = fetch_content_for_chapter(
                                 neo,
                                 kapitel["Titel"],
                                 retrieval_hints=kapitel.get("Retrieval_Hinweise", {})
                             )
+                            
+                            # Sammle aus paragraphs
                             for para in chapter_data.get("paragraphs", []):
-                                if para.get("paper_title"):
-                                    all_sources.add(para["paper_title"])
+                                paper_title = para.get("paper_title", "").strip()
+                                if paper_title and paper_title not in sources_dict:
+                                    sources_dict[paper_title] = {
+                                        "title": paper_title,
+                                        "doi": para.get("doi", ""),
+                                        "url": para.get("url", ""),
+                                        "source": para.get("source", "")
+                                    }
+                            
+                            # Sammle auch aus supports falls vorhanden
+                            for support in chapter_data.get("supports", []):
+                                paper_title = support.get("paper_title", "").strip()
+                                if paper_title and paper_title not in sources_dict:
+                                    sources_dict[paper_title] = {
+                                        "title": paper_title,
+                                        "doi": support.get("doi", ""),
+                                        "url": support.get("url", ""),
+                                        "source": support.get("source", "")
+                                    }
                         
-                        if all_sources:
+                        if sources_dict:
+                            # Sortiere alphabetisch und weise Nummern zu
+                            sorted_sources = sorted(sources_dict.items(), key=lambda x: x[0])
+                            
                             sources_slide = ["# Quellen"]
-                            for src in sorted(all_sources):
-                                sources_slide.append(f"* {src}")
+                            for idx, (title, info) in enumerate(sorted_sources, 1):
+                                # Format: [1] Titel - DOI/URL falls vorhanden
+                                source_line = f"{idx}. {title}"
+                                if info.get("doi"):
+                                    source_line += f" - DOI: {info['doi']}"
+                                elif info.get("url"):
+                                    source_line += f" - URL: {info['url']}"
+                                sources_slide.append(f"* {source_line}")
+                            
                             gamma_parts.append("\n".join(sources_slide))
                     
                     # Kombiniere alle Teile mit --- als Folientrenner
