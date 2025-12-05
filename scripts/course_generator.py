@@ -4,11 +4,12 @@ from src.agent import answer_query
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle, Image
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 from pathlib import Path
 import datetime
+from io import BytesIO
 
 def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None, retrieval_hints: dict = None, section_title: str = None) -> dict:
     """
@@ -220,25 +221,88 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                 if support.get("page"):
                     pages.add(support.get("page"))
                 
+                # Versuche Metadaten aus Neo4j zu holen wenn paper_id vorhanden
+                authors = support.get("authors", "")
+                doi = support.get("doi", "")
+                url = support.get("url", "")
+                source_pub = support.get("source", "")
+                
+                if neo and paper_id:
+                    try:
+                        # Abfrage mit verfügbaren Feldern aus Debug-Output
+                        neo_query = """
+                        MATCH (p:Paper {paper_id: $pid})
+                        RETURN p.author AS author, p.creator AS creator, 
+                               p.creationDate AS creationDate, p.subject AS subject,
+                               p.keywords AS keywords, p.format AS format,
+                               keys(p) AS all_keys
+                        """
+                        neo_result = neo.run(neo_query, {"pid": paper_id})
+                        
+                        # Falls nicht gefunden, versuche mit Titel
+                        if not neo_result or not neo_result[0]:
+                            neo_query_title = """
+                            MATCH (p:Paper)
+                            WHERE p.title STARTS WITH $title_prefix
+                            RETURN p.author AS author, p.creator AS creator, 
+                                   p.creationDate AS creationDate, p.subject AS subject,
+                                   p.keywords AS keywords, keys(p) AS all_keys
+                            LIMIT 1
+                            """
+                            title_prefix = paper_title[:30] if len(paper_title) > 30 else paper_title
+                            neo_result = neo.run(neo_query_title, {"title_prefix": title_prefix})
+                        
+                        if neo_result and neo_result[0]:
+                            paper_meta = neo_result[0]
+                            
+                            # Debug: Zeige verfügbare Felder bei Papers ohne Autoren
+                            if not authors and idx == 0:
+                                print(f"DEBUG: Available Neo4j fields for paper '{paper_title[:40]}': {paper_meta.get('all_keys', [])}")
+                                print(f"DEBUG: Author field value: '{paper_meta.get('author', 'NONE')}'")
+                            
+                            # Extrahiere Autoren aus author (ignoriere creator - das ist meist die Software)
+                            if not authors:
+                                author_field = paper_meta.get("author") or ""
+                                # Filtere Softwarenamen heraus (z.B. "Adobe InDesign", "Pressbooks")
+                                software_names = ["adobe", "pressbooks", "indesign", "pages", "word"]
+                                if author_field and not any(sw in author_field.lower() for sw in software_names):
+                                    authors = author_field.strip()
+                            
+                            # Extrahiere Jahr aus creationDate
+                            if not year and paper_meta.get("creationDate"):
+                                year_raw = str(paper_meta.get("creationDate", ""))
+                                year_match = re.search(r'(\d{4})', year_raw)
+                                if year_match:
+                                    year = year_match.group(1)
+                            
+                            # Subject könnte als Quelle/Kontext dienen
+                            if not source_pub and paper_meta.get("subject"):
+                                source_pub = paper_meta.get("subject")
+                        else:
+                            if idx < 2:
+                                print(f"DEBUG: Paper not found in Neo4j - ID: {paper_id[:20]}, Title: {paper_title[:50]}")
+                    except Exception as e:
+                        print(f"WARNING: Could not fetch metadata from Neo4j for {paper_id}: {e}")
+                
                 sources_dict[paper_title] = {
                     "title": paper_title,
-                    "authors": support.get("authors", ""),
+                    "authors": authors,
                     "year": year,
-                    "doi": support.get("doi", ""),
-                    "source": support.get("source", ""),
-                    "url": support.get("url", ""),
+                    "doi": doi,
+                    "source": source_pub,
+                    "url": url,
                     "pages": pages  # Set of page numbers
                 }
                 
                 # Debug: Zeige erste Quelle mit allen Feldern
                 if len(sources_dict) == 1:
-                    print(f"DEBUG: First source metadata:")
+                    print(f"DEBUG: First source metadata (after Neo4j lookup):")
                     print(f"  - title: {paper_title[:50]}")
-                    print(f"  - authors: {support.get('authors', 'NONE')}")
+                    print(f"  - authors: {authors or 'NONE'}")
                     print(f"  - year: {year or 'NONE'}")
-                    print(f"  - doi: {support.get('doi', 'NONE')}")
-                    print(f"  - source: {support.get('source', 'NONE')}")
-                    print(f"  - url: {support.get('url', 'NONE')}")
+                    print(f"  - doi: {doi or 'NONE'}")
+                    print(f"  - source: {source_pub or 'NONE'}")
+                    print(f"  - url: {url or 'NONE'}")
                     print(f"  - page: {support.get('page', 'NONE')}")
             else:
                 # Quelle existiert bereits, füge weitere Seiten hinzu
@@ -461,7 +525,7 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
     
     return result
 
-def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None, include_content: bool = True) -> str:
+def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None, include_content: bool = True, cover_logo_bytes: bytes = None) -> str:
     """
     Generiert eine strukturierte PDF aus der Kursstruktur mit Inhalten aus dem Wissensgraphen.
     
@@ -470,6 +534,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         output_path: Pfad für die Ausgabedatei
         neo: Neo4j Client für Inhaltsabruf (optional)
         include_content: Ob Inhalte aus dem Graph eingebunden werden sollen
+        cover_logo_bytes: Optionales Logo als Bytes für das Deckblatt
         
     Returns:
         Pfad zur erstellten PDF
@@ -486,7 +551,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         'CustomTitle',
         parent=styles['Heading1'],
         fontSize=24,
-        textColor=colors.HexColor('#1f4788'),
+        textColor=colors.black,
         spaceAfter=30,
         alignment=TA_CENTER,
         fontName='Helvetica-Bold'
@@ -497,7 +562,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         'ChapterTitle',
         parent=styles['Heading1'],
         fontSize=18,
-        textColor=colors.HexColor('#1f4788'),
+        textColor=colors.black,
         spaceAfter=12,
         spaceBefore=20,
         fontName='Helvetica-Bold'
@@ -508,7 +573,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         'SectionTitle',
         parent=styles['Heading2'],
         fontSize=14,
-        textColor=colors.HexColor('#2c5aa0'),
+        textColor=colors.black,
         spaceAfter=8,
         spaceBefore=10,
         fontName='Helvetica-Bold'
@@ -525,11 +590,59 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         fontName='Helvetica'
     )
     
-    # Titelseite
-    story.append(Spacer(1, 3*cm))
-    story.append(Paragraph(course.get("Kursname", "Kurs"), title_style))
-    story.append(Spacer(1, 1*cm))
-    story.append(Paragraph(f"Erstellt am: {datetime.datetime.now().strftime('%d.%m.%Y')}", styles['Normal']))
+    # Deckblatt-Styles
+    cover_title_style = ParagraphStyle(
+        'CoverTitle',
+        parent=styles['Heading1'],
+        fontSize=28,
+        textColor=colors.black,
+        spaceAfter=12,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    cover_subtitle_style = ParagraphStyle(
+        'CoverSubtitle',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.black,
+        spaceAfter=6,
+        alignment=TA_CENTER,
+        fontName='Helvetica'
+    )
+    cover_meta_style = ParagraphStyle(
+        'CoverMeta',
+        parent=styles['Normal'],
+        fontSize=11,
+        textColor=colors.black,
+        spaceAfter=4,
+        alignment=TA_CENTER,
+        fontName='Helvetica'
+    )
+
+    # Titelseite mit optionalem Logo
+    cover_elements = []
+    cover_elements.append(Spacer(1, 2*cm))
+
+    if cover_logo_bytes:
+        try:
+            logo_img = Image(BytesIO(cover_logo_bytes), mask='auto')
+            # Begrenze Logo-Kantenlänge und erhalte Seitenverhältnis
+            logo_img._restrictSize(6*cm, 6*cm)
+            logo_img.hAlign = 'CENTER'
+            cover_elements.append(logo_img)
+            cover_elements.append(Spacer(1, 1*cm))
+        except Exception:
+            pass
+
+    cover_elements.append(Paragraph("Kursdokumentation", cover_subtitle_style))
+    cover_elements.append(Spacer(1, 0.3*cm))
+    cover_elements.append(Paragraph(course.get("Kursname", "Kurs"), cover_title_style))
+    cover_elements.append(Spacer(1, 0.5*cm))
+    cover_elements.append(Paragraph(f"Erstellt am: {datetime.datetime.now().strftime('%d.%m.%Y')}", cover_meta_style))
+    cover_elements.append(Paragraph(f"Kapitel: {len(course.get('Kapitel', []))}", cover_meta_style))
+    cover_elements.append(Spacer(1, 2.5*cm))
+
+    story.extend(cover_elements)
     story.append(PageBreak())
     
     # Inhaltsverzeichnis
@@ -800,11 +913,17 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             # Autoren (APA: Nachname, Initialen.)
             authors = (source_info.get("authors") or "").strip()
             if authors:
+                # Entferne doppelte Punkte und extra Spaces
+                authors = re.sub(r'\s*\.+\s*', '.', authors).strip()
                 # Wenn mehrere Autoren durch Semikolon getrennt
                 if ";" in authors:
-                    author_list = [a.strip() for a in authors.split(";")]
+                    author_list = [a.strip().rstrip('.') for a in authors.split(";")]
                     authors = ", ".join(author_list)
-                citation_parts.append(f"{authors}.")
+                # Stelle sicher dass Punkt am Ende
+                if not authors.endswith('.'):
+                    citation_parts.append(f"{authors}.")
+                else:
+                    citation_parts.append(f"{authors}")
             else:
                 # Kein Autor: Nutze Titel als Ersatz (APA-Konvention)
                 pass
@@ -813,8 +932,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             year = (source_info.get("year") or "").strip()
             if year:
                 citation_parts.append(f"({year}).")
-            else:
-                citation_parts.append("(o. J.).")  # "ohne Jahr" auf Deutsch
+            # Nur Jahr hinzufügen wenn vorhanden - nicht mit "(o. J.)"
             
             # Titel (APA: kursiv bei Büchern/Reports, normal bei Artikeln - wir nutzen fett für Lesbarkeit)
             citation_parts.append(f"<i>{title}</i>.")
@@ -860,8 +978,20 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         print("DEBUG: No sources to display in bibliography!")
         story.append(Paragraph("Keine Quellen aus dem Wissensgraph verwendet.", objective_style))
     
+    # Seitenzahlen ab erster Inhaltsseite (Deckblatt + TOC ohne Nummer)
+    def add_page_number(canvas_obj, doc_obj):
+        page_num = canvas_obj.getPageNumber()
+        if page_num <= 2:
+            return  # Kein Deckblatt/TOC nummerieren
+        canvas_obj.saveState()
+        canvas_obj.setFillColor(colors.black)
+        canvas_obj.setFont("Helvetica", 9)
+        display_num = page_num - 2  # Inhalte bei 1 starten lassen
+        canvas_obj.drawRightString(doc_obj.pagesize[0] - 2*cm, 1.5*cm, str(display_num))
+        canvas_obj.restoreState()
+
     # PDF erstellen
-    doc.build(story)
+    doc.build(story, onLaterPages=add_page_number)
     return output_path
 
 def show_course_generator():
@@ -1068,6 +1198,15 @@ def show_course_generator():
         )
     with col_pdf3:
         st.write("")  # Spacer
+
+    logo_file = st.file_uploader(
+        "Logo für Deckblatt (optional)",
+        type=["png", "jpg", "jpeg"],
+        help="Quadratische Logos wirken am besten (z.B. 512x512)."
+    )
+    logo_bytes = logo_file.getvalue() if logo_file else None
+
+    with col_pdf3:
         if st.button("PDF generieren", type="primary"):
             if not course.get("Kapitel"):
                 st.warning("Bitte füge mindestens ein Kapitel hinzu, bevor du die PDF generierst.")
@@ -1083,7 +1222,8 @@ def show_course_generator():
                             course, 
                             str(output_path),
                             neo=neo if include_content else None,
-                            include_content=include_content
+                            include_content=include_content,
+                            cover_logo_bytes=logo_bytes
                         )
                     st.success(f"✅ PDF erfolgreich erstellt: {output_path.name}")
                     

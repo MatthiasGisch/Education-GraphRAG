@@ -1439,6 +1439,32 @@ with tab_ingest:
         }
         
         return report
+
+    # --- Metadata helper for post-ingest curation ---
+    def fetch_paper_metadata(paper_id: str) -> Dict[str, Any]:
+        neo = get_neo()
+        res = neo.run(
+            """
+            MATCH (p:Paper {paper_id:$pid})
+            RETURN p.paper_id AS paper_id, p.title AS title,
+                   p.author AS author, p.publication_year AS publication_year,
+                   p.doi AS doi, p.url AS url, p.source AS source, p.publisher AS publisher
+            """,
+            {"pid": paper_id}
+        )
+        return res[0] if res else {}
+
+    def update_paper_metadata(paper_id: str, updates: Dict[str, Any]):
+        if not updates:
+            return
+        neo = get_neo()
+        set_parts = []
+        params = {"pid": paper_id}
+        for k, v in updates.items():
+            params[k] = v
+            set_parts.append(f"p.{k} = ${k}")
+        cypher = "MATCH (p:Paper {paper_id:$pid}) SET " + ", ".join(set_parts)
+        neo.run(cypher, params)
     
     # === Ingest Button ===
     if uploaded:
@@ -1489,6 +1515,37 @@ with tab_ingest:
             if reports:
                 avg_quality = sum(validate_ingestion_quality(r)["quality_score"] for r in reports) / len(reports)
                 st.metric("Durchschnittliche Qualität", f"{avg_quality:.0f}/100")
+
+                # Post-Ingest: Metadaten kuratieren
+                st.markdown("---")
+                st.subheader("✏️ Metadaten kuratieren (fehlende Felder ergänzen)")
+                st.caption("Vorhandene Felder werden gezeigt, leere Felder kannst du ergänzen. Bereits gesetzte Werte werden nicht überschrieben.")
+                fields = ["author", "publication_year", "doi", "url", "source", "publisher"]
+                for rep in reports:
+                    meta = fetch_paper_metadata(rep["paper_id"])
+                    st.markdown(f"**{meta.get('title') or rep.get('title') or 'Ohne Titel'}**")
+                    cols = st.columns(len(fields))
+                    updates = {}
+                    for i, field in enumerate(fields):
+                        current = meta.get(field) or ""
+                        placeholder = "fehlt" if not current else current
+                        updates[field] = cols[i].text_input(
+                            label=field,
+                            value="",
+                            placeholder=placeholder,
+                            key=f"meta_{rep['paper_id']}_{field}"
+                        )
+                    if st.button(f"Speichern für {rep['title']}", key=f"save_meta_{rep['paper_id']}"):
+                        to_set = {k: v.strip() for k, v in updates.items() if v and v.strip()}
+                        if to_set:
+                            filtered = {k: v for k, v in to_set.items() if not meta.get(k)}
+                            if filtered:
+                                update_paper_metadata(rep["paper_id"], filtered)
+                                st.success(f"Metadaten aktualisiert: {', '.join(filtered.keys())}")
+                            else:
+                                st.info("Keine Updates nötig – Felder bereits befüllt.")
+                        else:
+                            st.info("Keine Eingaben zum Speichern.")
             
             if duplicates:
                 with st.expander("⚠️ Duplikate"):

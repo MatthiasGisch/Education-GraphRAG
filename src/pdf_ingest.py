@@ -20,7 +20,17 @@ def file_sha256(path: str) -> str:
 
 def extract_doi_and_url(doc) -> tuple[str|None, str|None]:
     # 1) Metadaten
-    meta = doc.metadata or {}
+    meta_raw = doc.metadata or {}
+    # Filter leere Metafelder, damit keine leeren author/creator Felder gespeichert werden
+    meta = {}
+    for k, v in meta_raw.items():
+        if v is None:
+            continue
+        if isinstance(v, str):
+            if v.strip():
+                meta[k] = v.strip()
+        else:
+            meta[k] = v
     doi = meta.get("doi") or None
     url = meta.get("identifier") or None
     # 2) Heuristik auf ersten 2 Seiten
