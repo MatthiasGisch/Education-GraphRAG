@@ -1289,18 +1289,29 @@ with tab_ingest:
     uploaded = st.file_uploader("📄 PDF-Dateien auswählen", type=["pdf"], accept_multiple_files=True)
     
     # Enhanced ingest function
-    def ingest_one_pdf_enhanced(path: Path, use_auto_topic_param: bool, topic_param: str) -> Dict[str, Any]:
+    def ingest_one_pdf_enhanced(path: Path, use_auto_topic_param: bool, topic_param: str, progress_callback=None) -> Dict[str, Any]:
+        """
+        Ingest function with progress callback.
+        progress_callback: callable(step_name: str, percent: int) for progress updates
+        """
         neo = get_neo()
         
+        def report_progress(step: str, pct: int):
+            if progress_callback:
+                progress_callback(step, pct)
+        
         # Read PDF
+        report_progress("PDF lesen", 5)
         paper_meta, sections, paragraphs, figures = read_pdf_text_and_images(str(path))
         print(f"🔍 DEBUG after read_pdf: title = '{paper_meta.get('title')}', path = {path}")
         
         # Extract enhanced metadata
+        report_progress("Metadaten extrahieren", 10)
         paper_meta = extract_enhanced_metadata(path, paper_meta)
         print(f"🔍 DEBUG after extract_enhanced: title = '{paper_meta.get('title')}'")
         
         # Check for duplicates
+        report_progress("Duplikate prüfen", 15)
         if check_duplicates:
             duplicate = check_for_duplicates(neo, paper_meta)
             if duplicate:
@@ -1312,6 +1323,7 @@ with tab_ingest:
                 }
         
         # Infer topic if needed
+        report_progress("Topic bestimmen", 20)
         if use_auto_topic_param:
             topic = infer_topic_from_title(paper_meta.get("title", ""))
             st.info(f"📌 Auto-Topic: {topic}")
@@ -1329,6 +1341,7 @@ with tab_ingest:
             max_rel = max_relations
         
         # Upsert paper
+        report_progress("Paper speichern", 25)
         print(f"🔍 DEBUG before upsert_paper: title = '{paper_meta.get('title')}'")
         
         # Build meta dict, but exclude 'title' from PDF metadata to prevent override
@@ -1350,13 +1363,17 @@ with tab_ingest:
             },
         )
         
+        report_progress("Sections speichern", 30)
         if sections:
             neo.add_sections(paper_meta["paper_id"], sections)
         
+        report_progress("Paragraphen embedden", 40)
         paragraphs_emb = embed_paragraphs(paragraphs)
+        report_progress("Paragraphen speichern", 50)
         neo.add_paragraphs(paper_meta["paper_id"], paragraphs_emb)
         
         # Figures
+        report_progress("Figures analysieren", 60)
         figs_analysed = analyze_and_embed_figures(figures) if figures else []
         by_id = {f["figure_id"]: f for f in figures}
         figs_ready = []
@@ -1379,6 +1396,7 @@ with tab_ingest:
             neo.add_figures(paper_meta["paper_id"], figs_ready)
         
         # Extract concepts
+        report_progress("Konzepte extrahieren", 70)
         hybrid_mode = (strategy == "Hybrid (NER + LLM + Relationen)")
         
         if hybrid_mode:
@@ -1409,10 +1427,12 @@ with tab_ingest:
             )
         
         # Quality filter
+        report_progress("Qualität filtern", 85)
         if quality_filter and concepts:
             concepts, links = filter_low_quality_concepts(concepts, min_confidence, links)
         
         # Link paragraphs to concepts
+        report_progress("Links erstellen", 90)
         if links:
             try:
                 neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
@@ -1420,11 +1440,13 @@ with tab_ingest:
                 st.warning(f"⚠️ Link-Fehler: {e}")
         
         # Auto-attach to umbrella
+        report_progress("Umbrella-Konzepte", 95)
         try:
             neo.attach_concepts_to_existing_umbrella(topic)
         except Exception:
             pass
         
+        report_progress("Abschließen", 100)
         report = {
             "status": "success",
             "paper_id": paper_meta["paper_id"],
@@ -1473,17 +1495,35 @@ with tab_ingest:
             duplicates = []
             errors = []
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            overall_progress_bar = st.progress(0)
+            overall_status = st.empty()
+            
+            # Per-Paper Progress
+            paper_progress_bar = st.progress(0)
+            paper_status = st.empty()
+            paper_percent = st.empty()
             
             for idx, f in enumerate(uploaded):
                 try:
-                    status_text.text(f"📄 Verarbeite {idx+1}/{len(uploaded)}: {f.name}")
+                    overall_percent = int((idx / len(uploaded)) * 100)
+                    overall_status.text(f"📦 Gesamt: {idx+1}/{len(uploaded)} Papers")
+                    overall_progress_bar.progress((idx) / len(uploaded))
+                    
+                    # Reset paper progress
+                    paper_status.text(f"📄 {f.name}")
+                    paper_progress_bar.progress(0)
+                    paper_percent.metric("Paper-Fortschritt", "0%")
                     
                     out_path = UPLOAD_DIR / f.name
                     out_path.write_bytes(f.read())
                     
-                    rep = ingest_one_pdf_enhanced(out_path, use_auto_topic, selected_topic)
+                    # Callback für Paper-Fortschritt
+                    def update_paper_progress(step: str, pct: int):
+                        paper_status.text(f"📄 {f.name} - {step}")
+                        paper_progress_bar.progress(pct / 100)
+                        paper_percent.metric("Paper-Fortschritt", f"{pct}%")
+                    
+                    rep = ingest_one_pdf_enhanced(out_path, use_auto_topic, selected_topic, progress_callback=update_paper_progress)
                     
                     if rep.get("status") == "duplicate":
                         duplicates.append(rep)
@@ -1503,10 +1543,13 @@ with tab_ingest:
                     errors.append({"file": f.name, "error": str(e), "trace": traceback.format_exc()})
                     st.error(f"❌ Fehler bei {f.name}: {e}")
                 
-                progress_bar.progress((idx + 1) / len(uploaded))
+                overall_progress_bar.progress((idx + 1) / len(uploaded))
             
-            status_text.empty()
-            progress_bar.empty()
+            # Finale Anzeige
+            overall_status.text(f"📦 Gesamt: {len(uploaded)}/{len(uploaded)} Papers")
+            paper_status.empty()
+            paper_progress_bar.empty()
+            paper_percent.empty()
             
             # Final summary
             st.markdown("---")
@@ -1521,31 +1564,79 @@ with tab_ingest:
                 st.subheader("✏️ Metadaten kuratieren (fehlende Felder ergänzen)")
                 st.caption("Vorhandene Felder werden gezeigt, leere Felder kannst du ergänzen. Bereits gesetzte Werte werden nicht überschrieben.")
                 fields = ["author", "publication_year", "doi", "url", "source", "publisher"]
-                for rep in reports:
-                    meta = fetch_paper_metadata(rep["paper_id"])
-                    st.markdown(f"**{meta.get('title') or rep.get('title') or 'Ohne Titel'}**")
-                    cols = st.columns(len(fields))
-                    updates = {}
-                    for i, field in enumerate(fields):
-                        current = meta.get(field) or ""
-                        placeholder = "fehlt" if not current else current
-                        updates[field] = cols[i].text_input(
-                            label=field,
-                            value="",
-                            placeholder=placeholder,
-                            key=f"meta_{rep['paper_id']}_{field}"
-                        )
-                    if st.button(f"Speichern für {rep['title']}", key=f"save_meta_{rep['paper_id']}"):
-                        to_set = {k: v.strip() for k, v in updates.items() if v and v.strip()}
-                        if to_set:
-                            filtered = {k: v for k, v in to_set.items() if not meta.get(k)}
-                            if filtered:
-                                update_paper_metadata(rep["paper_id"], filtered)
-                                st.success(f"Metadaten aktualisiert: {', '.join(filtered.keys())}")
+                
+                # Eine gemeinsame Form für alle Papers, damit Eingaben nicht verloren gehen
+                with st.form(key="meta_curate_form"):
+                    for rep in reports:
+                        meta = fetch_paper_metadata(rep["paper_id"])
+                        st.markdown(f"**{meta.get('title') or rep.get('title') or 'Ohne Titel'}**")
+                        
+                        # Container für Inputs
+                        with st.container(border=True):
+                            # Initialisiere Session State für diese Paper
+                            session_key_prefix = f"meta_input_{rep['paper_id']}"
+                            if session_key_prefix not in st.session_state:
+                                st.session_state[session_key_prefix] = {f: "" for f in fields}
+                            
+                            # Author-Feld speziell (komma-getrennt für mehrere)
+                            current_author = meta.get("author") or ""
+                            placeholder_author = "fehlt" if not current_author else f"vorhanden: {current_author}"
+                            author_input = st.text_area(
+                                label="author (komma-getrennt für mehrere)",
+                                value=st.session_state[session_key_prefix].get("author", ""),
+                                placeholder=placeholder_author,
+                                height=60,
+                                key=f"meta_input_{rep['paper_id']}_author"
+                            )
+                            st.session_state[session_key_prefix]["author"] = author_input
+                            
+                            # Andere Felder
+                            cols = st.columns(len(fields) - 1)
+                            other_fields = fields[1:]  # Alles außer author
+                            
+                            for i, field in enumerate(other_fields):
+                                current = meta.get(field) or ""
+                                placeholder = "fehlt" if not current else f"vorhanden: {current}"
+                                
+                                input_val = cols[i].text_input(
+                                    label=field,
+                                    value=st.session_state[session_key_prefix].get(field, ""),
+                                    placeholder=placeholder,
+                                    key=f"meta_input_{rep['paper_id']}_{field}"
+                                )
+                                st.session_state[session_key_prefix][field] = input_val
+                        st.markdown("")
+                    
+                    # Sammel-Speichern und Reset
+                    col_save_all, col_reset_all = st.columns(2)
+                    with col_save_all:
+                        submitted_all = st.form_submit_button("💾 Alle Änderungen speichern", use_container_width=True)
+                        if submitted_all:
+                            updated_any = False
+                            for rep in reports:
+                                meta = fetch_paper_metadata(rep["paper_id"])
+                                session_key_prefix = f"meta_input_{rep['paper_id']}"
+                                updates = st.session_state[session_key_prefix].copy()
+                                to_set = {k: v.strip() for k, v in updates.items() if v and v.strip()}
+                                if to_set:
+                                    if "author" in to_set and to_set["author"]:
+                                        authors_list = [a.strip() for a in to_set["author"].split(",")]
+                                        to_set["author"] = ";".join(authors_list)
+                                    filtered = {k: v for k, v in to_set.items() if not meta.get(k)}
+                                    if filtered:
+                                        update_paper_metadata(rep["paper_id"], filtered)
+                                        updated_any = True
+                            if updated_any:
+                                st.success("✅ Metadaten gespeichert.")
                             else:
-                                st.info("Keine Updates nötig – Felder bereits befüllt.")
-                        else:
-                            st.info("Keine Eingaben zum Speichern.")
+                                st.info("ℹ️ Keine neuen Eingaben zum Speichern oder Felder bereits befüllt.")
+                    with col_reset_all:
+                        reset_all = st.form_submit_button("↺ Alle Eingaben löschen", use_container_width=True)
+                        if reset_all:
+                            for rep in reports:
+                                session_key_prefix = f"meta_input_{rep['paper_id']}"
+                                st.session_state[session_key_prefix] = {f: "" for f in fields}
+                            st.rerun()
             
             if duplicates:
                 with st.expander("⚠️ Duplikate"):
