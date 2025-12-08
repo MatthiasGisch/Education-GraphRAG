@@ -11,7 +11,7 @@ from pathlib import Path
 import datetime
 from io import BytesIO
 
-def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None, retrieval_hints: dict = None, section_title: str = None) -> dict:
+def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None, retrieval_hints: dict = None, section_title: str = None, learner_role: str = None) -> dict:
     """
     Holt relevante Inhalte aus dem Wissensgraphen für ein Kapitel.
     Nutzt das bewährte Retrieval-System aus dem Fragen-Tab.
@@ -21,6 +21,8 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         chapter_title: Titel des Kapitels
         topic: Optional das Topic für bessere Zuordnung
         retrieval_hints: Optional dict mit Abschnitt-Index -> Retrieval-Hinweis
+        section_title: Optional Abschnittstitel für spezifische Sections
+        learner_role: Optional Zielgruppe/Rolle (z.B. "Vertriebsmitarbeiter", "Lagerarbeiter")
         
     Returns:
         Dict mit answer_text, paragraphs, figures, related_concepts
@@ -35,12 +37,28 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
     
     try:
         # Erstelle eine strukturierte Frage für das Retrieval
-        if section_title:
-            # Für einen spezifischen Abschnitt
-            query = f"Erkläre zum Konzept '{chapter_title}' den Aspekt '{section_title}' ausführlich und didaktisch verständlich für Studierende."
+        # Baue einen rollenspezifischen Prompt auf
+        if learner_role and learner_role.strip():
+            # Rollenspezifischer Prompt mit Praxisbezug
+            role_context = f"""Erstelle umfassende Schulungsunterlagen für '{learner_role}' mit folgenden Anforderungen:
+- Arbeitskontext: Relevanz für den beruflichen Alltag dieser Rolle
+- Praxisbezüge: Konkrete Beispiele und Anwendungsfälle aus der Praxis
+- Mehrwert: Zeige Nutzen und ROI im Unternehmenskontext auf
+- Actionability: Praktische Handlungsempfehlungen und konkrete Umsetzungsschritte
+- Verständlichkeit: Didaktisch strukturiert für Mitarbeiter im operativen Kontext"""
+            
+            if section_title:
+                # Für einen spezifischen Abschnitt
+                query = f"{role_context}\n\nZum Konzept '{chapter_title}' - Aspekt '{section_title}':\nErläutere detailliert mit praktischen Beispielen und Tipps für die tägliche Arbeit."
+            else:
+                # Für das gesamte Kapitel
+                query = f"{role_context}\n\nZum Konzept '{chapter_title}':\nGib eine umfassende Erklärung mit praktischen Beispielen, Handlungsempfehlungen und konkretisierten Mehrwerten."
         else:
-            # Für das gesamte Kapitel
-            query = f"Erkläre das Konzept '{chapter_title}' ausführlich und didaktisch verständlich für Studierende."
+            # Fallback für generische Zielgruppe
+            if section_title:
+                query = f"Erkläre zum Konzept '{chapter_title}' den Aspekt '{section_title}' ausführlich und didaktisch verständlich für Lernende."
+            else:
+                query = f"Erkläre das Konzept '{chapter_title}' umfassend und didaktisch verständlich."
         
         # Füge Retrieval-Hinweise zur Query hinzu, falls vorhanden
         if retrieval_hints:
@@ -200,11 +218,12 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     "paper_title": paper_title
                 })
             
-            # Sammle eindeutige Quellen
-            if paper_title and paper_title not in sources_dict:
-                # Filtere nur komplett leere Titel
-                if not paper_title or paper_title.strip().lower() in ['unknown', '']:
-                    continue  # Überspringe ungültige Einträge
+            # Sammle eindeutige Quellen - aber filtere ungültige Titel
+            # Überspringe: leere Titel, "unknown", "document" (ohne ID)
+            if not paper_title or paper_title.strip().lower() in ['unknown', '', 'document']:
+                continue  # Überspringe ungültige Einträge
+            
+            if paper_title not in sources_dict:
                 
                 # Extrahiere Jahr aus pdf_creation_date falls vorhanden
                 year_raw = support.get("year", "")
@@ -347,28 +366,32 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
             unique_titles.sort(key=lambda t: source_to_number.get(t, 999))
             print(f"DEBUG: Unique titles for inline citations: {len(unique_titles)} - {unique_titles[:3]}")
             
-            # Verteile Zitationen über den Text
-            citation_interval = max(1, len(sentences) // len(unique_titles)) if unique_titles else len(sentences)
-            print(f"DEBUG: Citation interval: {citation_interval} sentences (total: {len(sentences)}, unique titles: {len(unique_titles)})")
+            # Verteile Zitationen HÄUFIGER über den Text (alle 2-3 Sätze statt großem Intervall)
+            # Jede Quelle wird mehrmals zitiert für besseren Beleg
+            citation_frequency = 3  # Alle 3 Sätze eine Zitation
+            print(f"DEBUG: Citation frequency: every {citation_frequency} sentences (total: {len(sentences)}, unique titles: {len(unique_titles)})")
             
+            title_cycle_idx = 0
             for i, sentence in enumerate(sentences):
                 new_sentences.append(sentence)
                 
-                # Füge Zitation nach bestimmten Intervallen ein
-                if unique_titles and (i + 1) % citation_interval == 0:
-                    title_idx = min((i + 1) // citation_interval - 1, len(unique_titles) - 1)
-                    title = unique_titles[title_idx]
-                    if title in source_to_number and title not in cited_sources:
+                # Füge Zitation alle N Sätze ein, rotiere durch Quellen
+                if unique_titles and (i + 1) % citation_frequency == 0:
+                    # Rotiere durch die verfügbaren Quellen
+                    title = unique_titles[title_cycle_idx % len(unique_titles)]
+                    if title in source_to_number:
                         cite_num = source_to_number[title]
-                        new_sentences[-1] += f"<sup>[{cite_num}]</sup>"
+                        # Nutze ReportLab-kompatible Formatierung: <super> statt <sup>
+                        new_sentences[-1] += f"<super>[{cite_num}]</super>"
                         cited_sources.add(title)
                         print(f"DEBUG: Added inline citation [{cite_num}] after sentence {i+1}")
+                        title_cycle_idx += 1
             
             # Füge restliche nicht-zitierte Quellen am Ende hinzu
             remaining_citations = [source_to_number[t] for t in unique_titles if t in source_to_number and t not in cited_sources]
             if remaining_citations:
                 refs_str = ','.join(map(str, sorted(remaining_citations)))
-                new_sentences[-1] += f"<sup>[{refs_str}]</sup>"
+                new_sentences[-1] += f"<super>[{refs_str}]</super>"
                 print(f"DEBUG: Added remaining citations [{refs_str}] at end")
             
             result["answer_text"] = '. '.join(new_sentences)
@@ -532,7 +555,7 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
     
     return result
 
-def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None, include_content: bool = True, cover_logo_bytes: bytes = None) -> str:
+def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None, include_content: bool = True, cover_logo_bytes: bytes = None, learner_role: str = None) -> str:
     """
     Generiert eine strukturierte PDF aus der Kursstruktur mit Inhalten aus dem Wissensgraphen.
     
@@ -542,10 +565,14 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         neo: Neo4j Client für Inhaltsabruf (optional)
         include_content: Ob Inhalte aus dem Graph eingebunden werden sollen
         cover_logo_bytes: Optionales Logo als Bytes für das Deckblatt
+        learner_role: Optional Zielgruppe/Rolle für die Inhaltsanpassung
         
     Returns:
         Pfad zur erstellten PDF
     """
+    # Speichere die learner_role für Zugriff in der PDF-Generierung
+    generate_course_pdf._learner_role = learner_role
+    
     doc = SimpleDocTemplate(output_path, pagesize=A4, 
                            leftMargin=2.5*cm, rightMargin=2.5*cm,
                            topMargin=2.5*cm, bottomMargin=2.5*cm)
@@ -720,7 +747,8 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                         section_content = fetch_content_for_chapter(
                             neo, chapter_title, 
                             retrieval_hints=section_hints,
-                            section_title=abschnitt
+                            section_title=abschnitt,
+                            learner_role=learner_role
                         )
                         
                         # Sammle Quellen
@@ -732,7 +760,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                                     print(f"DEBUG: Pre-scan: Added '{title[:40]}...'")
             else:
                 # Kapitel ohne Abschnitte
-                full_content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints)
+                full_content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints, learner_role=learner_role)
                 if full_content.get("sources"):
                     for source in full_content["sources"]:
                         title = source.get("title", "")
@@ -767,7 +795,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             retrieval_hints = kapitel.get("Retrieval_Hinweise", {})
             
             print(f"DEBUG: Fetching content for chapter {idx}: '{chapter_title}' (neo={neo}, include_content={include_content})")
-            content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints)
+            content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints, learner_role=learner_role)
             print(f"DEBUG: Content retrieved: answer_text length={len(content.get('answer_text', ''))}, {len(content.get('paragraphs', []))} paragraphs, {len(content.get('figures', []))} figures")
             
             # Sammle Quellen für das Quellenverzeichnis
@@ -827,7 +855,8 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                         neo, 
                         chapter_title, 
                         retrieval_hints=section_hints,
-                        section_title=abschnitt
+                        section_title=abschnitt,
+                        learner_role=learner_role
                     )
                     
                     section_text = section_content.get("answer_text", "")
@@ -888,7 +917,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         elif not abschnitte and include_content and neo:
             # Kein Abschnitte, aber Inhalt gewünscht - hole für gesamtes Kapitel
             print(f"DEBUG: No sections, fetching content for entire chapter")
-            full_content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints)
+            full_content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints, learner_role=learner_role)
             answer_text = full_content.get("answer_text", "")
             
             if answer_text:
@@ -1081,8 +1110,22 @@ def show_course_generator():
     # Kursname bearbeiten
     course["Kursname"] = st.text_input("Kursname", value=course["Kursname"])
 
+    # Zielgruppe / Rolle bearbeiten
+    st.markdown("---")
+    st.subheader("👥 Zielgruppe & Personalisierung")
+    learner_role = st.text_input(
+        "Rolle / Zielgruppe (optional)",
+        value=st.session_state.get("coursegen_learner_role", ""),
+        placeholder="z.B. Vertriebsmitarbeiter, Lagerarbeiter, Führungskraft, etc.",
+        help="Gib hier eine Rolle oder Zielgruppe ein. Die Kursinhalte werden dann spezifisch für diese Gruppe aufbereitet. Leer lassen für allgemeine Darstellung."
+    )
+    st.session_state["coursegen_learner_role"] = learner_role
+    st.caption(f"📋 Aktuelle Zielgruppe: {learner_role if learner_role.strip() else '(Keine Angabe - allgemeine Darstellung)'}")
+
+    st.markdown("---")
+    st.subheader("📚 Kapitel")
+    
     # Kapitel hinzufügen
-    st.subheader("Kapitel")
     if st.button("Neues Kapitel hinzufügen"):
         course["Kapitel"].append({
             "Nummer": "",
@@ -1267,13 +1310,14 @@ def show_course_generator():
                 output_path = exports_dir / pdf_filename
                 
                 try:
-                    with st.spinner("Generiere PDF..."):
+                    with st.spinner(f"Generiere PDF für Zielgruppe '{learner_role if learner_role.strip() else 'allgemein'}'..."):
                         result_path = generate_course_pdf(
                             course, 
                             str(output_path),
                             neo=neo if include_content else None,
                             include_content=include_content,
-                            cover_logo_bytes=logo_bytes
+                            cover_logo_bytes=logo_bytes,
+                            learner_role=learner_role if learner_role.strip() else None
                         )
                     st.success(f"✅ PDF erfolgreich erstellt: {output_path.name}")
                     
@@ -1395,7 +1439,8 @@ def show_course_generator():
                             chapter_data = fetch_content_for_chapter(
                                 neo, 
                                 kapitel["Titel"],
-                                retrieval_hints=kapitel.get("Retrieval_Hinweise", {})
+                                retrieval_hints=kapitel.get("Retrieval_Hinweise", {}),
+                                learner_role=getattr(generate_course_pdf, '_learner_role', None)
                             )
                             
                             # Füge Hauptinhalt hinzu
@@ -1450,7 +1495,8 @@ def show_course_generator():
                                         neo,
                                         kapitel["Titel"],
                                         retrieval_hints={str(abs_idx): section_hints},
-                                        section_title=abschnitt
+                                        section_title=abschnitt,
+                                        learner_role=getattr(generate_course_pdf, '_learner_role', None)
                                     )
                                     
                                     if section_data.get("answer_text"):
@@ -1493,7 +1539,8 @@ def show_course_generator():
                             chapter_data = fetch_content_for_chapter(
                                 neo,
                                 kapitel["Titel"],
-                                retrieval_hints=kapitel.get("Retrieval_Hinweise", {})
+                                retrieval_hints=kapitel.get("Retrieval_Hinweise", {}),
+                                learner_role=getattr(generate_course_pdf, '_learner_role', None)
                             )
                             
                             # Sammle aus paragraphs
