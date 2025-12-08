@@ -73,7 +73,7 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
             query=query,
             neo=neo,
             web_mode="off",  # Nur Wissensgraph nutzen
-            k_paragraphs=24,
+            k_paragraphs=48,  # Erhöht für ausführlichere Schulungsinhalte
             k_figures=8,
             use_concept_retrieval=True
         )
@@ -229,13 +229,13 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                 
                 if neo and paper_id:
                     try:
-                        # Abfrage mit verfügbaren Feldern aus Debug-Output
+                        # Abfrage mit kurierten Metadaten-Feldern (aus GUI nachgetragen)
                         neo_query = """
                         MATCH (p:Paper {paper_id: $pid})
                         RETURN p.author AS author, p.creator AS creator, 
-                               p.creationDate AS creationDate, p.subject AS subject,
-                               p.keywords AS keywords, p.format AS format,
-                               keys(p) AS all_keys
+                               p.publication_year AS publication_year,
+                               p.doi AS doi, p.url AS url, p.source AS source, p.publisher AS publisher,
+                               p.creationDate AS creationDate, p.subject AS subject
                         """
                         neo_result = neo.run(neo_query, {"pid": paper_id})
                         
@@ -245,8 +245,9 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                             MATCH (p:Paper)
                             WHERE p.title STARTS WITH $title_prefix
                             RETURN p.author AS author, p.creator AS creator, 
-                                   p.creationDate AS creationDate, p.subject AS subject,
-                                   p.keywords AS keywords, keys(p) AS all_keys
+                                   p.publication_year AS publication_year,
+                                   p.doi AS doi, p.url AS url, p.source AS source, p.publisher AS publisher,
+                                   p.creationDate AS creationDate, p.subject AS subject
                             LIMIT 1
                             """
                             title_prefix = paper_title[:30] if len(paper_title) > 30 else paper_title
@@ -255,12 +256,7 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                         if neo_result and neo_result[0]:
                             paper_meta = neo_result[0]
                             
-                            # Debug: Zeige verfügbare Felder bei Papers ohne Autoren
-                            if not authors and idx == 0:
-                                print(f"DEBUG: Available Neo4j fields for paper '{paper_title[:40]}': {paper_meta.get('all_keys', [])}")
-                                print(f"DEBUG: Author field value: '{paper_meta.get('author', 'NONE')}'")
-                            
-                            # Extrahiere Autoren aus author (ignoriere creator - das ist meist die Software)
+                            # Extrahiere Autoren: Priorisiere kurierte Daten
                             if not authors:
                                 author_field = paper_meta.get("author") or ""
                                 # Filtere Softwarenamen heraus (z.B. "Adobe InDesign", "Pressbooks")
@@ -268,16 +264,27 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                                 if author_field and not any(sw in author_field.lower() for sw in software_names):
                                     authors = author_field.strip()
                             
-                            # Extrahiere Jahr aus creationDate
-                            if not year and paper_meta.get("creationDate"):
-                                year_raw = str(paper_meta.get("creationDate", ""))
-                                year_match = re.search(r'(\d{4})', year_raw)
-                                if year_match:
-                                    year = year_match.group(1)
+                            # Jahr: Priorisiere publication_year (kuriert), Fallback auf creationDate
+                            if not year:
+                                if paper_meta.get("publication_year"):
+                                    year = str(paper_meta.get("publication_year")).strip()
+                                elif paper_meta.get("creationDate"):
+                                    year_raw = str(paper_meta.get("creationDate", ""))
+                                    year_match = re.search(r'(\d{4})', year_raw)
+                                    if year_match:
+                                        year = year_match.group(1)
                             
-                            # Subject könnte als Quelle/Kontext dienen
-                            if not source_pub and paper_meta.get("subject"):
-                                source_pub = paper_meta.get("subject")
+                            # DOI, URL, Source, Publisher aus kurierten Daten
+                            if not doi and paper_meta.get("doi"):
+                                doi = paper_meta.get("doi").strip()
+                            if not url and paper_meta.get("url"):
+                                url = paper_meta.get("url").strip()
+                            if not source_pub:
+                                # Priorisiere kurierte "source", Fallback auf "subject"
+                                if paper_meta.get("source"):
+                                    source_pub = paper_meta.get("source").strip()
+                                elif paper_meta.get("subject"):
+                                    source_pub = paper_meta.get("subject").strip()
                         else:
                             if idx < 2:
                                 print(f"DEBUG: Paper not found in Neo4j - ID: {paper_id[:20]}, Title: {paper_title[:50]}")
@@ -690,9 +697,54 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         spaceAfter=8
     )
     
-    # Sammle alle Quellen während der Kapitelgenerierung mit vollständigen Informationen
+    # OPTION A: Sammle ERST alle Quellen aus allen Kapiteln, DANN nummeriere global
+    print("DEBUG: Option A - Pre-scanning all chapters for sources...")
     all_sources = {}  # paper_title -> citation info
-    source_counter = {}  # paper_title -> citation number
+    
+    # Scan 1: Gehe durch alle Kapitel und sammle Quellen (ohne Text zu generieren)
+    for idx, kapitel in enumerate(course.get("Kapitel", []), 1):
+        chapter_title = kapitel.get('Titel', '')
+        retrieval_hints = kapitel.get("Retrieval_Hinweise", {})
+        abschnitte = kapitel.get("Abschnitte", [])
+        
+        if include_content and neo:
+            # Hole nur Metadaten aus allen Abschnitten
+            if abschnitte:
+                for aidx, abschnitt in enumerate(abschnitte, 1):
+                    if abschnitt.strip():
+                        section_hints = {}
+                        section_key = str(aidx - 1)
+                        if section_key in retrieval_hints:
+                            section_hints[section_key] = retrieval_hints[section_key]
+                        
+                        section_content = fetch_content_for_chapter(
+                            neo, chapter_title, 
+                            retrieval_hints=section_hints,
+                            section_title=abschnitt
+                        )
+                        
+                        # Sammle Quellen
+                        if section_content.get("sources"):
+                            for source in section_content["sources"]:
+                                title = source.get("title", "")
+                                if title and title.strip().lower() not in ['document', 'unknown'] and title not in all_sources:
+                                    all_sources[title] = source
+                                    print(f"DEBUG: Pre-scan: Added '{title[:40]}...'")
+            else:
+                # Kapitel ohne Abschnitte
+                full_content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints)
+                if full_content.get("sources"):
+                    for source in full_content["sources"]:
+                        title = source.get("title", "")
+                        if title and title.strip().lower() not in ['document', 'unknown'] and title not in all_sources:
+                            all_sources[title] = source
+                            print(f"DEBUG: Pre-scan: Added '{title[:40]}...'")
+    
+    # Weise globale Zitationsnummern zu NACHDEM alle Quellen gesammelt wurden
+    sorted_all_sources = sorted(all_sources.keys())
+    source_to_citation_number = {title: idx + 1 for idx, title in enumerate(sorted_all_sources)}
+    print(f"DEBUG: Pre-scan complete. Total sources: {len(all_sources)}")
+    print(f"DEBUG: Global citation numbers assigned: {list(source_to_citation_number.items())[:3]}")
     
     # Kapitel
     for idx, kapitel in enumerate(course.get("Kapitel", []), 1):
@@ -727,8 +779,6 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                         continue
                     if title and title not in all_sources:
                         all_sources[title] = source
-                        # Weise eine Zitationsnummer zu (sortiert alphabetisch später)
-                        source_counter[title] = 0  # Wird später neu nummeriert
         else:
             print(f"DEBUG: Skipping content fetch (include_content={include_content}, neo={neo})")
         
@@ -805,12 +855,11 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                                 print(f"DEBUG: Added source: {title[:50]}...")
                             if title and title not in cited_titles:
                                 cited_titles.add(title)
-                                # Berechne die Zitationsnummer basierend auf alphabetischer Sortierung
-                                sorted_all_sources = sorted(all_sources.keys())
-                                if title in sorted_all_sources:
-                                    ref_num = sorted_all_sources.index(title) + 1
+                                # Nutze die GLOBALE Zitationsnummer (bereits berechnet im Pre-Scan)
+                                if title in source_to_citation_number:
+                                    ref_num = source_to_citation_number[title]
                                     chapter_refs.append(ref_num)
-                                    print(f"DEBUG: Assigned citation number {ref_num} to '{title[:30]}...'")
+                                    print(f"DEBUG: Using global citation number {ref_num} for '{title[:30]}...'")
                     else:
                         print(f"DEBUG: Section {aidx} has NO sources!")
                     
@@ -868,9 +917,9 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                             all_sources[title] = source
                         if title and title not in cited_titles:
                             cited_titles.add(title)
-                            sorted_all_sources = sorted(all_sources.keys())
-                            if title in sorted_all_sources:
-                                ref_num = sorted_all_sources.index(title) + 1
+                            # Nutze die GLOBALE Zitationsnummer (bereits berechnet im Pre-Scan)
+                            if title in source_to_citation_number:
+                                ref_num = source_to_citation_number[title]
                                 chapter_refs.append(ref_num)
         
         # Pagebreak nach jedem Kapitel (außer dem letzten)
@@ -907,8 +956,9 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             # APA Format: Autor(en). (Jahr). Titel. Quelle. DOI/URL
             citation_parts = []
             
-            # Zitatnummer in eckigen Klammern
-            citation_parts.append(f"[{idx}]")
+            # Zitatnummer in eckigen Klammern - Nutze die globale Nummer
+            citation_num = source_to_citation_number.get(title, idx)
+            citation_parts.append(f"[{citation_num}]")
             
             # Autoren (APA: Nachname, Initialen.)
             authors = (source_info.get("authors") or "").strip()

@@ -41,13 +41,14 @@ def answer_via_openai_web(query: str, *, lang: str = "de", force_tool: bool = Fa
         return {"mode": "web_error", "answer": "OpenAI Client nicht initialisierbar.", "supports": [], "debug": {"web_call": "client_none"}}
 
     sys_prompt = (
-        "Du bist ein erfahrener Dozent und Lehrer, der Lernmaterial erstellt. "
-        "Erkläre Konzepte didaktisch verständlich und strukturiert. "
+        "Du erstellst Schulungsmaterialien für Arbeitnehmer und Fachkräfte. "
+        "Konzentriere dich auf praktische Anwendbarkeit und berufliche Relevanz. "
+        "Nutze Beispiele aus der Berufspraxis, erkläre Schritt-für-Schritt wie man Techniken anwendet. "
+        "Vermeide zu theoretische Tiefe, fokussiere auf 'wie man das macht' statt 'warum es so ist'. "
         "Wenn du das Web nutzt, antworte präzise, nenne Belege im Fließtext (mit URL) "
         "und füge am Ende EXAKT einen JSON-Block an:\n"
         "```json {\"sources\":[{\"url\":\"...\",\"title\":\"...\"}]}```\n"
-        "Nimm nur Quellen in den JSON-Block auf, die du auch genutzt/zitiert hast. "
-        "Formuliere so, dass Studierende die Inhalte gut verstehen und lernen können."
+        "Nimm nur Quellen in den JSON-Block auf, die du auch genutzt/zitiert hast."
     )
 
     tool_choice = {"type": "web_search"} if force_tool else "auto"
@@ -171,7 +172,7 @@ def answer_query(
         all_supports = ret.get("supports") or []
         paragraphs = [s for s in all_supports if s.get("type") == "paragraph"]
         figures = [s for s in all_supports if s.get("type") == "figure"]
-        supports = paragraphs[:12] + figures  # Max 12 Paragraphen + alle Figures
+        supports = paragraphs[:30] + figures  # Max 30 Paragraphen + alle Figures (erhöht für Schulungsmaterial)
         eff = _effective_supports(supports, min_supports_score)
         debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff, "decision": "graph_only"})
         answer = grounded_answer(query, supports)
@@ -195,7 +196,7 @@ def answer_query(
     all_supports = ret.get("supports") or []
     paragraphs = [s for s in all_supports if s.get("type") == "paragraph"]
     figures = [s for s in all_supports if s.get("type") == "figure"]
-    supports = paragraphs[:12] + figures  # Max 12 Paragraphen + alle Figures
+    supports = paragraphs[:30] + figures  # Max 30 Paragraphen + alle Figures (erhöht für Schulungsmaterial)
     eff = _effective_supports(supports, min_supports_score)
     debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff})
 
