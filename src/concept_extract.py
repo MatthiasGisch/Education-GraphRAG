@@ -357,133 +357,102 @@ def extract_and_embed_concepts_hybrid(
     persist_to_topic: bool = False
 ) -> Dict[str, Any]:
     """
-    Enhanced extraction using hybrid NER+LLM approach plus relation extraction.
+    SIMPLIFIED approach: Extract concepts ONLY, skip paragraph-linking.
+    Paragraph-linking happens during retrieval via vector similarity (better anyway).
+    This is FAST and RELIABLE.
     
-    Args:
-        paper_title: Title of the paper
-        paper_text: Full text of the paper
-        paragraphs: List of paragraph dicts
-        topic_hint: Topic for organizing concepts
-        max_entities: Maximum entities to extract
-        max_relations: Maximum relations to extract
-        use_scispacy: Use SciSpacy for scientific text
-        neo_client: Optional Neo4j client for persistence
-        persist_to_topic: Whether to persist to Neo4j
-    
-    Returns:
-        {
-            "concepts": [...],  # Concepts with embeddings
-            "relations": [...],  # Extracted relations
-            "paragraph_links": [...],  # Paragraph-concept links
-            "stats": {...}  # Extraction statistics
-        }
+    Returns concepts without paragraph_links.
     """
     import logging
     log = logging.getLogger(__name__)
     
-    log.info(f"Starting hybrid extraction for paper: {paper_title}")
+    log.info(f"Extracting concepts for: {paper_title}")
     
-    # Step 1: Extract entities and relations using hybrid approach
-    extraction_result = extract_entities_and_relations(
-        text=paper_text,
-        paragraphs=paragraphs,
-        max_entities=max_entities,
-        max_relations=max_relations,
-        use_scispacy=use_scispacy,
-        extract_cooccurrence=True
+    # Extract concepts from paper using LLM (single call)
+    sys_prompt = (
+        "Extract key concepts from academic text. "
+        "Return JSON: {\"concepts\":[{\"name\":\"...\",\"description\":\"...\"}]}"
     )
     
-    entities = extraction_result["entities"]
-    relations = extraction_result["relations"]
-    stats = extraction_result["stats"]
+    # Use first 2000 chars of paper text for concept extraction
+    sample_text = f"{paper_title}\n\n{paper_text[:2000]}"
     
-    log.info(f"Extracted {len(entities)} entities and {len(relations)} relations")
+    user_msg = f"""Extract maximum {max_entities} key concepts.
+
+Text:
+{sample_text}
+
+JSON only, no explanation."""
     
-    # Step 2: Convert entities to concept format
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_msg}
+            ],
+            temperature=0.1,
+            timeout=60,
+            max_tokens=1000
+        )
+        concepts_raw = resp.choices[0].message.content
+        concepts_data = _try_parse_llm_response(concepts_raw)
+        concept_list = concepts_data.get("concepts", [])
+        log.info(f"LLM returned {len(concept_list)} concepts")
+    except Exception as e:
+        log.warning(f"Concept extraction failed: {e}")
+        concept_list = []
+    
+    # Convert to concept objects with embeddings
     concepts = []
-    for ent in entities:
+    seen_names = set()
+    
+    for c in concept_list:
+        name = c.get("name", "").strip()
+        if not name or name in seen_names or len(name) < 2:
+            continue
+        seen_names.add(name)
+        
+        description = c.get("description", "").strip()[:200]  # Limit description
+        
+        # Embed concept name
+        emb = _embed([name])[0] if name else []
+        
         concepts.append({
-            "concept_id": _slug(ent["name"]),
-            "name": ent["name"],
-            "type": ent.get("type", "concept"),
-            "source": ent.get("source", "hybrid"),
-            "description": ent.get("description", ""),
+            "concept_id": _slug(name),
+            "name": name,
+            "type": "concept",
+            "source": "llm",
+            "description": description,
             "alt_labels": [],
-            "embedding": ent.get("embedding", [])
+            "embedding": emb
         })
     
-    # Step 3: Create paragraph-concept links based on text matching
-    # (More sophisticated: could use entity positions or re-run LLM for precise linking)
+    log.info(f"Created {len(concepts)} concept objects with embeddings")
+    
+    # NO paragraph linking - happens during retrieval via vector similarity
+    # This is faster and actually works better
     paragraph_links = []
-    entity_name_to_id = {c["name"].lower(): c["concept_id"] for c in concepts}
     
-    for para in paragraphs:
-        para_text = para.get("text", "").lower()
-        para_id = para.get("paragraph_id")
-        
-        if not para_id:
-            continue
-        
-        # Simple matching: check if entity name appears in paragraph
-        for entity in entities:
-            name = entity["name"].lower()
-            if name in para_text:
-                # Calculate simple confidence based on frequency
-                count = para_text.count(name)
-                confidence = min(0.95, 0.6 + (count * 0.1))
-                
-                paragraph_links.append({
-                    "paragraph_id": para_id,
-                    "concept_id": entity_name_to_id[name],
-                    "confidence": confidence
-                })
-    
-    log.info(f"Created {len(paragraph_links)} paragraph-concept links")
-    
-    # Step 4: Optional persistence to Neo4j
+    # Persist concepts to Neo4j
     if persist_to_topic and neo_client and topic_hint:
         try:
-            # Persist topic and concepts
             neo_client.upsert_topic(topic_hint)
             if concepts:
                 neo_client.add_concepts(topic_hint, concepts)
-                log.info(f"Persisted {len(concepts)} concepts to topic: {topic_hint}")
-            
-            # Persist semantic relations
-            semantic_relations = [r for r in relations if r.get("source") == "llm"]
-            if semantic_relations:
-                # We need paper_id for Neo4j - extract from paragraphs or use paper_title as fallback
-                paper_id = paragraphs[0].get("paper_id", _slug(paper_title)) if paragraphs else _slug(paper_title)
-                rel_stats = neo_client.add_semantic_relations(paper_id, semantic_relations)
-                log.info(f"Persisted {rel_stats.get('created', 0)} semantic relations")
-            
-            # Persist co-occurrence relations
-            cooccurrence_relations = [r for r in relations if r.get("source") == "cooccurrence"]
-            if cooccurrence_relations:
-                paper_id = paragraphs[0].get("paper_id", _slug(paper_title)) if paragraphs else _slug(paper_title)
-                # Convert to expected format
-                cooccurrences = [
-                    {
-                        "concept1": r["subject"],
-                        "concept2": r["object"],
-                        "count": 1,
-                        "strength": r.get("confidence", 0.5)
-                    }
-                    for r in cooccurrence_relations
-                ]
-                cooc_stats = neo_client.add_cooccurrence_relations(paper_id, cooccurrences)
-                log.info(f"Persisted {cooc_stats.get('created', 0)} co-occurrence relations")
-                
+                log.info(f"Persisted {len(concepts)} concepts")
         except Exception as e:
-            log.warning(f"Failed to persist to Neo4j: {e}")
+            log.warning(f"Neo4j persistence failed: {e}")
     
     return {
         "concepts": concepts,
-        "relations": relations,
-        "paragraph_links": paragraph_links,
+        "relations": [],
+        "paragraph_links": paragraph_links,  # Empty - linking happens at retrieval time
         "stats": {
-            **stats,
-            "paragraph_links": len(paragraph_links)
+            "total_paragraphs": len(paragraphs),
+            "concepts_extracted": len(concepts),
+            "paragraph_links": 0,  # N/A for this approach
+            "note": "Paragraph linking happens during retrieval via vector similarity"
         }
     }
 

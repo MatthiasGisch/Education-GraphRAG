@@ -175,19 +175,52 @@ def _vsearch_concepts(neo: Neo4jClient, embedding: List[float], k: int = 10, min
 
 def _paragraphs_via_concepts(neo: Neo4jClient, concept_ids: List[str], limit: int = 20) -> List[Dict[str, Any]]:
     """
-    Graph-Traversierung: Von Concepts zu Paragraphs über MENTIONS-Beziehung.
-    Holt Paragraphs die relevante Concepts erwähnen.
+    UPDATED: Vector-based similarity instead of MENTIONS relations.
+    
+    Since we no longer create MENTIONS relations during ingest,
+    we find paragraphs by:
+    1. Get concept embeddings
+    2. Search paragraphs using combined concept embedding vector
+    
+    This is actually BETTER than graph traversal because it finds
+    semantically similar content even without exact matches.
     """
     if not concept_ids:
         return []
     
-    rows = neo.run(
+    # Get concept embeddings and combine them
+    concept_rows = neo.run(
         """
         UNWIND $concept_ids AS cid
-        MATCH (c:Concept {concept_id: cid})<-[m:MENTIONS]-(para:Paragraph)
+        MATCH (c:Concept {concept_id: cid})
+        RETURN c.name AS name, c.embedding AS embedding
+        """,
+        {"concept_ids": concept_ids}
+    )
+    
+    if not concept_rows:
+        log.warning(f"No concepts found for IDs: {concept_ids[:5]}...")
+        return []
+    
+    # Average concept embeddings to create combined query vector
+    embeddings = [row["embedding"] for row in concept_rows if row.get("embedding")]
+    if not embeddings:
+        log.warning("No embeddings found for concepts")
+        return []
+    
+    # Calculate average embedding
+    import numpy as np
+    avg_embedding = np.mean(embeddings, axis=0).tolist()
+    
+    # Vector search using combined concept embedding
+    rows = neo.run(
+        """
+        CALL db.index.vector.queryNodes('paragraph_embedding_index', $limit, $embedding)
+        YIELD node, score
+        WITH node, score
+        MATCH (para:Paragraph) WHERE para = node
         MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
         OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
-        WITH DISTINCT para, p, sec, m, c
         RETURN
           'paragraph'              AS type,
           para.paragraph_id        AS paragraph_id,
@@ -202,13 +235,14 @@ def _paragraphs_via_concepts(neo: Neo4jClient, concept_ids: List[str], limit: in
           p.pdf_subject            AS source,
           sec.section_id           AS section_id,
           sec.title                AS section_title,
-          coalesce(m.confidence, 0.8) AS score,
-          c.name                   AS matched_concept
+          toFloat(score)           AS score,
+          'vector_similarity'      AS matched_concept
         ORDER BY score DESC
         LIMIT $limit
         """,
-        {"concept_ids": concept_ids, "limit": limit},
+        {"embedding": avg_embedding, "limit": limit}
     )
+    
     return rows or []
 
 
@@ -288,10 +322,10 @@ def concept_based_retrieve(
     min_concept_score: float = 0.7,
 ) -> Dict[str, Any]:
     """
-    Intelligentes Concept-basiertes Retrieval:
+    Intelligentes Concept-basiertes Retrieval (VECTOR-BASED, no MENTIONS relations):
       1) Embed Query
       2) Vector-Suche auf Concepts → findet relevante Konzepte
-      3) Graph-Traversierung: Concepts → MENTIONS ← Paragraphs
+      3) Vector-Similarity: Use concept embeddings to find similar paragraphs
       4) (optional) Semantic Relations: erweitere Concepts über IS_A/PART_OF/RELATED_TO
       5) Vector-Suche Paragraphs (direkter Match als Fallback)
       6) Vector-Suche Figures
