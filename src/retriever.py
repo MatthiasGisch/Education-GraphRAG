@@ -151,9 +151,10 @@ def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict
             existing_para_ids.add(pid)
 
 
-def _vsearch_concepts(neo: Neo4jClient, embedding: List[float], k: int = 10, min_score: float = 0.7) -> List[Dict[str, Any]]:
+def _vsearch_concepts(neo: Neo4jClient, embedding: List[float], k: int = 10, min_score: float = 0.6) -> List[Dict[str, Any]]:
     """
     Vector-Suche über Concept-Index. Findet die relevantesten Konzepte zur Query.
+    Lowered min_score to 0.6 since concept names are short and may not match as strongly as full paragraphs.
     """
     rows = neo.run(
         """
@@ -319,7 +320,7 @@ def concept_based_retrieve(
     k_figures: int = 6,
     expand_semantic: bool = True,
     add_figure_context: bool = True,
-    min_concept_score: float = 0.7,
+    min_concept_score: float = 0.6,
 ) -> Dict[str, Any]:
     """
     Intelligentes Concept-basiertes Retrieval (VECTOR-BASED, no MENTIONS relations):

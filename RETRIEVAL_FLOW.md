@@ -5,8 +5,13 @@
 Der Retrieval-Prozess läuft in **3 Hauptdateien** ab:
 
 1. **`src/agent.py`** - Orchestrierung (Entrypoint)
-2. **`src/retriever.py`** - Eigentliche Retrieval-Funktionen
+2. **`src/retriever.py`** - Eigentliche Retrieval-Funktionen (VECTOR-BASED!)
 3. **`src/openai_client.py`** - LLM-Integration für Antwortgenerierung
+
+**🔄 ARCHITECTURAL CHANGE (2024):**
+- Concepts are extracted WITHOUT linking to paragraphs during ingest
+- Paragraph-concept matching happens at retrieval time using **vector similarity**
+- No more MENTIONS relations in the graph!
 
 ---
 
@@ -23,7 +28,7 @@ response = answer_query(
     web_mode="off",                 # NUR Wissensgraph, kein Web
     k_paragraphs=48,                # Hole 48 Absätze aus dem Graph
     k_figures=8,                    # Hole 8 Abbildungen
-    use_concept_retrieval=True      # Nutze intelligentes Concept-Retrieval
+    use_concept_retrieval=True      # Nutze intelligentes Concept-Retrieval (VECTOR-BASED)
 )
 ```
 
@@ -33,7 +38,7 @@ response = answer_query(
 - Parameter:
   - `k_paragraphs=48`: Sucht in den Top-48 relevantesten Absätze
   - `k_figures=8`: Sucht in den Top-8 relevantesten Abbildungen
-  - `use_concept_retrieval=True`: Nutzt intelligente Konzept-basierte Suche (nicht nur Volltext)
+  - `use_concept_retrieval=True`: Nutzt **vector-based concept matching** (semantisch besser als String-Matching!)
 
 ---
 
@@ -60,13 +65,14 @@ answer_query(query, neo, web_mode="off")
 ```python
 if (web_mode or "").lower() in {"off", "none", "disabled"}:
     if use_concept_retrieval:
-        # ← RETRIEVAL PASSIERT HIER
-        ret = concept_based_retrieve(  # ← intelligente Concept-Suche
+        # ← RETRIEVAL PASSIERT HIER (VECTOR-BASED)
+        ret = concept_based_retrieve(  # ← intelligente Concept-Suche via embeddings
             neo, query, 
             k_paragraphs_direct=48,     # Top 48 Absätze direkt
             k_figures=8,
-            k_concepts=10,              # Top 10 Konzepte
-            k_paragraphs_via_concepts=20 # +20 Absätze über Konzepte
+            k_concepts=10,              # Top 10 Konzepte via vector similarity
+            k_paragraphs_via_concepts=20, # +20 Absätze via concept embedding averaging
+            min_concept_score=0.6       # Minimum similarity score (lowered from 0.7)
         )
     else:
         # ← FALLBACK: einfache Hybrid-Suche
@@ -82,14 +88,21 @@ if (web_mode or "").lower() in {"off", "none", "disabled"}:
 ```
 
 **Was passiert:**
-1. Query wird gesendet an `concept_based_retrieve()` oder `hybrid_retrieve()`
-2. Beide geben zurück: Liste mit relevanten Absätzen + Abbildungen
+1. Query wird gesendet an `concept_based_retrieve()` (VECTOR-BASED!)
+2. Gibt zurück: Liste mit relevanten Absätzen + Abbildungen (via embedding similarity)
 3. Top 30 Absätze werden ausgewählt (Filter für Qualität)
 4. LLM generiert Antwort basierend auf diesen Quellen
 
 ---
 
-## 3. Eigentliches Retrieval: `src/retriever.py`
+## 3. Eigentliches Retrieval: `src/retriever.py` (VECTOR-BASED)
+
+### 🔥 NEW: Vector-Based Concept Retrieval Strategy
+
+**Why vectors instead of MENTIONS relations?**
+- **Faster**: No LLM calls per paragraph during ingest (only 1 per paper)
+- **Better quality**: Semantic similarity finds related content even without exact name matches
+- **More reliable**: No fragile string matching or complex linking logic
 
 ### Strategie A: `hybrid_retrieve()` (einfache Variante)
 
@@ -135,11 +148,11 @@ Dies ist die **Standard-Strategie** für Schulungen! Sie hat 3 Retrieval-Wege:
 
 ```python
 def concept_based_retrieve(neo, query, k_concepts=10, k_paragraphs_direct=48, 
-                          k_paragraphs_via_concepts=20, k_figures=8):
+                          k_paragraphs_via_concepts=20, k_figures=8, min_concept_score=0.6):
     """
-    Intelligente Concept-basierte Suche mit 3 Retrieval-Wegen:
+    🔥 VECTOR-BASED Concept Retrieval (NO MENTIONS RELATIONS!)
     
-    Weg 1: Query → Concepts → Paragraphs (konzeptionell)
+    Weg 1: Query → Concepts (via embeddings) → Paragraphs (via embedding similarity)
     Weg 2: Query → Paragraphs (direkt via Vector-Embedding)
     Weg 3: Query → Figures (direkt via Vector-Embedding)
     """
@@ -147,24 +160,29 @@ def concept_based_retrieve(neo, query, k_concepts=10, k_paragraphs_direct=48,
     # SCHRITT 1: Embedding der Query
     emb = _embed_query(query)
     
-    # WEG 1A: Finde relevante Konzepte (z.B. "Deep Learning", "Neural Network")
-    concepts = _vsearch_concepts(neo, emb, k=10)
-    #          ↓ Vector-Suche in Concept-Embeddings
+    # WEG 1A: Finde relevante Konzepte via VECTOR SIMILARITY (z.B. "Deep Learning", "Neural Network")
+    concepts = _vsearch_concepts(neo, emb, k=10, min_score=0.6)
+    #          ↓ Vector-Suche in concept_embedding_index
     #          ↓ Findet Top-10 konzeptionell ähnliche Konzepte
+    #          ↓ min_score=0.6 (lowered from 0.7 because concept names are short)
     
     concept_ids = [c["concept_id"] for c in concepts]
     
-    # WEG 1B: Erweitere Konzepte über semantische Relationen
+    # WEG 1B: Erweitere Konzepte über semantische Relationen (optional)
     if concepts:
         related = _expand_via_semantic_relations(neo, concept_ids, k=5)
         #         ↓ Folgt Graph-Relationen: IS_A, PART_OF, RELATED_TO
         #         ↓ Findet damit auch verwandte Konzepte (z.B. "CNN" wenn "Neural Network")
         concept_ids.extend(related)
     
-    # WEG 1C: Hole Absätze die diese Konzepte ERWÄHNEN
+    # WEG 1C: 🔥 NEW: Hole Absätze via VECTOR SIMILARITY (not MENTIONS!)
     paras_via_concepts = _paragraphs_via_concepts(neo, concept_ids, limit=20)
-    #                    ↓ Graph-Query: Concept →[MENTIONED_IN]→ Paragraph
-    #                    ↓ Findet alle Absätze die diese Konzepte erwähnen
+    #                    ↓ NEW APPROACH:
+    #                    ↓ 1) Fetch concept embeddings from Neo4j
+    #                    ↓ 2) Average them using numpy
+    #                    ↓ 3) Vector search paragraph_embedding_index with averaged embedding
+    #                    ↓ 4) Find paragraphs semantically similar to the concept cluster
+    #                    ↓ ✅ NO MENTIONS RELATIONS NEEDED!
     
     # WEG 2: Direkte Paragraph-Suche per Vector-Ähnlichkeit
     paras_direct = _vsearch_paragraphs(neo, emb, k=48)
@@ -176,7 +194,7 @@ def concept_based_retrieve(neo, query, k_concepts=10, k_paragraphs_direct=48,
     # SCHRITT 2: Merge & Deduplizierung
     supports = []
     
-    # Priorität: Concept-basierte Paragraphs zuerst (wahrscheinlich am relevantesten)
+    # Priorität: Concept-basierte Paragraphs zuerst (semantisch am relevantesten)
     supports.extend(paras_via_concepts)
     
     # Dann direkte Paragraph-Matches (können auch relevant sein)
@@ -192,6 +210,36 @@ def concept_based_retrieve(neo, query, k_concepts=10, k_paragraphs_direct=48,
     
     return {"supports": supports, "matched_concepts": concepts, "debug": {...}}
 ```
+
+**🔥 KEY CHANGE: _paragraphs_via_concepts() is now vector-based!**
+
+**OLD approach (unreliable):**
+```cypher
+// Required MENTIONS relations that were hard to create during ingest
+MATCH (c:Concept)<-[:MENTIONS]-(para:Paragraph)
+RETURN para
+```
+
+**NEW approach (semantic & fast):**
+```python
+# 1) Fetch concept embeddings
+concept_embeddings = [concept['embedding'] for concept in concepts]
+
+# 2) Average embeddings using numpy
+import numpy as np
+avg_embedding = np.mean(concept_embeddings, axis=0).tolist()
+
+# 3) Vector search with averaged embedding
+CALL db.index.vector.queryNodes('paragraph_embedding_index', $limit, $embedding)
+YIELD node, score
+RETURN node AS para, score
+```
+
+**Benefits:**
+- ✅ No MENTIONS relations needed (faster ingest)
+- ✅ Semantic similarity > exact string matches
+- ✅ Finds related content even if concept name not mentioned verbatim
+- ✅ Works with short concept names (adjusted min_score to 0.6)
 
 ---
 
