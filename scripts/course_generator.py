@@ -218,12 +218,11 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     "paper_title": paper_title
                 })
             
-            # Sammle eindeutige Quellen - aber filtere ungültige Titel
-            # Überspringe: leere Titel, "unknown", "document" (ohne ID)
-            if not paper_title or paper_title.strip().lower() in ['unknown', '', 'document']:
-                continue  # Überspringe ungültige Einträge
-            
-            if paper_title not in sources_dict:
+            # Sammle eindeutige Quellen
+            if paper_title and paper_title not in sources_dict:
+                # Filtere nur komplett leere Titel
+                if not paper_title or paper_title.strip().lower() in ['unknown', '']:
+                    continue  # Überspringe ungültige Einträge
                 
                 # Extrahiere Jahr aus pdf_creation_date falls vorhanden
                 year_raw = support.get("year", "")
@@ -345,30 +344,43 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         
         # Füge inline Zitationen zum Text hinzu basierend auf Supports
         # Strategie: Verteile Zitationen für alle verwendeten Quellen über den Text
+        # NEU: Mit Seitenzahlen und Abschnittsinformationen
         if supports and source_to_number:
             sentences = result["answer_text"].split('. ')
             cited_sources = set()
             new_sentences = []
             
-            # Sammle alle Paper-Titel aus Supports (inkl. "Document XYZ" Fallbacks)
-            support_titles = []
+            # Sammle alle Paper-Titel aus Supports MIT Seitenzahlen und Abschnitten
+            support_details = []  # [(title, page, section), ...]
             for s in supports:
                 title = s.get("paper_title", "").strip()
                 paper_id = s.get("paper_id", "")
+                page = s.get("page", None)
+                section = s.get("section_title", "")
+                
                 # Verwende den gleichen Fallback wie oben
                 if not title and paper_id:
                     title = f"Document {paper_id[:8]}"
                 if title and title.lower() not in ['document', 'unknown']:  # Nur "document" ohne ID ausschließen
-                    support_titles.append(title)
+                    support_details.append({"title": title, "page": page, "section": section})
             
-            unique_titles = list(dict.fromkeys(support_titles))  # Preserve order, remove duplicates
-            # Sortiere nach Zitatnummern für aufsteigende Reihenfolge im Text
+            # Gruppiere Support-Details nach Titel
+            title_to_details = {}
+            for detail in support_details:
+                title = detail["title"]
+                if title not in title_to_details:
+                    title_to_details[title] = {"pages": set(), "sections": set()}
+                if detail["page"]:
+                    title_to_details[title]["pages"].add(detail["page"])
+                if detail["section"]:
+                    title_to_details[title]["sections"].add(detail["section"])
+            
+            unique_titles = list(title_to_details.keys())
             unique_titles.sort(key=lambda t: source_to_number.get(t, 999))
             print(f"DEBUG: Unique titles for inline citations: {len(unique_titles)} - {unique_titles[:3]}")
             
-            # Verteile Zitationen HÄUFIGER über den Text (alle 2-3 Sätze statt großem Intervall)
-            # Jede Quelle wird mehrmals zitiert für besseren Beleg
-            citation_frequency = 3  # Alle 3 Sätze eine Zitation
+            # Verteile Zitationen HÄUFIGER über den Text (alle 3 Sätze)
+            citation_frequency = 3
             print(f"DEBUG: Citation frequency: every {citation_frequency} sentences (total: {len(sentences)}, unique titles: {len(unique_titles)})")
             
             title_cycle_idx = 0
@@ -377,22 +389,44 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                 
                 # Füge Zitation alle N Sätze ein, rotiere durch Quellen
                 if unique_titles and (i + 1) % citation_frequency == 0:
-                    # Rotiere durch die verfügbaren Quellen
                     title = unique_titles[title_cycle_idx % len(unique_titles)]
                     if title in source_to_number:
                         cite_num = source_to_number[title]
-                        # Nutze ReportLab-kompatible Formatierung: <super> statt <sup>
-                        new_sentences[-1] += f"<super>[{cite_num}]</super>"
+                        
+                        # Baue Zitation mit Seitenzahlen auf
+                        details = title_to_details.get(title, {})
+                        pages = sorted(details.get("pages", set()))
+                        
+                        if pages:
+                            # Zeige bis zu 3 Seitenzahlen
+                            page_str = ", ".join([f"S. {p}" for p in pages[:3]])
+                            if len(pages) > 3:
+                                page_str += " u.a."
+                            citation_text = f"<super>[{cite_num}, {page_str}]</super>"
+                        else:
+                            citation_text = f"<super>[{cite_num}]</super>"
+                        
+                        new_sentences[-1] += citation_text
                         cited_sources.add(title)
-                        print(f"DEBUG: Added inline citation [{cite_num}] after sentence {i+1}")
+                        print(f"DEBUG: Added inline citation [{cite_num}] with pages: {pages[:3] if pages else 'none'} after sentence {i+1}")
                         title_cycle_idx += 1
             
             # Füge restliche nicht-zitierte Quellen am Ende hinzu
-            remaining_citations = [source_to_number[t] for t in unique_titles if t in source_to_number and t not in cited_sources]
-            if remaining_citations:
-                refs_str = ','.join(map(str, sorted(remaining_citations)))
+            remaining_titles = [t for t in unique_titles if t not in cited_sources and t in source_to_number]
+            if remaining_titles:
+                remaining_cites = []
+                for title in remaining_titles:
+                    cite_num = source_to_number[title]
+                    details = title_to_details.get(title, {})
+                    pages = sorted(details.get("pages", set()))
+                    if pages:
+                        page_str = f"S. {pages[0]}"
+                        remaining_cites.append(f"{cite_num}, {page_str}")
+                    else:
+                        remaining_cites.append(str(cite_num))
+                refs_str = '; '.join(remaining_cites)
                 new_sentences[-1] += f"<super>[{refs_str}]</super>"
-                print(f"DEBUG: Added remaining citations [{refs_str}] at end")
+                print(f"DEBUG: Added remaining citations at end: {refs_str}")
             
             result["answer_text"] = '. '.join(new_sentences)
             print(f"DEBUG: Inline citations applied. Final text length: {len(result['answer_text'])}")

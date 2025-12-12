@@ -924,26 +924,18 @@ def rebuild_concepts_for_all(topic: str, strategy: str) -> dict:
                 max_concepts=30,
                 seed_names=[],
                 allow_new=True,
-                neo_client=neo
+                neo_client=neo,
+                persist_to_topic=True  # Automatisch in Topic persistieren
             )
             
         if concepts:
-            # Vorschau im GUI anzeigen und optional anlegen
+            # Vorschau im GUI anzeigen (bereits in DB persistiert durch persist_to_topic=True)
             try:
-                with st.expander(f"Vorgeschlagene Konzepte für {title} (Anzahl: {len(concepts)})"):
-                    st.write("Preview der vorgeschlagenen Konzepte.")
+                with st.expander(f"Extrahierte Konzepte für {title} (Anzahl: {len(concepts)})"):
+                    st.write("✅ Konzepte wurden automatisch in der Datenbank gespeichert.")
                     st.json(concepts)
-                    if not hybrid_mode:  # Hybrid mode already persists
-                        auto_add = st.checkbox("Vorgeschlagene Konzepte automatisch in DB anlegen", value=True, key=f"auto_add_preview_{pid}")
-                    else:
-                        auto_add = False  # Already persisted in hybrid mode
             except Exception:
-                auto_add = True
-            if auto_add and not hybrid_mode:
-                neo.upsert_topic(topic)
-                neo.add_concepts(topic, concepts)
-        if links and not hybrid_mode:  # Hybrid mode already persists links
-            neo.link_paragraphs_to_concepts(pid, links)
+                pass  # Ignore preview errors
 
         total_concepts += len(concepts)
         total_links    += len(links)
