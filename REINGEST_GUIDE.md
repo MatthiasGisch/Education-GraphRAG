@@ -42,7 +42,7 @@ CALL apoc.export.cypher.all("backup.cypher", {
 })
 ```
 
-### Step 2: Run Re-Ingest Script
+### Step 2: Run Re-Ingest Script (Auto-Stitch enabled)
 
 ```powershell
 # From project root
@@ -54,11 +54,14 @@ The script will:
 2. Clear entire Neo4j database
 3. Re-ingest all PDFs from `data/uploads/`
 4. Use improved concept extraction
-5. Show diagnostics at the end
+5. Automatically stitch the graph:
+   - Sections ↔ Paragraphs/Figures via `stitch_document_hierarchy()`
+   - Figures ↔ Paragraphs via `stitch_figures_to_paragraphs()`
+6. Show diagnostics at the end
 
 **Expected Duration:** 30-60 minutes (depends on number of papers)
 
-### Step 3: Verify Results
+### Step 3: Verify Results (No GUI stitching required)
 
 After completion, check the diagnostics output:
 
@@ -160,7 +163,7 @@ Move it out of `data/uploads/` temporarily, then re-run.
 
 ## Post-Ingest: Cleanup Scripts
 
-Even with improved code, you may still need to run cleanup scripts from `CLEANUP_EMPTY_SECTIONS.md`:
+Even with improved code and auto-stitching, you may still need to run cleanup scripts from `CLEANUP_EMPTY_SECTIONS.md`:
 
 ```cypher
 // 1. Delete any remaining empty sections

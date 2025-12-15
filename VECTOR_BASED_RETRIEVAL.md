@@ -159,7 +159,7 @@ Diagnostic scripts:
    python scripts/reingest_all.py
    ```
 
-2. **Fix orphan paragraphs** (1195 still exist)
+2. **Fix orphan paragraphs** (auto-stitch reduces most; run cleanup if needed)
    ```cypher
    MATCH (p:Paper)-[:HAS_SECTION]->(sec:Section)
    WITH p, collect(sec)[0] AS firstSection
@@ -178,6 +178,16 @@ Diagnostic scripts:
    - Increase `k_paragraphs_via_concepts` (20 → 30)
    - Add concept name boosting for exact matches
    - Weighted averaging (popular concepts weighted more)
+
+## 🧵 Auto-Stitching
+
+Stitching (Sections ↔ Paragraphs/Figures, Figures ↔ Paragraphs) runs automatically in the ingest pipeline:
+
+- Single ingest (`scripts/ingest.py`) and bulk ingest (`scripts/reingest_all.py`) call:
+   - `neo.stitch_document_hierarchy()`
+   - `neo.stitch_figures_to_paragraphs(prefix_length=60, page_tolerance=1)`
+
+GUI stitch buttons were removed to avoid redundancy.
 
 ## 📚 Documentation
 

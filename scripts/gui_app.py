@@ -60,8 +60,32 @@ UPLOAD_DIR = ROOT / "data" / "uploads"
 EXPORTS_DIR = ROOT / "exports"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+USER_CONFIG_PATH = EXPORTS_DIR / "user_config.json"
 
 st.set_page_config(page_title="GraphRAG GUI", layout="wide")
+
+# Custom CSS für übersichtlichere Tabs
+st.markdown("""
+<style>
+    /* Tab-Buttons größer und besser lesbar machen */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        padding: 10px 0;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        padding: 0 24px;
+        font-size: 16px;
+        font-weight: 500;
+    }
+    
+    /* Aktiver Tab hervorheben */
+    .stTabs [aria-selected="true"] {
+        font-weight: 600;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
 # =========================
@@ -124,6 +148,26 @@ def remove_gamma_theme(name: str) -> None:
             p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+
+# ---- Persistent user configuration for API keys ----
+def load_user_config() -> dict:
+    try:
+        if USER_CONFIG_PATH.exists():
+            data = json.loads(USER_CONFIG_PATH.read_text(encoding="utf-8") or "{}")
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_user_config(conf: dict) -> None:
+    try:
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        USER_CONFIG_PATH.write_text(json.dumps(conf, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        raise e
 
 @st.cache_resource(show_spinner=False)
 def get_neo() -> Neo4jClient:
@@ -977,43 +1021,162 @@ def stitch_figures_paragraphs() -> dict:
 # Sidebar (Einstellungen)
 # =========================
 st.sidebar.title("⚙️ Einstellungen")
-st.sidebar.write("Werte aus `.env` (Read-Only).")
-st.sidebar.text_input("NEO4J_URI", value=cfg.NEO4J_URI or "", disabled=True)
-st.sidebar.text_input("NEO4J_USERNAME", value=cfg.NEO4J_USERNAME or "", disabled=True)
-st.sidebar.text_input("OPENAI_API_KEY (maskiert)", value=("•••" if cfg.OPENAI_API_KEY else ""), disabled=True)
 
+# Initialize session state for API keys (load persistent overrides if available)
+if "api_keys" not in st.session_state:
+    defaults = {
+        "neo4j_uri": cfg.NEO4J_URI or "",
+        "neo4j_username": cfg.NEO4J_USERNAME or "neo4j",
+        "neo4j_password": cfg.NEO4J_PASSWORD or "",
+        "openai_api_key": cfg.OPENAI_API_KEY or "",
+        "gamma_api_key": cfg.GAMMA_API_KEY or "",
+        "gamma_api_url": cfg.GAMMA_API_URL or "",
+        "synthesia_api_key": cfg.SYNTHESIA_API_KEY or "",
+        "synthesia_api_base": cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1"
+    }
+    persisted = load_user_config() or {}
+    # Only take known keys from persisted config
+    for k in list(persisted.keys()):
+        if k not in defaults:
+            persisted.pop(k)
+    defaults.update(persisted)
+    st.session_state["api_keys"] = defaults
+
+st.sidebar.markdown("**API Keys konfigurieren**")
+st.sidebar.markdown("Trage hier deine API Keys ein. Diese überschreiben die Werte aus `.env` für diese Session.")
+
+st.sidebar.markdown("**Neo4j Datenbank**")
+st.session_state["api_keys"]["neo4j_uri"] = st.sidebar.text_input(
+    "NEO4J_URI",
+    value=st.session_state["api_keys"]["neo4j_uri"],
+    placeholder="neo4j+s://xxxxx.databases.neo4j.io",
+    help="Die URI deiner Neo4j Datenbank"
+)
+st.session_state["api_keys"]["neo4j_username"] = st.sidebar.text_input(
+    "NEO4J_USERNAME",
+    value=st.session_state["api_keys"]["neo4j_username"],
+    placeholder="neo4j",
+    help="Username für Neo4j (meist 'neo4j')"
+)
+st.session_state["api_keys"]["neo4j_password"] = st.sidebar.text_input(
+    "NEO4J_PASSWORD",
+    value=st.session_state["api_keys"]["neo4j_password"],
+    type="password",
+    help="Passwort für Neo4j Datenbank"
+)
+
+# Neo4j Test-Buttons direkt nach den Neo4j-Feldern
 colA, colB = st.sidebar.columns(2)
 with colA:
-    if st.button("Verbindung testen"):
+    if st.sidebar.button("Verbindung testen", key="test_neo4j_connection"):
         try:
             neo = get_neo()
             neo.run("RETURN 1 AS ok")
-            st.success("Neo4j erreichbar ✅")
+            st.sidebar.success("Neo4j erreichbar ✅")
         except Exception as e:
-            st.error(f"Neo4j Fehler: {e}")
+            st.sidebar.error(f"Neo4j Fehler: {e}")
 
 with colB:
-    if st.button("Schema anlegen"):
+    if st.sidebar.button("Schema anlegen", key="create_neo4j_schema"):
         try:
             create_schema()
-            st.success("Schema erstellt/aktualisiert ✅")
+            st.sidebar.success("Schema erstellt/aktualisiert ✅")
         except Exception as e:
-            st.error(f"Schema-Fehler: {e}")
+            st.sidebar.error(f"Schema-Fehler: {e}")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Tipp:** `.env` anpassen und App neu starten, wenn Keys/URI geändert wurden.")
+st.sidebar.markdown("**OpenAI**")
+st.session_state["api_keys"]["openai_api_key"] = st.sidebar.text_input(
+    "OPENAI_API_KEY",
+    value=st.session_state["api_keys"]["openai_api_key"],
+    type="password",
+    placeholder="sk-...",
+    help="API Key für OpenAI (GPT, Embeddings)"
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Gamma Präsentationen**")
+st.session_state["api_keys"]["gamma_api_key"] = st.sidebar.text_input(
+    "GAMMA_API_KEY",
+    value=st.session_state["api_keys"]["gamma_api_key"],
+    type="password",
+    placeholder="Optional für Gamma",
+    help="API Key für Gamma.app Präsentationen"
+)
+st.session_state["api_keys"]["gamma_api_url"] = st.sidebar.text_input(
+    "GAMMA_API_URL",
+    value=st.session_state["api_keys"]["gamma_api_url"],
+    placeholder="https://api.gamma.app",
+    help="Gamma API Basis-URL"
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Synthesia Videos**")
+st.session_state["api_keys"]["synthesia_api_key"] = st.sidebar.text_input(
+    "SYNTHESIA_API_KEY",
+    value=st.session_state["api_keys"]["synthesia_api_key"],
+    type="password",
+    placeholder="Optional für Synthesia",
+    help="API Key für Synthesia Video-Generierung"
+)
+st.session_state["api_keys"]["synthesia_api_base"] = st.sidebar.text_input(
+    "SYNTHESIA_API_BASE",
+    value=st.session_state["api_keys"]["synthesia_api_base"],
+    placeholder="https://api.synthesia.io/v1",
+    help="Synthesia API Basis-URL"
+)
+
+st.sidebar.markdown("---")
+c1, c2, c3 = st.sidebar.columns(3)
+with c1:
+    if st.sidebar.button("Speichern (persistent)", key="save_api_keys"):
+        try:
+            save_user_config(st.session_state["api_keys"])
+            st.sidebar.success("Gespeichert.")
+        except Exception as e:
+            st.sidebar.error(f"Speichern fehlgeschlagen: {e}")
+with c2:
+    if st.sidebar.button("Gespeicherte löschen", key="delete_saved_api_keys"):
+        try:
+            if USER_CONFIG_PATH.exists():
+                USER_CONFIG_PATH.unlink()
+            st.sidebar.success("Gespeicherte Werte gelöscht.")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Löschen fehlgeschlagen: {e}")
+with c3:
+    if st.sidebar.button("Auf .env Standardwerte zurücksetzen", key="reset_to_env"):
+        st.session_state["api_keys"] = {
+            "neo4j_uri": cfg.NEO4J_URI or "",
+            "neo4j_username": cfg.NEO4J_USERNAME or "neo4j",
+            "neo4j_password": cfg.NEO4J_PASSWORD or "",
+            "openai_api_key": cfg.OPENAI_API_KEY or "",
+            "gamma_api_key": cfg.GAMMA_API_KEY or "",
+            "gamma_api_url": cfg.GAMMA_API_URL or "",
+            "synthesia_api_key": cfg.SYNTHESIA_API_KEY or "",
+            "synthesia_api_base": cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1"
+        }
+        st.rerun()
+
+# Update config module with session values (these will be used by the app)
+cfg.NEO4J_URI = st.session_state["api_keys"]["neo4j_uri"]
+cfg.NEO4J_USERNAME = st.session_state["api_keys"]["neo4j_username"]
+cfg.NEO4J_PASSWORD = st.session_state["api_keys"]["neo4j_password"]
+cfg.OPENAI_API_KEY = st.session_state["api_keys"]["openai_api_key"]
+cfg.GAMMA_API_KEY = st.session_state["api_keys"]["gamma_api_key"]
+cfg.GAMMA_API_URL = st.session_state["api_keys"]["gamma_api_url"]
+cfg.SYNTHESIA_API_KEY = st.session_state["api_keys"]["synthesia_api_key"]
+cfg.SYNTHESIA_API_BASE = st.session_state["api_keys"]["synthesia_api_base"]
+
 
 # =========================
 # Main Tabs
 # =========================
-st.title("GraphRAG Pipeline – GUI")
-tab_concepts, tab_ingest, tab_query, tab_cypher, tab_synthesia, tab_coursegen = st.tabs([
-    "🧩 Konzepte",
-    "📥 Ingest",
-    "❓ Fragen & Export",
-    "🔎 Cypher",
-    "🎬 PPTX → Synthesia",
-    "📚 Kursgenerator"
+tab_ingest, tab_coursegen, tab_synthesia, tab_cypher = st.tabs([
+    "Ingest & Konzepte",
+    "Kursgenerator",
+    "PPTX → Synthesia",
+    "Cypher"
 ])
 
 # === Prototyp: Kursgenerator ===
@@ -1099,119 +1262,14 @@ with tab_synthesia:
                     except Exception as e:
                         st.error(f"Fehler beim Synthesia-Aufruf: {e}")
 
-# ---- Tab: Konzepte (Topic + Strategie, Pre-Ingest) ----
-with tab_concepts:
-    st.subheader("Topic & Konzepte festlegen")
-    default_topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-    topic = st.text_input("Topic-Name", value=default_topic)
-    st.session_state["concept_topic"] = topic
-
-    mode = st.radio(
-        "Konzept-Strategie",
-        ["LLM", "Hybrid (NER + LLM + Relationen)"],
-        index=1,
-        help="Bestimmt, wie beim Ingest Konzepte erzeugt/verknüpft werden. Hybrid-Modus nutzt Named Entity Recognition + LLM und extrahiert auch semantische Relationen."
-    )
-    st.session_state["concept_mode"] = mode
-
-    colC1, colC2 = st.columns(2)
-    with colC1:
-        if st.button("Vorhandene Konzepte anzeigen"):
-            neo = get_neo()
-            rows = neo.run("""
-                MATCH (:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
-                OPTIONAL MATCH (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(p:Paper)
-                RETURN c.name AS name,
-                    count(DISTINCT para) AS para_mentions,
-                    count(DISTINCT p)    AS papers
-                ORDER BY para_mentions DESC, name ASC
-                LIMIT 200
-            """, {"topic": topic})
-            st.dataframe(rows, use_container_width=True)
-    with colC2:
-        st.info("Konzepte werden automatisch beim Ingest extrahiert. Wähle oben den gewünschten Modus.")
-
-    st.markdown("---")
-    st.subheader("🔁 Nachträgliche Verarbeitung")
-
-    if st.button("Konzepte aus bestehenden Papern extrahieren"):
-        with st.spinner("Extrahiere Konzepte & verknüpfe Absätze …"):
-            topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-            strategy = st.session_state.get("concept_mode", "Hybrid (NER + LLM + Relationen)")
-            rep = rebuild_concepts_for_all(topic, strategy)
-        st.success(f"Fertig: {rep['total_concepts']} Konzepte, {rep['total_links']} Links.")
-        with st.expander("Details pro Paper"):
-            st.json(rep["per_paper"])
-
-    st.markdown("---")
-    st.subheader("📝 Concept-Verwaltung")
-    
-    topic = st.session_state.get("concept_topic", "Künstliche Intelligenz")
-    neo = get_neo()
-    concepts = neo.list_concepts_for_topic(topic)
-    
-    if not concepts:
-        st.info(f"Keine Concepts für Topic '{topic}' gefunden.")
-    else:
-        st.markdown(f"**{len(concepts)} Concept(s) für Topic '{topic}'**")
-        
-        # Show as table with actions
-        for i, concept in enumerate(concepts[:50]):  # Limit to 50 for performance
-            with st.expander(f"🏷️ {concept['name']} ({concept.get('mentions', 0)} mentions)"):
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    new_name = st.text_input("Name", value=concept['name'], key=f"c_name_{i}")
-                    new_desc = st.text_area("Beschreibung", value=concept.get('description', ''), key=f"c_desc_{i}", height=80)
-                    new_alts = st.text_input("Alt-Labels (kommasepariert)", value=', '.join(concept.get('alt_labels', [])), key=f"c_alts_{i}")
-                    
-                    if st.button("Aktualisieren", key=f"btn_update_{i}"):
-                        try:
-                            alts_list = [a.strip() for a in new_alts.split(',') if a.strip()]
-                            neo.update_concept(
-                                concept['concept_id'],
-                                name=new_name if new_name != concept['name'] else None,
-                                description=new_desc if new_desc != concept.get('description', '') else None,
-                                alt_labels=alts_list if alts_list != concept.get('alt_labels', []) else None
-                            )
-                            st.success("Aktualisiert")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Fehler: {e}")
-                
-                with col2:
-                    st.markdown(f"**ID:** `{concept['concept_id'][:20]}...`")
-                    
-                    # Merge with another concept
-                    merge_target_name = st.selectbox(
-                        "Mergen in",
-                        options=[c['name'] for c in concepts if c['concept_id'] != concept['concept_id']],
-                        key=f"merge_c_{i}"
-                    )
-                    if st.button("Mergen", key=f"btn_merge_c_{i}"):
-                        target = next((c for c in concepts if c['name'] == merge_target_name), None)
-                        if target:
-                            try:
-                                result = neo.merge_concepts(concept['concept_id'], target['concept_id'])
-                                st.success(f"Gemerged: {result}")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Fehler: {e}")
-                    
-                    if st.button("🗑️ Löschen", key=f"btn_delete_c_{i}"):
-                        try:
-                            result = neo.delete_concept(concept['concept_id'])
-                            st.success(f"Gelöscht: {result}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Fehler: {e}")
-
-# ---- Tab: Ingest (Enhanced) ----
+# ---- Tab: Ingest & Konzepte (Unified) ----
 with tab_ingest:
-    st.subheader("📥 PDFs ingestieren (Erweitert)")
+    st.subheader("📥 PDFs ingestieren")
     
-    # === Erweiterte Einstellungen ===
-    with st.expander("⚙️ Ingest-Einstellungen", expanded=True):
+    st.info("💡 Konzepte werden automatisch beim Ingest extrahiert. Konfiguriere unten die Extraktions-Strategie.")
+    
+    # === Concept & Ingest Settings ===
+    with st.expander("⚙️ Konzept-Extraktion & Topic-Einstellungen", expanded=True):
         col_topic, col_strategy = st.columns(2)
         
         with col_topic:
@@ -1640,453 +1698,19 @@ with tab_ingest:
                     st.json(errors)
 
     st.markdown("---")
-    st.subheader("🧵 Graph stitchen & Dienstprogramme")
+    st.subheader("🧵 Dienstprogramme")
+    # Hinweis: Auto-Stitching erfolgt nun automatisch nach dem Ingest.
 
-    col_stitch, col_figstitch, col_clear = st.columns(3)
-
-    with col_stitch:
-        if st.button("Graph stitchen"):
-            with st.spinner("Vernähe Knoten …"):
-                stats = stitch_graph()
-            st.success("Graph vernäht ✅")
+    st.warning("Achtung: Löscht alle Knoten & Kanten (Schema bleibt erhalten).")
+    confirm = st.text_input("Zum Bestätigen 'DELETE' tippen", key="confirm_clear")
+    if st.button("Graph leeren"):
+        if confirm.strip().upper() == "DELETE":
+            with st.spinner("Lösche alle Knoten & Kanten …"):
+                stats = clear_graph()
+            st.success("Graph geleert ✅")
             st.json(stats)
-            st.info("Aura Browser/Bloom neu laden und Pfad-Queries (RETURN p) nutzen.")
-
-    with col_figstitch:
-        if st.button("Figure↔Paragraph stitch"):
-            with st.spinner("Verbinde Figures mit passenden Paragraphen …"):
-                stats = stitch_figures_paragraphs()
-            st.success("Figure↔Paragraph-Kanten erstellt/aktualisiert ✅")
-            st.json(stats)
-            st.info("Tipp: Prüfe z. B. mit\n"
-                    "`MATCH p = (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)-[:REFERS_TO|:CAPTIONS]->(f:Figure)<-[:HAS_FIGURE]-(paper) RETURN p LIMIT 200`")
-
-    with col_clear:
-        st.warning("Achtung: Löscht alle Knoten & Kanten (Schema bleibt erhalten).")
-        confirm = st.text_input("Zum Bestätigen 'DELETE' tippen", key="confirm_clear")
-        if st.button("Graph leeren"):
-            if confirm.strip().upper() == "DELETE":
-                with st.spinner("Lösche alle Knoten & Kanten …"):
-                    stats = clear_graph()
-                st.success("Graph geleert ✅")
-                st.json(stats)
-            else:
-                st.error("Bestätigung fehlt: tippe exakt 'DELETE'.")
-
-
-# ---- Tab: Fragen & Export ----
-with tab_query:
-    st.subheader("Frage stellen")
-    q = st.text_area("Deine Frage", placeholder="Erkläre Green AI mit Belegen.")
-    
-    # Kombinierte Einstellungen in einem Expander
-    with st.expander("⚙️ Einstellungen", expanded=False):
-        st.markdown("**Retrieval-Optionen**")
-        
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            use_concept_retrieval = st.checkbox(
-                "Concept-basiertes Retrieval",
-                value=True,
-                help="Nutzt extrahierte Concepts + Graph-Traversierung für intelligenteres Retrieval."
-            )
-            k_paragraphs = st.number_input(
-                "Anzahl Paragraphen",
-                min_value=5,
-                max_value=50,
-                value=24,
-                step=1,
-                help="Wie viele Paragraphen sollen abgerufen werden?"
-            )
-        with col_r2:
-            web_mode_ui = st.selectbox(
-                "Websuche",
-                ["Auto", "Erzwingen", "Aus"],
-                index=0,
-                help="Auto: Websuche bei zu wenig Graph-Belegen. Erzwingen: Immer Web. Aus: Nur Graph."
-            )
-            k_figures = st.number_input(
-                "Anzahl Abbildungen",
-                min_value=0,
-                max_value=20,
-                value=8,
-                step=1,
-                help="Wie viele Abbildungen sollen abgerufen werden?"
-            )
-        
-        st.markdown("---")
-        st.markdown("**PDF-Export-Optionen**")
-        
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            export_pdf = st.checkbox("Antwort als PDF exportieren", value=True)
-            inline_figs = st.checkbox(
-                "Bilder inline einfügen",
-                value=True,
-                help="Bilder werden direkt unter der Referenz im Text eingefügt."
-            )
-        with col_p2:
-            fallback_k = st.number_input(
-                "Fallback: Top-K Figuren anhängen",
-                min_value=0,
-                max_value=10,
-                value=3,
-                step=1,
-                help="Wenn keine Inline-Refs vorhanden, werden die Top-K Figuren am Ende angehängt (0 = deaktiviert)."
-            )
-
-    if st.button("Antwort abrufen", type="primary"):
-        if not q.strip():
-            st.warning("Bitte eine Frage eingeben.")
         else:
-            with st.spinner("Suche & Synthese …"):
-                res = run_query(
-                    q, 
-                    web_mode_ui=web_mode_ui, 
-                    k_paragraphs=k_paragraphs, 
-                    k_figures=k_figures,
-                    use_concept_retrieval=use_concept_retrieval
-                )
-            st.session_state["last_result"] = res
-            st.session_state["last_query"] = q
-
-    if "last_result" in st.session_state:
-        res = st.session_state["last_result"]
-        q0 = st.session_state.get("last_query", "")
-        st.markdown("### Antwort")
-        st.write(res["answer"])
-        st.markdown("**Modus:** " + res.get("mode",""))
-        with st.expander("Debug (Entscheidung & Zählwerte)"):
-            st.json(res.get("debug", {}))
-        st.markdown("---")
-        st.markdown("### Belege")
-        rows = []
-        for s in res["supports"]:
-            r = {
-                "id": f"{'P' if s['type']=='paragraph' else 'F' if s['type']=='figure' else 'W'}{s.get('paragraph_id') or s.get('figure_id') or ''}",
-                "type": s["type"],
-                "paper": s.get("paper_title"),
-                "page": s.get("page"),
-                "section": s.get("section_title"),
-                "doi": s.get("doi"),
-                "url": s.get("url"),
-                "score": round(float(s.get("score", 0) or 0), 4),
-            }
-            rows.append(r)
-        st.dataframe(rows, use_container_width=True)
-
-        figs = [s for s in res["supports"] if s.get("type") == "figure"]
-        if figs:
-            st.markdown("### Verwendete Abbildungen (Vorschau)")
-            for f in figs[:6]:
-                if f.get("image_uri") and Path(f["image_uri"]).exists():
-                    st.image(
-                        f["image_uri"],
-                        caption=f"[F{f['figure_id']}] {f.get('caption') or f.get('figure_label') or ''}"
-                    )
-
-        if export_pdf:
-            out_path = EXPORTS_DIR / f"answer_{os.getpid()}.pdf"
-            path = write_answer_pdf(
-                q0, res["answer"], res["supports"], str(out_path),
-                inline_figures=inline_figs,
-                max_inline_figures_total=None,
-                fallback_append_top_k_if_no_refs=int(fallback_k),
-            )
-            st.success(f"PDF erzeugt: {path}")
-            st.download_button(
-                "PDF herunterladen",
-                data=Path(path).read_bytes(),
-                file_name=Path(path).name,
-                mime="application/pdf",
-            )
-
-
-        st.markdown("### 🎞️ Slides mit Gamma erzeugen")
-
-        colA, colB, colC = st.columns(3)
-        # Theme selection: show saved/favorite themes and allow a custom name
-        themes = load_gamma_themes()
-        # ensure Oasis is available as a sensible default
-        if "Oasis" not in themes:
-            themes.append("Oasis")
-        selected = colA.selectbox("Theme (Gamma)", options=themes + ["<custom>"], index=0)
-        if selected == "<custom>":
-            custom_theme = colA.text_input("Custom theme name", value="")
-        else:
-            custom_theme = selected
-        # allow saving the current custom theme into favorites
-        c1, c2 = colA.columns([1,1])
-        if c1.button("Add theme to favorites"):
-            if custom_theme and custom_theme.strip():
-                save_gamma_theme(custom_theme.strip())
-                st.success(f"Theme '{custom_theme.strip()}' saved to favorites.")
-        if c2.button("Remove selected theme"):
-            if selected and selected != "<custom>":
-                remove_gamma_theme(selected)
-                st.info(f"Theme '{selected}' removed from favorites.")
-                # refresh themes in session by reloading
-                st.experimental_rerun()
-        # Refresh themes from Gamma (query provider for available themes)
-        if c2.button("Refresh themes from Gamma"):
-            try:
-                try:
-                    gcli = GammaClient()
-                except Exception as e:
-                    st.error(f"GammaClient nicht konfiguriert: {e}")
-                    gcli = None
-                if gcli is not None:
-                    with st.spinner("Rufe Themes von Gamma ab …"):
-                        try:
-                            remote = gcli.list_themes()
-                            if remote:
-                                EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-                                (EXPORTS_DIR / "gamma_themes.json").write_text(json.dumps(remote, ensure_ascii=False, indent=2), encoding="utf-8")
-                                st.success(f"{len(remote)} Themes von Gamma importiert.")
-                                st.experimental_rerun()
-                            else:
-                                st.info("Keine Themes von Gamma zurückgegeben.")
-                        except Exception as e:
-                            st.error(f"Fehler beim Abrufen der Themes: {e}")
-            except Exception as e:
-                st.error(f"Unerwarteter Fehler: {e}")
-        theme = custom_theme or "Oasis"
-        # Template upload: optional .pptx/.potx template to use for local generation
-        tpl_col = st.columns([1, 3])[1]
-        uploaded_tpl = tpl_col.file_uploader("Optional: PPTX-Template (.pptx/.potx)", type=["pptx", "potx"], key="gamma_template_uploader")
-        if uploaded_tpl is not None:
-            # save uploaded template to uploads/templates
-            tpl_dir = UPLOAD_DIR / "templates"
-            tpl_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", uploaded_tpl.name)[:120]
-            out_path = tpl_dir / safe_name
-            with open(out_path, "wb") as f:
-                f.write(uploaded_tpl.getvalue())
-            st.session_state["gamma_template_path"] = str(out_path)
-            st.success(f"Template hochgeladen: {out_path}")
-        else:
-            # maintain existing session value if any
-            _ = st.session_state.get("gamma_template_path")
-        cards = colB.number_input("Ziel-Folien (bei auto)", 1, 60, 10)
-        lang  = colC.selectbox("Sprache", ["de","en","fr","es","it"], index=0)
-
-        img_src = st.selectbox(
-            "Bildquelle",
-            ["noImages","aiGenerated","unsplash","webFreeToUse","placeholder"],
-            index=0
-        )
-        split = st.radio(
-            "Folienaufteilung",
-            ["inputTextBreaks","auto"],
-            index=0,
-            horizontal=True
-        )
-
-        # Font size controls for local PPTX
-        with st.expander("📝 Schriftgrößen (nur lokales PPTX)"):
-            st.info("Diese Einstellungen gelten nur für das lokale python-pptx Fallback, nicht für Gamma API.")
-            colF1, colF2, colF3 = st.columns(3)
-            title_font = colF1.number_input("Folientitel (pt)", min_value=16, max_value=72, value=32, step=2)
-            body_font = colF2.number_input("Body-Text (pt)", min_value=12, max_value=48, value=18, step=2)
-            bullet_font = colF3.number_input("Bulletpoints (pt)", min_value=10, max_value=36, value=14, step=2)
-            st.session_state["pptx_title_font"] = title_font
-            st.session_state["pptx_body_font"] = body_font
-            st.session_state["pptx_bullet_font"] = bullet_font
-
-        # Theme quick-test: runs a short Gamma generation to validate the theme name
-        if colB.button("Test theme"):
-            test_name = theme.strip() or "Oasis"
-            st.info(f"Teste Theme: {test_name}")
-            try:
-                gtest = None
-                try:
-                    gtest = GammaClient()
-                except Exception as e:
-                    st.error(f"GammaClient nicht konfiguriert: {e}")
-                if gtest is not None:
-                    test_body = {
-                        "inputText": "# Test\n* Theme validation",
-                        "textMode": "preserve",
-                        "format": "presentation",
-                        "themeName": test_name,
-                        "cardSplit": "inputTextBreaks",
-                        "numCards": 1,
-                        "exportAs": "pptx",
-                        # note: valid amounts: brief, medium, detailed, extensive
-                        "textOptions": {"language": "en", "amount": "brief"},
-                        "imageOptions": {"source": "noImages"},
-                    }
-                    with st.spinner("Validiere Theme bei Gamma …"):
-                        try:
-                            gen_id = gtest.generate(test_body)
-                            status = gtest.poll(gen_id, interval_sec=1, timeout_sec=20)
-                            outp = {"generationId": gen_id, "status": status}
-                            EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-                            safe = re.sub(r"[^A-Za-z0-9_-]", "_", test_name)[:40]
-                            fn = EXPORTS_DIR / f"gamma_theme_test_{safe}.json"
-                            fn.write_text(json.dumps(outp, ensure_ascii=False, indent=2), encoding="utf-8")
-                            st.success("Theme validiert (siehe Ergebnis unten).")
-                            st.json(outp)
-                        except Exception as e:
-                            st.error(f"Theme Test fehlgeschlagen: {e}")
-                            try:
-                                # save error details
-                                tb = traceback.format_exc()
-                            except Exception:
-                                tb = str(e)
-                            err = {"error": str(e), "traceback": tb}
-                            EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-                            safe = re.sub(r"[^A-Za-z0-9_-]", "_", test_name)[:40]
-                            fn = EXPORTS_DIR / f"gamma_theme_test_{safe}_error.json"
-                            fn.write_text(json.dumps(err, ensure_ascii=False, indent=2), encoding="utf-8")
-                            st.info(f"Fehlerdetails gespeichert in: {fn}")
-            except Exception as e:
-                st.error(f"Unerwarteter Fehler beim Theme-Test: {e}")
-
-        if st.button("Als PPTX mit Gamma erstellen"):
-            title_for_deck = st.session_state.get("last_query", "Ergebnis")
-
-            # Try Gamma first (existing GammaClient), fall back to local generator.
-            tried_gamma = False
-            gamma_failed = None
-            out_file: str | None = None
-
-            # Prepare body for Gamma if available
-            try:
-                g = GammaClient()  # nutzt GAMMA_API_KEY aus .env
-                tried_gamma = True
-            except Exception as e:
-                g = None
-                gamma_failed = e
-
-            if g is not None:
-                body = {
-                    "inputText": to_gamma_input_text(
-                        res["answer"],
-                        res.get("supports", []),
-                        title=title_for_deck,
-                    ),
-                    "textMode": "preserve",
-                    "format": "presentation",
-                    "themeName": theme.strip() or "Oasis",
-                    "cardSplit": split,
-                    "numCards": int(cards),
-                    "exportAs": "pptx",
-                    "textOptions": {"language": lang, "amount": "medium"},
-                    "imageOptions": {"source": img_src},
-                    "cardOptions": {"dimensions": "16x9"},
-                    "sharingOptions": {"externalAccess": "noAccess", "workspaceAccess": "view"},
-                }
-                with st.spinner("Gamma generiert Deck …"):
-                    try:
-                        gen_id = g.generate(body)
-                        status = g.poll(gen_id, interval_sec=5, timeout_sec=600)
-                        st.success("Gamma-Generation abgeschlossen.")
-                        st.write("**Gamma Raw-Status (Debug):**")
-                        st.json(status)
-
-                        def _find_pptx_url(obj):
-                            # rekursiv nach einer URL suchen, die auf .pptx endet
-                            if isinstance(obj, dict):
-                                for k, v in obj.items():
-                                    if isinstance(v, str) and v.lower().endswith('.pptx'):
-                                        return v
-                                    res = _find_pptx_url(v)
-                                    if res:
-                                        return res
-                            elif isinstance(obj, list):
-                                for it in obj:
-                                    res = _find_pptx_url(it)
-                                    if res:
-                                        return res
-                            elif isinstance(obj, str):
-                                if obj.lower().endswith('.pptx'):
-                                    return obj
-                            return None
-
-                        pptx_url = status.get("pptxUrl") or status.get("fileUrl") or status.get("downloadUrl") or _find_pptx_url(status)
-                        if pptx_url:
-                            try:
-                                out_path = g.download_file(pptx_url)
-                                out_file = out_path
-                                st.write("**PPTX gespeichert:**", out_path)
-                            except Exception as e:
-                                st.warning(f"Fehler beim Herunterladen der PPTX von Gamma: {e}")
-                                st.info("Nutze lokalen Fallback.")
-                        else:
-                            st.warning("Kein PPTX-Link in der Antwort von Gamma gefunden. Verwende lokalen Fallback.")
-                    except Exception as e:
-                        # capture exception for later display and debugging
-                        gamma_failed = e
-                        try:
-                            tb = traceback.format_exc()
-                        except Exception:
-                            tb = str(e)
-                        err_obj = {
-                            "error": str(e),
-                            "args": getattr(e, "args", []),
-                            "traceback": tb,
-                        }
-                        try:
-                            EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-                            err_path = EXPORTS_DIR / "gamma_last_error.json"
-                            err_path.write_text(json.dumps(err_obj, ensure_ascii=False, indent=2), encoding="utf-8")
-                        except Exception:
-                            # best-effort; don't crash GUI
-                            pass
-
-            # If Gamma not configured or failed, use local generator
-            if out_file is None:
-                st.info("Erzeuge lokale PPTX-Fallback (python-pptx).")
-                try:
-                    gen = generate_presentation(
-                        title=title_for_deck,
-                        answer_text=res.get("answer", ""),
-                        supports=res.get("supports", []),
-                        use_gamma=False,
-                        out_dir=str(EXPORTS_DIR),
-                        template_path=st.session_state.get("gamma_template_path"),
-                        title_font_size=st.session_state.get("pptx_title_font", 32),
-                        body_font_size=st.session_state.get("pptx_body_font", 18),
-                        bullet_font_size=st.session_state.get("pptx_bullet_font", 14),
-                    )
-                    if gen.get("method") == "local":
-                        out_file = gen["result"]["path"]
-                        st.success(f"Lokales PPTX erzeugt: {out_file}")
-                    else:
-                        # unexpected, but show response
-                        st.write(gen)
-                except Exception as e:
-                    st.error(f"Lokale PPTX-Erzeugung fehlgeschlagen: {e}")
-
-            # Offer download if file exists
-            if out_file and Path(out_file).exists():
-                st.download_button(
-                    label="PPTX herunterladen",
-                    data=Path(out_file).read_bytes(),
-                    file_name=Path(out_file).name,
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                )
-            else:
-                if tried_gamma and gamma_failed:
-                    st.warning(f"Gamma fehlgeschlagen: {gamma_failed}")
-                    # Show detailed error if we saved it
-                    try:
-                        err_path = EXPORTS_DIR / "gamma_last_error.json"
-                        if err_path.exists():
-                            with st.expander("Gamma Fehlerdetails anzeigen"):
-                                try:
-                                    obj = json.loads(err_path.read_text(encoding="utf-8"))
-                                    st.json(obj)
-                                except Exception:
-                                    st.text(err_path.read_text(encoding="utf-8"))
-                            st.info(f"Fehlerdetails gespeichert in: {err_path}")
-                        else:
-                            with st.expander("Gamma Fehlerdetails anzeigen"):
-                                st.text(str(gamma_failed))
-                    except Exception:
-                        # don't let the error UI crash the app
-                        st.text(str(gamma_failed))
+            st.error("Bestätigung fehlt: tippe exakt 'DELETE'.")
 
     with tab_cypher:
         # --- Cypher ausführen & visualisieren ---

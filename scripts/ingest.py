@@ -169,6 +169,27 @@ def main() -> None:
                 err = {"file": str(p), "error": str(e), "traceback": tb}
                 errors.append(err)
                 print(f"❌ Error while ingesting {p.name}: {e}\n{tb}")
+
+        # Auto-stitch graph structure after ingest (Sections ↔ Paragraphs/Figures)
+        try:
+            print("\n🧵 Auto-stitching document hierarchy (Sections ↔ Paragraphs/Figures)...")
+            stats1 = neo.stitch_document_hierarchy()
+            print("  ✓ Document hierarchy stitched")
+            print(f"  Paragraphs via Section: {stats1.get('paras_via_section')}")
+            print(f"  Figures via Section:    {stats1.get('figs_via_section')}")
+        except Exception as e:
+            print(f"  ⚠ Failed to stitch document hierarchy: {e}")
+
+        # Auto-stitch figures to paragraphs (CAPTIONS/REFERS_TO/NEAR)
+        try:
+            print("\n🧵 Auto-stitching figures to paragraphs (CAPTIONS/REFERS_TO/NEAR)...")
+            stats2 = neo.stitch_figures_to_paragraphs(prefix_length=60, page_tolerance=1)
+            print("  ✓ Figures stitched to paragraphs")
+            print(f"  CAPTIONS: {stats2.get('captions_after', stats2.get('captions_before'))}")
+            print(f"  REFERS_TO: {stats2.get('refers_after', stats2.get('refers_before'))}")
+            print(f"  NEAR: {stats2.get('near_after', stats2.get('near_before'))}")
+        except Exception as e:
+            print(f"  ⚠ Failed to stitch figures to paragraphs: {e}")
     finally:
         neo.close()
 

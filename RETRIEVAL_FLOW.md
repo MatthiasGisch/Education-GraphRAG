@@ -241,6 +241,19 @@ RETURN node AS para, score
 - ✅ Finds related content even if concept name not mentioned verbatim
 - ✅ Works with short concept names (adjusted min_score to 0.6)
 
+### 🧵 Auto-Stitching nach Ingest
+
+Stitching wird jetzt automatisch in der Pipeline ausgeführt (kein GUI-Klick mehr nötig):
+
+- `scripts/ingest.py` (Einzel-PDF):
+    - `neo.stitch_document_hierarchy()` verbindet Sections ↔ Paragraphs/Figures
+    - `neo.stitch_figures_to_paragraphs()` erstellt CAPTIONS/REFERS_TO/NEAR
+
+- `scripts/reingest_all.py` (Bulk):
+    - Führt dieselben Stitch-Schritte nach dem Ingest aller PDFs aus
+
+GUI-Hinweis: Die Buttons „Graph stitchen“ und „Figure↔Paragraph stitch“ wurden entfernt; der Bereich heißt jetzt „Dienstprogramme“.
+
 ---
 
 ## 4. Die Low-Level Neo4j Queries: Wo die Magie passiert
