@@ -68,11 +68,11 @@ def answer_via_openai_web(query: str, *, lang: str = "de", force_tool: bool = Fa
     try:
         resp = _call(OPENAI_WEB_MODEL)
     except Exception as e1:
-        # Fallback auf gpt-4o (falls search-preview nicht freigeschaltet)
-        debug["retry_on_gpt4o"] = str(e1)
+        # Fallback auf gpt-4o-mini (falls search-preview nicht freigeschaltet)
+        debug["retry_on_gpt4o_mini"] = str(e1)
         try:
-            resp = _call("gpt-4o")
-            debug["web_model"] = "gpt-4o"
+            resp = _call("gpt-4o-mini")
+            debug["web_model"] = "gpt-4o-mini"
         except Exception as e2:
             return {
                 "mode": "web_error",

@@ -45,7 +45,7 @@ def describe_image(path: str) -> Dict[str, Any]:
         {"type": "image_url", "image_url": {"url": data_url}},
     ]
     resp = client().chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_parts},
@@ -141,7 +141,7 @@ Bibliographie-Map (nur zur Information, nicht im Text verwenden):
 {bib_json}
 """
     resp = client().chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         messages=[
             {"role":"system", "content": sys},
             {"role":"user", "content": user},

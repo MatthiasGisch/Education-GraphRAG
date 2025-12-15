@@ -17,7 +17,6 @@ _PARAM_RE = re.compile(r"^\s*:param\s+([A-Za-z_]\w*)\s*=>\s*(.+?);?\s*$")
 import streamlit as st
 import streamlit.components.v1 as components
 from neo4j.graph import Path as NeoPath, Node as NeoNode, Relationship as NeoRel
-from pyvis.network import Network
 import plotly.graph_objects as go
 import networkx as nx
 
@@ -271,7 +270,6 @@ def visualize_records_as_graph(records: List[Dict[str, Any]], height: int = 650)
     """
     import uuid
     from neo4j.graph import Path as NeoPath, Node as NeoNode, Relationship as NeoRel
-    from pyvis.network import Network
     import streamlit.components.v1 as components
 
     if not records:
@@ -283,13 +281,12 @@ def visualize_records_as_graph(records: List[Dict[str, Any]], height: int = 650)
 
     # ---------- Heuristiken ----------
     LARGE_KEYS = {"embedding", "vector", "tokens", "content_embeddings"}
-    ID_KEYS = ["paper_id", "section_id", "paragraph_id", "figure_id", "concept_id", "umbrella_id", "topic_id"]
+    ID_KEYS = ["paper_id", "section_id", "paragraph_id", "figure_id", "concept_id", "topic_id"]
 
     def _as_str(x): return "" if x is None else str(x)
 
     def _guess_label_from_props(props: dict) -> str:
         if "concept_id" in props:   return "Concept"
-        if "umbrella_id" in props:  return "Umbrella"
         if "paper_id" in props:     return "Paper"
         if "section_id" in props:   return "Section"
         if "paragraph_id" in props: return "Paragraph"
@@ -988,21 +985,6 @@ def rebuild_concepts_for_all(topic: str, strategy: str) -> dict:
     return {"total_concepts": total_concepts, "total_links": total_links, "per_paper": per_paper}
 
 
-def cluster_concepts_into_umbrellas(topic: str, sim_threshold: float = 0.86, min_cluster_size: int = 2) -> dict:
-    """
-    Bildet Umbrella-Knoten durch einfaches, schnelles Clustering auf Concept-Embeddings:
-    - Greedy-Clustering mit Cosinus-Ähnlichkeit (ohne sklearn-Abhängigkeit)
-    - Für jeden Cluster: (u:Umbrella {umbrella_id, name, size, keywords[]})
-      und Kanten (u)-[:NARROWER]->(c:Concept)
-      sowie (t:Topic)-[:HAS_UMBRELLA]->(u)
-    """
-    # Delegate to backend implementation on Neo4jClient for consistency and reuse.
-    neo = get_neo()
-    try:
-        return neo.cluster_concepts_into_umbrellas(topic, sim_threshold=sim_threshold, min_cluster_size=min_cluster_size)
-    except Exception as e:
-        return {"clusters": 0, "assigned": 0, "message": f"Fehler beim Clustern: {e}"}
-
 def list_topics() -> list[str]:
     neo = get_neo()
     rows = neo.run("MATCH (t:Topic) RETURN t.name AS name ORDER BY name")
@@ -1172,9 +1154,10 @@ cfg.SYNTHESIA_API_BASE = st.session_state["api_keys"]["synthesia_api_base"]
 # =========================
 # Main Tabs
 # =========================
-tab_ingest, tab_coursegen, tab_synthesia, tab_cypher = st.tabs([
-    "Ingest & Konzepte",
+tab_ingest, tab_coursegen, tab_gamma, tab_synthesia, tab_cypher = st.tabs([
+    "Dokumente aufnehmen",
     "Kursgenerator",
+    "Gamma Export",
     "PPTX → Synthesia",
     "Cypher"
 ])
@@ -1192,6 +1175,161 @@ with tab_coursegen:
         coursegen.show_course_generator()
     else:
         st.warning("Modul 'course_generator' nicht gefunden oder fehlerhaft. Bitte prüfen.")
+
+# ---- Tab: Gamma Export ----
+with tab_gamma:
+    st.subheader("Kurs als Gamma-Präsentation exportieren")
+    st.markdown("Exportiere deinen erstellten Kurs als interaktive Präsentation über die Gamma API.")
+    
+    # Hole aktuellen Kurs aus session_state
+    course = st.session_state.get("course", {})
+    
+    if not course.get("Kapitel"):
+        st.warning("Bitte erstelle zuerst einen Kurs im Tab 'Kursgenerator'.")
+    else:
+        with st.expander("Gamma-Einstellungen"):
+            col_g1, col_g2, col_g3 = st.columns(3)
+            
+            with col_g1:
+                from pathlib import Path
+                import json
+                exports_dir = Path(__file__).parent.parent / "exports"
+                themes_file = exports_dir / "gamma_themes.json"
+                
+                if themes_file.exists():
+                    themes = json.loads(themes_file.read_text(encoding="utf-8"))
+                else:
+                    themes = ["Oasis", "Corporate", "Minimal", "ISTE"]
+                
+                gamma_theme = st.selectbox(
+                    "Theme",
+                    options=themes,
+                    index=0,
+                    help="Gamma Präsentations-Theme"
+                )
+            
+            with col_g2:
+                gamma_lang = st.selectbox(
+                    "Sprache",
+                    options=["de", "en", "fr", "es", "it"],
+                    index=0,
+                    help="Sprache der Präsentation"
+                )
+            
+            with col_g3:
+                gamma_img_source = st.selectbox(
+                    "Bildquelle",
+                    options=["noImages", "aiGenerated", "unsplash", "webFreeToUse"],
+                    index=0,
+                    help="Quelle für Bilder in der Präsentation"
+                )
+            
+            col_g4, col_g5 = st.columns(2)
+            with col_g4:
+                gamma_split = st.radio(
+                    "Folienaufteilung",
+                    options=["auto", "inputTextBreaks"],
+                    index=0,
+                    horizontal=True,
+                    help="auto = Gamma entscheidet; inputTextBreaks = nach --- trennen"
+                )
+            
+            with col_g5:
+                gamma_cards = st.number_input(
+                    "Anzahl Folien (bei auto)",
+                    min_value=5,
+                    max_value=100,
+                    value=20,
+                    step=5
+                )
+        
+        if st.button("Gamma-Präsentation generieren", type="primary"):
+            try:
+                from src.gamma import GammaClient
+                import re
+                
+                neo = get_neo()
+                from scripts.course_generator import fetch_content_for_chapter, generate_course_pdf
+                
+                with st.spinner("Generiere Kursinhalte für Gamma..."):
+                    gamma_parts = []
+                    gamma_parts.append(f"# {course['Kursname']}\n* Vorlesungsunterlagen basierend auf dem Wissensgraphen")
+                    
+                    for kapitel in course["Kapitel"]:
+                        chapter_number = kapitel.get('Nummer', '').strip()
+                        chapter_title = kapitel['Titel']
+                        full_chapter_title = f"{chapter_number} {chapter_title}" if chapter_number else chapter_title
+                        
+                        kap_content = [f"# {full_chapter_title}"]
+                        if kapitel.get("Lernziele"):
+                            kap_content.append("\n**Lernziele:**")
+                            for ziel in kapitel["Lernziele"]:
+                                if ziel.strip():
+                                    kap_content.append(f"* {ziel}")
+                        gamma_parts.append("\n".join(kap_content))
+                    
+                    gamma_input = "\n---\n".join(gamma_parts)
+                    
+                    with st.expander("Gamma Input Preview (erste 2000 Zeichen)"):
+                        st.code(gamma_input[:2000] + ("..." if len(gamma_input) > 2000 else ""))
+                
+                with st.spinner("Sende an Gamma API..."):
+                    try:
+                        g = GammaClient()
+                    except Exception as e:
+                        st.error(f"GammaClient konnte nicht initialisiert werden: {e}")
+                        g = None
+                    
+                    if g is not None:
+                        body = {
+                            "inputText": gamma_input,
+                            "textMode": "preserve",
+                            "format": "presentation",
+                            "themeName": gamma_theme,
+                            "cardSplit": gamma_split,
+                            "numCards": int(gamma_cards) if gamma_split == "auto" else len(gamma_parts),
+                            "exportAs": "pptx",
+                            "textOptions": {"language": gamma_lang, "amount": "medium"},
+                            "imageOptions": {"source": gamma_img_source},
+                            "cardOptions": {"dimensions": "16x9"},
+                            "sharingOptions": {"externalAccess": "view", "workspaceAccess": "edit"}
+                        }
+                        
+                        with st.spinner("Generiere Präsentation..."):
+                            try:
+                                gen_id = g.generate(body)
+                                st.info(f"Generation ID: {gen_id}")
+                                status = g.poll(gen_id, interval_sec=5, timeout_sec=600)
+                                
+                                with st.expander("Debug: Vollständiger Gamma Status"):
+                                    st.json(status)
+                                
+                                file_url = status.get("exportUrl")
+                                if file_url:
+                                    st.success("PPTX verfügbar!")
+                                    try:
+                                        safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", course['Kursname'])[:50]
+                                        from pathlib import Path
+                                        exports_dir = Path(__file__).parent.parent / "exports"
+                                        out_file = g.download_file(file_url, out_dir=str(exports_dir / "gamma"), filename=f"{safe_name}.pptx")
+                                        st.success(f"PPTX heruntergeladen: {out_file}")
+                                        
+                                        with open(out_file, "rb") as f:
+                                            st.download_button(
+                                                label="PPTX herunterladen",
+                                                data=f.read(),
+                                                file_name=f"{safe_name}.pptx",
+                                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                                            )
+                                    except Exception as e:
+                                        st.warning(f"Download fehlgeschlagen: {e}")
+                            except Exception as e:
+                                st.error(f"Fehler bei der Präsentations-Generierung: {e}")
+            
+            except Exception as e:
+                st.error(f"Fehler beim Vorbereiten der Gamma-Präsentation: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
 # ---- Tab: PPTX -> Synthesia (upload / select PPTX then send to Synthesia)
 with tab_synthesia:
@@ -1264,12 +1402,12 @@ with tab_synthesia:
 
 # ---- Tab: Ingest & Konzepte (Unified) ----
 with tab_ingest:
-    st.subheader("📥 PDFs ingestieren")
+    st.subheader("Dokumente aufnehmen & Metadaten verwalten")
     
-    st.info("💡 Konzepte werden automatisch beim Ingest extrahiert. Konfiguriere unten die Extraktions-Strategie.")
+    st.info("Konzepte werden automatisch beim Ingest extrahiert. Konfiguriere unten die Extraktions-Strategie.")
     
     # === Concept & Ingest Settings ===
-    with st.expander("⚙️ Konzept-Extraktion & Topic-Einstellungen", expanded=True):
+    with st.expander("Konzept-Extraktion & Topic-Einstellungen", expanded=True):
         col_topic, col_strategy = st.columns(2)
         
         with col_topic:
@@ -1280,7 +1418,7 @@ with tab_ingest:
             if not existing_topics:
                 existing_topics = ["Künstliche Intelligenz"]
             
-            use_auto_topic = st.checkbox("📌 Topic automatisch aus Titel ableiten", value=False)
+            use_auto_topic = st.checkbox("Topic automatisch aus Titel ableiten", value=False)
             
             if not use_auto_topic:
                 selected_topic = st.selectbox(
@@ -1295,7 +1433,7 @@ with tab_ingest:
                 selected_topic = None
             
             # Option für neues Topic
-            new_topic = st.text_input("➕ Oder neues Topic erstellen", key="new_topic_input")
+            new_topic = st.text_input("Oder neues Topic erstellen", key="new_topic_input")
             if new_topic:
                 st.session_state["concept_topic"] = new_topic
                 selected_topic = new_topic
@@ -1308,12 +1446,10 @@ with tab_ingest:
                 help="Hybrid nutzt Named Entity Recognition + LLM und extrahiert semantische Relationen. Empfohlen für wissenschaftliche Texte."
             )
             st.session_state["concept_mode"] = strategy
-            
-            use_scispacy = st.checkbox("🔬 SciSpacy verwenden", value=True, help="Optimiert für wissenschaftliche Texte")
         
         col_params1, col_params2 = st.columns(2)
         with col_params1:
-            auto_params = st.checkbox("🎯 Parameter automatisch anpassen", value=True, 
+            auto_params = st.checkbox("Parameter automatisch anpassen", value=True, 
                                       help="Passt max_entities/max_relations an Dokumentgröße an")
             if not auto_params:
                 max_entities = st.slider("Max. Entitäten", 10, 100, 30)
@@ -1324,9 +1460,9 @@ with tab_ingest:
                 max_relations = None
         
         with col_params2:
-            check_duplicates = st.checkbox("🔍 Duplikate erkennen", value=True,
+            check_duplicates = st.checkbox("Duplikate erkennen", value=True,
                                           help="Prüft auf SHA256, DOI und Titel-Duplikate")
-            quality_filter = st.checkbox("✨ Qualitätsfilter aktivieren", value=True,
+            quality_filter = st.checkbox("Qualitätsfilter aktivieren", value=True,
                                         help="Filtert Konzepte mit niedriger Confidence")
             if quality_filter:
                 min_confidence = st.slider("Min. Confidence", 0.0, 1.0, 0.6, 0.05)
@@ -1336,7 +1472,7 @@ with tab_ingest:
     st.markdown("---")
     
     # === File Upload ===
-    uploaded = st.file_uploader("📄 PDF-Dateien auswählen", type=["pdf"], accept_multiple_files=True)
+    uploaded = st.file_uploader("PDF-Dateien auswählen", type=["pdf"], accept_multiple_files=True)
     
     # Enhanced ingest function
     def ingest_one_pdf_enhanced(path: Path, use_auto_topic_param: bool, topic_param: str, progress_callback=None) -> Dict[str, Any]:
@@ -1458,7 +1594,6 @@ with tab_ingest:
                 topic_hint=topic,
                 max_entities=max_ent,
                 max_relations=max_rel,
-                use_scispacy=use_scispacy,
                 neo_client=neo,
                 persist_to_topic=True
             )
@@ -1490,11 +1625,8 @@ with tab_ingest:
                 st.warning(f"⚠️ Link-Fehler: {e}")
         
         # Auto-attach to umbrella
-        report_progress("Umbrella-Konzepte", 95)
-        try:
-            neo.attach_concepts_to_existing_umbrella(topic)
-        except Exception:
-            pass
+        report_progress("Finalisierung", 95)
+        # Umbrella-Struktur nicht mehr verwendet
         
         report_progress("Abschließen", 100)
         report = {
@@ -1540,7 +1672,7 @@ with tab_ingest:
     
     # === Ingest Button ===
     if uploaded:
-        if st.button("🚀 Ingest starten", type="primary"):
+        if st.button("Ingest starten", type="primary"):
             reports = []
             duplicates = []
             errors = []
@@ -1556,11 +1688,11 @@ with tab_ingest:
             for idx, f in enumerate(uploaded):
                 try:
                     overall_percent = int((idx / len(uploaded)) * 100)
-                    overall_status.text(f"📦 Gesamt: {idx+1}/{len(uploaded)} Papers")
+                    overall_status.text(f"Gesamt: {idx+1}/{len(uploaded)} Papers")
                     overall_progress_bar.progress((idx) / len(uploaded))
                     
                     # Reset paper progress
-                    paper_status.text(f"📄 {f.name}")
+                    paper_status.text(f"{f.name}")
                     paper_progress_bar.progress(0)
                     paper_percent.metric("Paper-Fortschritt", "0%")
                     
@@ -1569,7 +1701,7 @@ with tab_ingest:
                     
                     # Callback für Paper-Fortschritt
                     def update_paper_progress(step: str, pct: int):
-                        paper_status.text(f"📄 {f.name} - {step}")
+                        paper_status.text(f"{f.name} - {step}")
                         paper_progress_bar.progress(pct / 100)
                         paper_percent.metric("Paper-Fortschritt", f"{pct}%")
                     
@@ -1577,7 +1709,7 @@ with tab_ingest:
                     
                     if rep.get("status") == "duplicate":
                         duplicates.append(rep)
-                        st.warning(f"⚠️ Duplikat übersprungen: {rep['title']}")
+                        st.warning(f"Duplikat übersprungen: {rep['title']}")
                     else:
                         reports.append(rep)
                         
@@ -1585,25 +1717,25 @@ with tab_ingest:
                         validation = validate_ingestion_quality(rep)
                         
                         # Show summary
-                        with st.expander(f"✅ {rep['title']} ({validation['quality_label']})"):
+                        with st.expander(f"{rep['title']} ({validation['quality_label']})"):
                             summary = create_ingestion_summary(rep, validation)
                             st.markdown(summary)
                     
                 except Exception as e:
                     errors.append({"file": f.name, "error": str(e), "trace": traceback.format_exc()})
-                    st.error(f"❌ Fehler bei {f.name}: {e}")
+                    st.error(f"Fehler bei {f.name}: {e}")
                 
                 overall_progress_bar.progress((idx + 1) / len(uploaded))
             
             # Finale Anzeige
-            overall_status.text(f"📦 Gesamt: {len(uploaded)}/{len(uploaded)} Papers")
+            overall_status.text(f"Gesamt: {len(uploaded)}/{len(uploaded)} Papers")
             paper_status.empty()
             paper_progress_bar.empty()
             paper_percent.empty()
             
             # Final summary
             st.markdown("---")
-            st.success(f"🎉 Fertig! {len(reports)} erfolgreich, {len(duplicates)} Duplikate, {len(errors)} Fehler")
+            st.success(f"Fertig! {len(reports)} erfolgreich, {len(duplicates)} Duplikate, {len(errors)} Fehler")
             
             if reports:
                 avg_quality = sum(validate_ingestion_quality(r)["quality_score"] for r in reports) / len(reports)
@@ -1611,7 +1743,7 @@ with tab_ingest:
 
                 # Post-Ingest: Metadaten kuratieren
                 st.markdown("---")
-                st.subheader("✏️ Metadaten kuratieren (fehlende Felder ergänzen)")
+                st.subheader("Metadaten kuratieren (fehlende Felder ergänzen)")
                 st.caption("Vorhandene Felder werden gezeigt, leere Felder kannst du ergänzen. Bereits gesetzte Werte werden nicht überschrieben.")
                 fields = ["author", "publication_year", "doi", "url", "source", "publisher"]
                 
@@ -1660,7 +1792,7 @@ with tab_ingest:
                     # Sammel-Speichern und Reset
                     col_save_all, col_reset_all = st.columns(2)
                     with col_save_all:
-                        submitted_all = st.form_submit_button("💾 Alle Änderungen speichern", use_container_width=True)
+                        submitted_all = st.form_submit_button("Alle Änderungen speichern", use_container_width=True)
                         if submitted_all:
                             updated_any = False
                             for rep in reports:
@@ -1677,11 +1809,11 @@ with tab_ingest:
                                         update_paper_metadata(rep["paper_id"], filtered)
                                         updated_any = True
                             if updated_any:
-                                st.success("✅ Metadaten gespeichert.")
+                                st.success("Metadaten gespeichert.")
                             else:
-                                st.info("ℹ️ Keine neuen Eingaben zum Speichern oder Felder bereits befüllt.")
+                                st.info("Keine neuen Eingaben zum Speichern oder Felder bereits befüllt.")
                     with col_reset_all:
-                        reset_all = st.form_submit_button("↺ Alle Eingaben löschen", use_container_width=True)
+                        reset_all = st.form_submit_button("Alle Eingaben löschen", use_container_width=True)
                         if reset_all:
                             for rep in reports:
                                 session_key_prefix = f"meta_input_{rep['paper_id']}"
@@ -1689,16 +1821,102 @@ with tab_ingest:
                             st.rerun()
             
             if duplicates:
-                with st.expander("⚠️ Duplikate"):
+                with st.expander("Duplikate"):
                     for dup in duplicates:
                         st.markdown(f"- **{dup['file_name']}**: {dup['duplicate_info']['message']}")
             
             if errors:
-                with st.expander("❌ Fehler"):
+                with st.expander("Fehler"):
                     st.json(errors)
 
     st.markdown("---")
-    st.subheader("🧵 Dienstprogramme")
+    
+    # === Paper-Metadaten bearbeiten ===
+    with st.expander("Vorhandene Papers bearbeiten", expanded=False):
+        st.markdown("**Bearbeite Metadaten für bereits aufgenommene Papers**")
+        
+        neo = get_neo()
+        all_papers = neo.run("""
+            MATCH (p:Paper)
+            RETURN p.paper_id AS paper_id, p.title AS title,
+                   p.author AS author, p.publication_year AS publication_year,
+                   p.doi AS doi, p.url AS url, p.source AS source, p.publisher AS publisher
+            ORDER BY p.title
+        """)
+        
+        if not all_papers:
+            st.info("Noch keine Papers im System. Nutze den Ingest unten, um Papers hochzuladen.")
+        else:
+            # Paper-Auswahl
+            paper_titles = {p["title"] or f"Ohne Titel ({p['paper_id']})": p["paper_id"] for p in all_papers}
+            selected_title = st.selectbox("Paper auswählen", options=list(paper_titles.keys()))
+            selected_paper_id = paper_titles[selected_title]
+            
+            # Hole aktuelle Metadaten
+            paper_data = next(p for p in all_papers if p["paper_id"] == selected_paper_id)
+            
+            st.markdown("---")
+            
+            # Bearbeitungsformular
+            with st.form(key=f"edit_paper_{selected_paper_id}"):
+                st.markdown(f"**Bearbeite: {paper_data['title'] or 'Ohne Titel'}**")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    new_title = st.text_input("Titel", value=paper_data.get("title") or "")
+                    new_author = st.text_area("Autor(en) (komma-getrennt)", value=paper_data.get("author") or "", height=80)
+                    new_year = st.text_input("Erscheinungsjahr", value=paper_data.get("publication_year") or "")
+                    new_doi = st.text_input("DOI", value=paper_data.get("doi") or "")
+                
+                with col2:
+                    new_url = st.text_input("URL", value=paper_data.get("url") or "")
+                    new_source = st.text_input("Quelle", value=paper_data.get("source") or "")
+                    new_publisher = st.text_input("Verlag", value=paper_data.get("publisher") or "")
+                
+                col_save, col_reset = st.columns(2)
+                with col_save:
+                    save_btn = st.form_submit_button("Änderungen speichern", type="primary", use_container_width=True)
+                with col_reset:
+                    reset_btn = st.form_submit_button("Zurücksetzen", use_container_width=True)
+                
+                if save_btn:
+                    updates = {}
+                    if new_title != (paper_data.get("title") or ""):
+                        updates["title"] = new_title
+                    if new_author != (paper_data.get("author") or ""):
+                        # Konvertiere komma-getrennt zu semikolon
+                        authors_list = [a.strip() for a in new_author.split(",") if a.strip()]
+                        updates["author"] = ";".join(authors_list)
+                    if new_year != (paper_data.get("publication_year") or ""):
+                        updates["publication_year"] = new_year
+                    if new_doi != (paper_data.get("doi") or ""):
+                        updates["doi"] = new_doi
+                    if new_url != (paper_data.get("url") or ""):
+                        updates["url"] = new_url
+                    if new_source != (paper_data.get("source") or ""):
+                        updates["source"] = new_source
+                    if new_publisher != (paper_data.get("publisher") or ""):
+                        updates["publisher"] = new_publisher
+                    
+                    if updates:
+                        # Update in Neo4j
+                        set_parts = []
+                        params = {"pid": selected_paper_id}
+                        for k, v in updates.items():
+                            params[k] = v
+                            set_parts.append(f"p.{k} = ${k}")
+                        cypher = "MATCH (p:Paper {paper_id:$pid}) SET " + ", ".join(set_parts)
+                        neo.run(cypher, params)
+                        st.success("Metadaten erfolgreich aktualisiert!")
+                        st.rerun()
+                    else:
+                        st.info("Keine Änderungen vorgenommen.")
+                
+                if reset_btn:
+                    st.rerun()
+    
+    st.markdown("---")
+    st.subheader("Dienstprogramme")
     # Hinweis: Auto-Stitching erfolgt nun automatisch nach dem Ingest.
 
     st.warning("Achtung: Löscht alle Knoten & Kanten (Schema bleibt erhalten).")
@@ -1707,7 +1925,7 @@ with tab_ingest:
         if confirm.strip().upper() == "DELETE":
             with st.spinner("Lösche alle Knoten & Kanten …"):
                 stats = clear_graph()
-            st.success("Graph geleert ✅")
+            st.success("Graph geleert")
             st.json(stats)
         else:
             st.error("Bestätigung fehlt: tippe exakt 'DELETE'.")
@@ -1743,14 +1961,7 @@ with tab_ingest:
     RETURN p
     LIMIT 400
     """,
-            "Papers → ABOUT → Concepts":
-            """\
-    MATCH p = (paper:Paper)-[ab:ABOUT]->(c:Concept)
-    WHERE ab.weight > 0.5
-    RETURN p
-    LIMIT 300
-    """,
-            "Concepts mit SEMANTIC_RELATION":
+            "Concept-Netzwerk (SEMANTIC_RELATION)":
             """\
     MATCH p = (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
     RETURN p
@@ -1771,41 +1982,28 @@ with tab_ingest:
 
         # Visualisierungs-Optionen
         st.markdown("---")
-        st.markdown("**🎨 Visualisierungs-Optionen**")
+        st.markdown("**Visualisierungs-Optionen (Plotly)**")
         
         col_viz1, col_viz2, col_viz3 = st.columns([1, 1, 1])
         
         with col_viz1:
-            viz_engine = st.radio(
-                "Visualisierungs-Engine",
-                ["Plotly (empfohlen)", "PyVis (klassisch)"],
+            layout_algo = st.selectbox(
+                "Layout-Algorithmus",
+                ["spring", "kamada_kawai", "circular", "hierarchical", "shell"],
                 index=0,
-                help="Plotly bietet bessere Layouts und Visualisierungen"
+                help="Spring: Force-directed (Standard)\nKamada-Kawai: Optimiert für Distanzen\nCircular: Kreisförmig\nHierarchical: Hierarchisch (wenn möglich)\nShell: Konzentrische Ringe"
             )
         
         with col_viz2:
-            if viz_engine == "Plotly (empfohlen)":
-                layout_algo = st.selectbox(
-                    "Layout-Algorithmus",
-                    ["spring", "kamada_kawai", "circular", "hierarchical", "shell"],
-                    index=0,
-                    help="Spring: Force-directed (Standard)\nKamada-Kawai: Optimiert für Distanzen\nCircular: Kreisförmig\nHierarchical: Hierarchisch (wenn möglich)\nShell: Konzentrische Ringe"
-                )
-            else:
-                layout_algo = None
+            show_edge_labels = st.checkbox("Relationsnamen anzeigen", value=True)
         
         with col_viz3:
-            if viz_engine == "Plotly (empfohlen)":
-                show_edge_labels = st.checkbox("Relationsnamen anzeigen", value=True)
-                color_by = st.selectbox(
-                    "Färbung nach",
-                    ["type", "degree", "community"],
-                    index=0,
-                    help="Type: Nach Node-Typ\nDegree: Nach Anzahl Verbindungen\nCommunity: Nach erkannten Clustern"
-                )
-            else:
-                show_edge_labels = None
-                color_by = None
+            color_by = st.selectbox(
+                "Färbung nach",
+                ["type", "degree", "community"],
+                index=0,
+                help="Type: Nach Node-Typ\nDegree: Nach Anzahl Verbindungen\nCommunity: Nach erkannten Clustern"
+            )
         
         st.markdown("---")
 
@@ -1822,24 +2020,20 @@ with tab_ingest:
                     with st.expander("Rohdaten anzeigen"):
                         st.write(recs_data)
                     
-                    # Visualisierung basierend auf gewählter Engine
-                    if viz_engine == "Plotly (empfohlen)":
-                        visualize_with_plotly(
-                            recs_graph, 
-                            height=650,
-                            layout=layout_algo,
-                            show_edge_labels=show_edge_labels,
-                            color_by=color_by
-                        )
-                    else:
-                        visualize_records_as_graph(recs_graph, height=650)
+                    # Visualisierung mit Plotly
+                    visualize_with_plotly(
+                        recs_graph, 
+                        height=650,
+                        layout=layout_algo,
+                        show_edge_labels=show_edge_labels,
+                        color_by=color_by
+                    )
                 except Exception as e:
                     st.error(f"Cypher-Fehler: {e}")
                     st.code(cypher_in, language="cypher")
-                    st.code(cypher_in, language="cypher")
 
-            # Diagnostic button: check Topic, Umbrellas, Concepts
-            if st.button("Diagnose: Topic/Umbrella/Concept Counts"):
+            # Diagnostic button: check Topic/Concept Counts
+            if st.button("Diagnose: Topic/Concept Counts"):
                 neo = get_neo()
                 topic_name = selected_topic
                 diag = {}
@@ -1850,7 +2044,7 @@ with tab_ingest:
                     diag['all_topic_names'] = topic_names
                 except Exception as e:
                     diag['all_topic_names'] = f"Error: {e}"
-                # Zähle Topic, Umbrella, Concept
+                # Zähle Topic, Concept
                 try:
                     topic_result = neo.run(
                         "MATCH (t:Topic {name:$topic}) RETURN count(t) AS c",
@@ -1860,68 +2054,12 @@ with tab_ingest:
                 except Exception as e:
                     diag['topic_count'] = f"Error: {e}"
                 try:
-                    umbrella_result = neo.run(
-                        "MATCH (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella) RETURN count(u) AS c",
-                        {'topic': topic_name}
-                    )
-                    diag['umbrella_count'] = umbrella_result[0]['c'] if umbrella_result and 'c' in umbrella_result[0] else 0
-                except Exception as e:
-                    diag['umbrella_count'] = f"Error: {e}"
-                try:
-                    concept_result = neo.run(
-                        "MATCH (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)-[:NARROWER]->(c:Concept) RETURN count(DISTINCT c) AS c",
-                        {'topic': topic_name}
-                    )
-                    diag['concept_count'] = concept_result[0]['c'] if concept_result and 'c' in concept_result[0] else 0
-                except Exception as e:
-                    diag['concept_count'] = f"Error: {e}"
-                try:
                     direct_concepts = neo.run(
                         "MATCH (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept) RETURN count(DISTINCT c) AS c",
                         {'topic': topic_name}
                     )
-                    diag['concepts_direct'] = direct_concepts[0]['c'] if direct_concepts and 'c' in direct_concepts[0] else 0
+                    diag['concepts_total'] = direct_concepts[0]['c'] if direct_concepts and 'c' in direct_concepts[0] else 0
                 except Exception as e:
-                    diag['concepts_direct'] = f"Error: {e}"
+                    diag['concepts_total'] = f"Error: {e}"
                 st.info(f"Diagnose für Topic '{topic_name}':")
                 st.json(diag)
-
-        with colQ2:
-            # One-click Topic->Concepts view (simplified - no Umbrellas needed)
-            if st.button("Show Topic + Concepts + Paragraphs/Figures"):
-                try:
-                    cy = """
-    :param topic => "Künstliche Intelligenz";
-    // Haupt-Pfad: Topic -> Concepts
-    MATCH p1 = (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
-    // Optional: Concepts <- MENTIONS von Paragraphs <- HAS_PARAGRAPH von Papers
-    OPTIONAL MATCH p2 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
-    // Optional: Papers mit Figures
-    OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
-    // Optional: Paragraphs mit Figures
-    OPTIONAL MATCH p4 = (para)-[:HAS_FIGURE]->(figS:Figure)
-    RETURN p1, p2, p3, p4
-    LIMIT 500
-                    """
-                    # Für Visualisierung: rohe Neo4j-Objekte holen
-                    recs_graph = run_cypher_with_params(cy, for_graph=True)
-                    # Für Daten-Anzeige: normale Daten
-                    recs_data = run_cypher_with_params(cy, for_graph=False)
-                    
-                    st.success(f"{len(recs_data)} Record(s) erhalten.")
-                    with st.expander("Rohdaten anzeigen (Topic→Concepts)"):
-                        st.write(recs_data)
-                    
-                    # Visualisierung basierend auf gewählter Engine
-                    if viz_engine == "Plotly (empfohlen)":
-                        visualize_with_plotly(
-                            recs_graph, 
-                            height=700,
-                            layout=layout_algo,
-                            show_edge_labels=show_edge_labels,
-                            color_by=color_by
-                        )
-                    else:
-                        visualize_records_as_graph(recs_graph, height=700)
-                except Exception as e:
-                    st.error(f"Fehler beim Laden der Umbrella-Ansicht: {e}")

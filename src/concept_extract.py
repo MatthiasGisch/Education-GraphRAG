@@ -352,7 +352,6 @@ def extract_and_embed_concepts_hybrid(
     topic_hint: str = "Künstliche Intelligenz",
     max_entities: int = 30,
     max_relations: int = 20,
-    use_scispacy: bool = True,
     neo_client: Optional['Neo4jClient'] = None,
     persist_to_topic: bool = False
 ) -> Dict[str, Any]:
