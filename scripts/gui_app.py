@@ -1181,8 +1181,8 @@ with tab_gamma:
     st.subheader("Kurs als Gamma-Präsentation exportieren")
     st.markdown("Exportiere deinen erstellten Kurs als interaktive Präsentation über die Gamma API.")
     
-    # Hole aktuellen Kurs aus session_state
-    course = st.session_state.get("course", {})
+    # Hole aktuellen Kurs aus session_state (Kursgenerator speichert in "course_struct")
+    course = st.session_state.get("course_struct", {})
     
     if not course.get("Kapitel"):
         st.warning("Bitte erstelle zuerst einen Kurs im Tab 'Kursgenerator'.")

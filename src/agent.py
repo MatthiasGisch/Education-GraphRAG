@@ -172,7 +172,7 @@ def answer_query(
         all_supports = ret.get("supports") or []
         paragraphs = [s for s in all_supports if s.get("type") == "paragraph"]
         figures = [s for s in all_supports if s.get("type") == "figure"]
-        supports = paragraphs[:30] + figures  # Max 30 Paragraphen + alle Figures (erhöht für Schulungsmaterial)
+        supports = paragraphs[:120] + figures  # Max 120 Paragraphen + alle Figures (erhöht für umfassendere Antworten)
         eff = _effective_supports(supports, min_supports_score)
         debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff, "decision": "graph_only"})
         answer = grounded_answer(query, supports)
@@ -196,7 +196,7 @@ def answer_query(
     all_supports = ret.get("supports") or []
     paragraphs = [s for s in all_supports if s.get("type") == "paragraph"]
     figures = [s for s in all_supports if s.get("type") == "figure"]
-    supports = paragraphs[:30] + figures  # Max 30 Paragraphen + alle Figures (erhöht für Schulungsmaterial)
+    supports = paragraphs[:120] + figures  # Max 120 Paragraphen + alle Figures (erhöht für umfassendere Antworten)
     eff = _effective_supports(supports, min_supports_score)
     debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff})
 

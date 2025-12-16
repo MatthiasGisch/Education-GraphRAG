@@ -91,8 +91,8 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
             query=query,
             neo=neo,
             web_mode="off",  # Nur Wissensgraph nutzen
-            k_paragraphs=48,  # Erhöht für ausführlichere Schulungsinhalte
-            k_figures=8,
+            k_paragraphs=120,  # Erhöht für maximale Textabdeckung
+            k_figures=12,
             use_concept_retrieval=True,
             min_supports=0  # Auch bei 0 Supports noch antworten, um leere PDFs zu vermeiden
         )
