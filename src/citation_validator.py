@@ -12,21 +12,41 @@ from .openai_client import embed_text
 
 def _extract_citations_from_text(text: str) -> List[Tuple[str, str]]:
     """
-    Extrahiert alle Citations [Pxxx] / [Fxxx] aus dem Text.
+    Extrahiert alle Citations aus dem Text.
+    Unterstützt: [1], [2], [1; 2; 3] (numerisch) und [Pxxx], [Fxxx] (ID-basiert)
     Gibt Liste von (citation_id, surrounding_sentence) zurück.
     """
     citations = []
     
-    # Pattern für [Pxxx] oder [Fxxx]
-    pattern = r'\[([PF][a-zA-Z0-9]+)\]'
-    matches = re.finditer(pattern, text)
+    # Pattern 1: Numerische Zitationen [1], [2], [1; 2], etc.
+    numeric_pattern = r'\[(\d+(?:\s*[;,]\s*\d+)*)\]'
+    numeric_matches = re.finditer(numeric_pattern, text)
     
-    for match in matches:
+    for match in numeric_matches:
+        citation_nums = match.group(1)
+        # Splitte mehrfache Zitationen
+        nums = re.split(r'[;,]\s*', citation_nums)
+        
+        start_pos = match.start()
+        end_pos = match.end()
+        
+        # Extrahiere umgebenden Satz
+        sent_start = max(0, start_pos - 150)
+        sent_end = min(len(text), end_pos + 100)
+        surrounding = text[sent_start:sent_end].strip()
+        
+        for num in nums:
+            citations.append((num.strip(), surrounding))
+    
+    # Pattern 2: ID-basierte Zitationen [Pxxx], [Fxxx] (Legacy-Support)
+    id_pattern = r'\[([PF][a-zA-Z0-9]+)\]'
+    id_matches = re.finditer(id_pattern, text)
+    
+    for match in id_matches:
         citation_id = match.group(1)
         start_pos = match.start()
         end_pos = match.end()
         
-        # Extrahiere umgebenden Satz (ca. 100 Zeichen vorher, 50 danach)
         sent_start = max(0, start_pos - 150)
         sent_end = min(len(text), end_pos + 100)
         surrounding = text[sent_start:sent_end].strip()
@@ -96,22 +116,17 @@ def validate_citations(
 ) -> Dict[str, Any]:
     """
     Validiert alle Citations im Text gegen die Support-Dokumente.
+    Für numerische Zitationen [1], [2], ... wird nur geprüft, ob Supports vorhanden sind.
+    Für ID-basierte Zitationen [Pxxx], [Fxxx] wird semantische Ähnlichkeit geprüft.
     
     Returns:
         {
+            "total_citations": int,
             "valid_count": int,
             "invalid_count": int,
+            "warning_count": int,
             "warnings": List[str],
-            "details": [
-                {
-                    "citation_id": "P12345",
-                    "context": "...",
-                    "support_document": {...},
-                    "similarity_score": 0.75,
-                    "status": "valid" | "warning" | "invalid",
-                    "message": "..."
-                }
-            ]
+            "details": [...]
         }
     """
     
@@ -120,8 +135,40 @@ def validate_citations(
     warnings = []
     valid_count = 0
     invalid_count = 0
+    warning_count = 0
     
-    for citation_id, context in citations:
+    print(f"DEBUG Citation Validator: Found {len(citations)} citations, {len(supports)} supports")
+    print(f"DEBUG Citation IDs: {[cit[0] for cit in citations[:5]]}")
+    
+    # Für numerische Zitationen: Einfache Validierung
+    numeric_citations = [(cid, ctx) for cid, ctx in citations if cid.isdigit()]
+    id_citations = [(cid, ctx) for cid, ctx in citations if not cid.isdigit()]
+    
+    # Validiere numerische Zitationen
+    for citation_id, context in numeric_citations:
+        citation_num = int(citation_id)
+        
+        # Prüfe ob genug Supports vorhanden sind
+        if len(supports) == 0:
+            invalid_count += 1
+            details.append({
+                "citation_id": citation_id,
+                "context": context[:100],
+                "status": "invalid",
+                "message": "Keine Support-Dokumente gefunden"
+            })
+            warnings.append(f"[{citation_id}]: Keine Quellen vorhanden")
+        else:
+            valid_count += 1
+            details.append({
+                "citation_id": citation_id,
+                "context": context[:100],
+                "status": "valid",
+                "message": f"Numerische Zitation referenziert Literaturverzeichnis (Eintrag #{citation_id})"
+            })
+    
+    # Validiere ID-basierte Zitationen (Legacy)
+    for citation_id, context in id_citations:
         support = _find_support_by_id(supports, citation_id)
         
         if not support:
@@ -194,11 +241,16 @@ def validate_citations(
             "message": message
         })
     
+    # Berechne warning_count korrekt
+    warning_count = len([d for d in details if d.get("status") == "warning"])
+    
+    print(f"DEBUG Citation Validation Complete: {len(citations)} total, {valid_count} valid, {invalid_count} invalid, {warning_count} warnings")
+    
     return {
         "total_citations": len(citations),
         "valid_count": valid_count,
         "invalid_count": invalid_count,
-        "warning_count": len([d for d in details if d["status"] == "warning"]),
+        "warning_count": warning_count,
         "warnings": warnings,
         "details": details,
         "validation_passed": invalid_count == 0

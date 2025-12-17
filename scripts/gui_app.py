@@ -1224,24 +1224,14 @@ with tab_gamma:
                     help="Quelle für Bilder in der Präsentation"
                 )
             
-            col_g4, col_g5 = st.columns(2)
-            with col_g4:
-                gamma_split = st.radio(
-                    "Folienaufteilung",
-                    options=["auto", "inputTextBreaks"],
-                    index=0,
-                    horizontal=True,
-                    help="auto = Gamma entscheidet; inputTextBreaks = nach --- trennen"
-                )
-            
-            with col_g5:
-                gamma_cards = st.number_input(
-                    "Anzahl Folien (bei auto)",
-                    min_value=5,
-                    max_value=100,
-                    value=20,
-                    step=5
-                )
+            gamma_cards = st.number_input(
+                "Anzahl Folien",
+                min_value=5,
+                max_value=100,
+                value=20,
+                step=5,
+                help="Gamma verteilt den Inhalt automatisch auf diese Anzahl von Folien"
+            )
         
         if st.button("Gamma-Präsentation generieren", type="primary"):
             try:
@@ -1251,24 +1241,111 @@ with tab_gamma:
                 neo = get_neo()
                 from scripts.course_generator import fetch_content_for_chapter, generate_course_pdf
                 
+                # Hole die Zielgruppe aus session_state
+                learner_role = st.session_state.get("coursegen_learner_role", "")
+                
                 with st.spinner("Generiere Kursinhalte für Gamma..."):
-                    gamma_parts = []
-                    gamma_parts.append(f"# {course['Kursname']}\n* Vorlesungsunterlagen basierend auf dem Wissensgraphen")
+                    content_sections = []
+                    all_sources = {}  # Sammle alle Quellen
+                    
+                    # Titelbereich
+                    title_section = f"# {course['Kursname']}\n\nVorlesungsunterlagen basierend auf dem Wissensgraphen"
+                    content_sections.append(title_section)
                     
                     for kapitel in course["Kapitel"]:
                         chapter_number = kapitel.get('Nummer', '').strip()
                         chapter_title = kapitel['Titel']
                         full_chapter_title = f"{chapter_number} {chapter_title}" if chapter_number else chapter_title
                         
-                        kap_content = [f"# {full_chapter_title}"]
+                        # Kapitel-Übersicht mit Lernzielen
+                        chapter_section = f"## {full_chapter_title}\n\n"
                         if kapitel.get("Lernziele"):
-                            kap_content.append("\n**Lernziele:**")
+                            chapter_section += "**Lernziele:**\n"
                             for ziel in kapitel["Lernziele"]:
                                 if ziel.strip():
-                                    kap_content.append(f"* {ziel}")
-                        gamma_parts.append("\n".join(kap_content))
+                                    chapter_section += f"* {ziel}\n"
+                        content_sections.append(chapter_section)
+                        
+                        # Abschnitte mit Inhalten hinzufügen
+                        abschnitte = kapitel.get("Abschnitte", [])
+                        retrieval_hints = kapitel.get("Retrieval_Hinweise", {})
+                        
+                        for aidx, abschnitt_title in enumerate(abschnitte):
+                            if not abschnitt_title.strip():
+                                continue
+                            
+                            # Hole spezifische Hinweise für diesen Abschnitt
+                            section_hints = {}
+                            section_key = str(aidx)
+                            if section_key in retrieval_hints:
+                                section_hints[section_key] = retrieval_hints[section_key]
+                            
+                            # Generiere Inhalt für diesen Abschnitt aus dem Wissensgraphen
+                            section_content = fetch_content_for_chapter(
+                                neo, 
+                                chapter_title,
+                                retrieval_hints=section_hints,
+                                section_title=abschnitt_title,
+                                learner_role=learner_role if learner_role.strip() else None
+                            )
+                            
+                            # Sammle Quellen
+                            if section_content.get("sources"):
+                                for source in section_content["sources"]:
+                                    title = source.get("title", "")
+                                    if title and title.strip() and title.strip().lower() not in ['unknown', '']:
+                                        if title not in all_sources:
+                                            all_sources[title] = source
+                            
+                            # Erstelle Abschnittsinhalt (Gamma teilt automatisch auf)
+                            section_text = f"### {abschnitt_title}\n\n"
+                            
+                            # Verwende den generierten Text
+                            answer_text = section_content.get("answer_text", "").strip()
+                            
+                            if answer_text:
+                                # Gamma teilt langen Text automatisch auf - keine Begrenzung
+                                section_text += answer_text
+                            else:
+                                section_text += "*Keine relevanten Inhalte im Wissensgraphen gefunden*"
+                            
+                            content_sections.append(section_text)
                     
-                    gamma_input = "\n---\n".join(gamma_parts)
+                    # Füge Quellenverzeichnis am Ende hinzu
+                    if all_sources:
+                        # Sortiere alphabetisch
+                        sorted_sources = sorted(all_sources.items(), key=lambda x: x[0])
+                        
+                        # Erstelle Literaturverzeichnis als kontinuierlichen Text
+                        bibliography_text = "## Literaturverzeichnis\n\n"
+                        
+                        for idx, (title, source_info) in enumerate(sorted_sources, 1):
+                            # Erstelle Zitat im APA-ähnlichen Format
+                            citation_parts = []
+                            
+                            # Autoren
+                            authors = (source_info.get("authors") or "").strip()
+                            if authors:
+                                authors = authors.replace(";", ",")[:100]
+                                citation_parts.append(authors)
+                            
+                            # Jahr
+                            year = source_info.get("year", "")
+                            if year:
+                                citation_parts.append(f"({year})")
+                            
+                            # Titel
+                            if title:
+                                citation_parts.append(f"{title[:100]}")
+                            
+                            # Zusammenbauen
+                            citation = " ".join(citation_parts) if citation_parts else title[:150]
+                            bibliography_text += f"[{idx}] {citation}\n\n"
+                        
+                        content_sections.append(bibliography_text)
+                    
+                    # Kombiniere alle Abschnitte zu einem kontinuierlichen Dokument
+                    gamma_input = "\n\n".join(content_sections)
                     
                     with st.expander("Gamma Input Preview (erste 2000 Zeichen)"):
                         st.code(gamma_input[:2000] + ("..." if len(gamma_input) > 2000 else ""))
@@ -1286,8 +1363,8 @@ with tab_gamma:
                             "textMode": "preserve",
                             "format": "presentation",
                             "themeName": gamma_theme,
-                            "cardSplit": gamma_split,
-                            "numCards": int(gamma_cards) if gamma_split == "auto" else len(gamma_parts),
+                            "cardSplit": "auto",
+                            "numCards": int(gamma_cards),
                             "exportAs": "pptx",
                             "textOptions": {"language": gamma_lang, "amount": "medium"},
                             "imageOptions": {"source": gamma_img_source},

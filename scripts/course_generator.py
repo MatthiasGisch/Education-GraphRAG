@@ -10,6 +10,31 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 from pathlib import Path
 import datetime
 from io import BytesIO
+import re
+
+
+def clean_llm_metadata(text: str) -> str:
+    """
+    Entfernt überflüssige Metadaten und Präfixe, die das LLM manchmal generiert.
+    Z.B. "Schulungsunterlagen: Titel – Untertitel" am Anfang des Textes.
+    """
+    if not text:
+        return text
+    
+    # Pattern 1: Entferne "Schulungsunterlagen:" oder ähnliche Präfixe am Anfang
+    text = re.sub(r'^(?:Schulungsunterlagen|Kursmaterial|Lehrmaterial|Vorlesung|Kapitel|Abschnitt)\s*:\s*', '', text, flags=re.IGNORECASE)
+    
+    # Pattern 2: Entferne Titel-Zeilen mit " – " (Gedankenstrich) am Anfang
+    # Typisch: "Titel – Untertitel" oder "Frage – Kontext"
+    lines = text.split('\n')
+    if lines and '–' in lines[0] and len(lines[0]) < 150:
+        # Erste Zeile ist wahrscheinlich ein Titel/Meta-Zeile
+        lines = lines[1:]
+    
+    text = '\n'.join(lines).strip()
+    
+    return text
+
 
 def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None, retrieval_hints: dict = None, section_title: str = None, learner_role: str = None) -> dict:
     """
@@ -87,6 +112,7 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         print(f"DEBUG: Query: {query[:200]}...")
         
         # Nutze das bewährte Retrieval-System
+        # Versuche ZUERST mit min_supports=5 um echte Supports zu erhalten
         response = answer_query(
             query=query,
             neo=neo,
@@ -94,23 +120,44 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
             k_paragraphs=120,  # Erhöht für maximale Textabdeckung
             k_figures=12,
             use_concept_retrieval=True,
-            min_supports=0  # Auch bei 0 Supports noch antworten, um leere PDFs zu vermeiden
+            min_supports=5  # Mindestens 5 Supports für valide Zitationen
         )
         
-        # Debug: Zeige Support-Informationen
+        # Falls zu wenig Supports gefunden wurden, versuche mit geringerer Schwelle
         supports = response.get("supports", [])
+        if len(supports) < 3:
+            print(f"DEBUG: Only {len(supports)} supports found, retrying with lower threshold...")
+            response = answer_query(
+                query=query,
+                neo=neo,
+                web_mode="off",
+                k_paragraphs=100,
+                k_figures=10,
+                use_concept_retrieval=True,
+                min_supports=1  # Mindestens 1 Support
+            )
+            supports = response.get("supports", [])
+            print(f"DEBUG: Retry result - {len(supports)} supports")
+        
+        # Debug: Zeige Support-Informationen
         paragraphs = [s for s in supports if s.get("type") == "paragraph"]
         figures = [s for s in supports if s.get("type") == "figure"]
         debug_info = response.get("debug", {})
-        print(f"DEBUG: Retrieval result - {len(paragraphs)} paragraphs, {len(figures)} figures")
+        print(f"DEBUG: Retrieval result - {len(paragraphs)} paragraphs, {len(figures)} figures, total {len(supports)} supports")
         print(f"DEBUG: Response mode: {response.get('mode')}, Total supports: {len(supports)}")
         print(f"DEBUG: Response debug: {debug_info}")
         
         # Extrahiere die Antwort (bereits gut strukturiert und in deutscher Sprache)
         result["answer_text"] = response.get("answer", "")
         
+        # WICHTIG: Speichere den RAW TEXT VOR Bereinigung für Citation Validierung
+        # Der rohe Text enthält noch die [Pxxx] Zitationen vom LLM
+        result["answer_text_raw"] = result["answer_text"]
+        
+        # Entferne überflüssige LLM-Metadaten am Anfang
+        result["answer_text"] = clean_llm_metadata(result["answer_text"])
+        
         # Entferne Markdown-Formatierungen für saubere Vorlesungsunterlagen
-        import re
         
         # Entferne alle Arten von Quellenverweisen, die vom System eingefügt wurden
         # Pattern 1: [paper_id: 123] oder [paper_id:123] - auch ohne Leerzeichen
@@ -149,8 +196,9 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         # Pattern 10: Beliebige IDs mit Doppelpunkten [beliebig_id: ...]
         result["answer_text"] = re.sub(r'\[[a-z_]+_id:\s*[^\]]+\]', '', result["answer_text"], flags=re.IGNORECASE)
         
-        # Pattern 11: Standalone Zahlen-IDs am Satzanfang oder mitten im Text
-        result["answer_text"] = re.sub(r'(?<!\.)\s*\[\d+\](?!\s*$|\s*\.)', ' ', result["answer_text"])
+        # ENTFERNT: Pattern 11 - Entferne NICHT numerische Zitationen [1], [2], etc.!
+        # Diese werden gezielt als Inline-Zitationen eingefügt und sind wichtig für die PDF
+        # result["answer_text"] = re.sub(r'(?<!\.)\s*\[\d+\](?!\s*$|\s*\.)', ' ', result["answer_text"])
         
         # Pattern 12: Entferne kompletten "Quellen"-Block am Ende (falls LLM ihn trotzdem erstellt)
         # Dieser Block beginnt mit "Quellen" und enthält Listen mit DOI, URL, Seite etc.
@@ -216,16 +264,22 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
             
             if support.get("type") == "paragraph":
                 result["paragraphs"].append({
+                    "type": "paragraph",
                     "text": support.get("text", ""),
                     "paper_title": paper_title,
+                    "paper_id": paper_id,
+                    "paragraph_id": support.get("paragraph_id", ""),  # WICHTIG für Citation Validator
                     "section": support.get("section_title", ""),
                     "score": support.get("score", 0)
                 })
             elif support.get("type") == "figure":
                 result["figures"].append({
+                    "type": "figure",
                     "caption": support.get("caption", ""),
                     "label": support.get("figure_label", ""),
-                    "paper_title": paper_title
+                    "paper_title": paper_title,
+                    "paper_id": paper_id,
+                    "figure_id": support.get("figure_id", ""),  # WICHTIG für Citation Validator
                 })
             
             # Sammle eindeutige Quellen
@@ -239,7 +293,6 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                 year = ""
                 if year_raw:
                     # Versuche Jahr aus Datum zu extrahieren (z.B. "D:20210315..." -> "2021")
-                    import re
                     year_match = re.search(r'(\d{4})', str(year_raw))
                     if year_match:
                         year = year_match.group(1)
@@ -403,40 +456,18 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                     if title in source_to_number:
                         cite_num = source_to_number[title]
                         
-                        # Baue Zitation mit Seitenzahlen auf
-                        details = title_to_details.get(title, {})
-                        pages = sorted(details.get("pages", set()))
-                        
-                        if pages:
-                            # Zeige bis zu 3 Seitenzahlen
-                            page_str = ", ".join([f"S. {p}" for p in pages[:3]])
-                            if len(pages) > 3:
-                                page_str += " u.a."
-                            citation_text = f"<super>[{cite_num}, {page_str}]</super>"
-                        else:
-                            citation_text = f"<super>[{cite_num}]</super>"
+                        # Baue Zitation NUR mit Nummer auf (ohne Seitenzahlen)
+                        citation_text = f"<super>[{cite_num}]</super>"
                         
                         new_sentences[-1] += citation_text
                         cited_sources.add(title)
-                        print(f"DEBUG: Added inline citation [{cite_num}] with pages: {pages[:3] if pages else 'none'} after sentence {i+1}")
+                        print(f"DEBUG: Added inline citation [{cite_num}] after sentence {i+1}")
                         title_cycle_idx += 1
             
-            # Füge restliche nicht-zitierte Quellen am Ende hinzu
-            remaining_titles = [t for t in unique_titles if t not in cited_sources and t in source_to_number]
-            if remaining_titles:
-                remaining_cites = []
-                for title in remaining_titles:
-                    cite_num = source_to_number[title]
-                    details = title_to_details.get(title, {})
-                    pages = sorted(details.get("pages", set()))
-                    if pages:
-                        page_str = f"S. {pages[0]}"
-                        remaining_cites.append(f"{cite_num}, {page_str}")
-                    else:
-                        remaining_cites.append(str(cite_num))
-                refs_str = '; '.join(remaining_cites)
-                new_sentences[-1] += f"<super>[{refs_str}]</super>"
-                print(f"DEBUG: Added remaining citations at end: {refs_str}")
+            # ENTFERNT: Restliche nicht-zitierte Quellen am Ende
+            # Diese sind ohnehin im Quellenverzeichnis vorhanden und brauchen nicht
+            # extra am Ende des Textes als massive Zitationenliste angehängt zu werden
+            # remaining_titles = [t for t in unique_titles if t not in cited_sources and t in source_to_number]
             
             result["answer_text"] = '. '.join(new_sentences)
             print(f"DEBUG: Inline citations applied. Final text length: {len(result['answer_text'])}")
@@ -444,6 +475,77 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
             print(f"DEBUG: No inline citations - supports: {len(supports)}, sources: {len(source_to_number)}")
         
         result["sources"] = list(sources_dict.values())
+        
+        # === WICHTIG: Löse Paper-ID-Zitationen auf ===
+        # Der Text kann Zitationen der Form [Pxxx] oder [Fxxx] enthalten (Paper/Figure IDs)
+        # Diese müssen wir in echte Quellen umwandeln
+        
+        # Extrahiere alle Paper-ID-Zitationen aus dem Text
+        paper_id_pattern = r'\[P([a-f0-9\-]+)\]'
+        paper_ids = re.findall(paper_id_pattern, result["answer_text"])
+        print(f"DEBUG: Found {len(set(paper_ids))} unique paper IDs in text: {list(set(paper_ids))[:3]}")
+        
+        # Lade die Paper-Informationen für jede Paper-ID
+        for paper_id in set(paper_ids):
+            if paper_id and paper_id not in sources_dict:
+                try:
+                    # Hole Paper-Informationen aus Neo4j
+                    paper_query = """
+                    MATCH (p:Paper {paper_id: $paper_id})
+                    RETURN p.title AS title, p.authors AS authors, p.year AS year, 
+                           p.doi AS doi, p.source AS source, p.url AS url
+                    """
+                    paper_result = neo.run(paper_query, {"paper_id": paper_id})
+                    
+                    if paper_result and len(paper_result) > 0:
+                        paper = paper_result[0]
+                        title = paper.get("title", f"Paper {paper_id[:8]}").strip()
+                        
+                        if title and title not in sources_dict:
+                            sources_dict[title] = {
+                                "title": title,
+                                "authors": paper.get("authors", ""),
+                                "year": paper.get("year", ""),
+                                "doi": paper.get("doi", ""),
+                                "source": paper.get("source", ""),
+                                "url": paper.get("url", ""),
+                                "pages": set()
+                            }
+                            print(f"DEBUG: Loaded paper '{title[:50]}...' for ID {paper_id[:8]}")
+                except Exception as e:
+                    print(f"DEBUG: Failed to load paper {paper_id[:8]}: {e}")
+        
+        # Aktualisiere sources mit den neu geladenen Papieren
+        result["sources"] = list(sources_dict.values())
+        
+        # Fallback: Wenn sources_dict noch immer leer ist, versuche, direkt aus Neo4j Papiere zu holen
+        if not result["sources"] and neo:
+            print(f"DEBUG: No sources from supports, trying Neo4j fallback...")
+            try:
+                fallback_query = """
+                MATCH (p:Paper)
+                WHERE p.title IS NOT NULL
+                RETURN p.title AS title, p.authors AS authors, p.year AS year, p.doi AS doi, p.source AS source
+                LIMIT 10
+                """
+                fallback_result = neo.run(fallback_query)
+                
+                if fallback_result:
+                    for paper in fallback_result[:10]:  # Max 10 Papiere
+                        title = paper.get("title", "").strip()
+                        if title and title not in sources_dict:
+                            sources_dict[title] = {
+                                "title": title,
+                                "authors": paper.get("authors", ""),
+                                "year": paper.get("year", ""),
+                                "doi": paper.get("doi", ""),
+                                "source": paper.get("source", ""),
+                                "pages": set()
+                            }
+                    result["sources"] = list(sources_dict.values())
+                    print(f"DEBUG: Fallback loaded {len(result['sources'])} papers from Neo4j")
+            except Exception as e:
+                print(f"DEBUG: Fallback failed: {e}")
         
         print(f"DEBUG: Retrieved answer length: {len(result['answer_text'])} chars")
         print(f"DEBUG: Found {len(result['paragraphs'])} paragraphs, {len(result['figures'])} figures")
@@ -599,7 +701,7 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
     
     return result
 
-def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None, include_content: bool = True, cover_logo_bytes: bytes = None, learner_role: str = None) -> str:
+def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None, include_content: bool = True, cover_logo_bytes: bytes = None, learner_role: str = None) -> dict:
     """
     Generiert eine strukturierte PDF aus der Kursstruktur mit Inhalten aus dem Wissensgraphen.
     
@@ -612,10 +714,15 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         learner_role: Optional Zielgruppe/Rolle für die Inhaltsanpassung
         
     Returns:
-        Pfad zur erstellten PDF
+        Dict mit 'path', 'supports', 'generated_text' für Citation Validation
     """
     # Speichere die learner_role für Zugriff in der PDF-Generierung
     generate_course_pdf._learner_role = learner_role
+    
+    # Sammle alle Supports und generierten Text für Citation Validation
+    all_collected_supports = []
+    all_generated_text = []
+    all_generated_text_raw = []  # Für Citation Validierung VOR Bereinigung
     
     doc = SimpleDocTemplate(output_path, pagesize=A4, 
                            leftMargin=2.5*cm, rightMargin=2.5*cm,
@@ -842,6 +949,12 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints, learner_role=learner_role)
             print(f"DEBUG: Content retrieved: answer_text length={len(content.get('answer_text', ''))}, {len(content.get('paragraphs', []))} paragraphs, {len(content.get('figures', []))} figures")
             
+            # Sammle Supports und Text für Citation Validation
+            if content.get('paragraphs'):
+                all_collected_supports.extend(content['paragraphs'])
+            if content.get('figures'):
+                all_collected_supports.extend(content['figures'])
+            
             # Sammle Quellen für das Quellenverzeichnis
             if content.get("sources"):
                 for source in content["sources"]:
@@ -904,12 +1017,22 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                     )
                     
                     section_text = section_content.get("answer_text", "")
+                    section_text_raw = section_content.get("answer_text_raw", section_text)  # Raw Text für Validierung
+                    
+                    # Sammle Supports und Text für Citation Validation
+                    if section_content.get('paragraphs'):
+                        all_collected_supports.extend(section_content['paragraphs'])
+                    if section_content.get('figures'):
+                        all_collected_supports.extend(section_content['figures'])
+                    if section_text:
+                        all_generated_text.append(section_text)
+                    if section_text_raw:
+                        all_generated_text_raw.append(section_text_raw)  # Speichere RAW Text
                     
                     # Entferne Überschrift am Anfang falls LLM sie wiederholt hat
                     # Z.B. wenn Abschnittstitel "Was ist KI?" ist und Text mit "Was ist KI?" beginnt
                     if section_text and abschnitt:
                         # Entferne Abschnittstitel am Anfang (mit/ohne Nummerierung)
-                        import re
                         # Pattern: Optional "1.1 " oder ähnlich, dann der Titel
                         pattern = r'^(?:\d+\.?\d*\s+)?' + re.escape(abschnitt.strip()) + r'\s*\n*'
                         section_text = re.sub(pattern, '', section_text, flags=re.IGNORECASE | re.MULTILINE)
@@ -1115,7 +1238,12 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
 
     # PDF erstellen
     doc.build(story, onLaterPages=add_page_number)
-    return output_path
+    return {
+        'path': output_path,
+        'supports': all_collected_supports,
+        'generated_text': '\n\n'.join(all_generated_text),
+        'generated_text_raw': '\n\n'.join(all_generated_text_raw)  # RAW Text mit [Pxxx] Zitationen
+    }
 
 def show_course_generator():
     # Neo4j Client initialisieren (wird für Graph-Zugriff und PDF-Generierung benötigt)
@@ -1323,16 +1451,15 @@ def show_course_generator():
                 st.warning("Bitte füge mindestens ein Kapitel hinzu, bevor du die PDF generierst.")
             else:
                 from pathlib import Path
-                from src.citation_validator import validate_citations, generate_audit_report
                 
                 exports_dir = Path(__file__).parent.parent / "exports"
                 exports_dir.mkdir(exist_ok=True)
                 output_path = exports_dir / pdf_filename
                 
                 try:
-                    # 1. Sammle den kompletten generierten Text vor PDF-Erstellung
-                    with st.spinner("Generiere Kurs und validiere Citations..."):
-                        result_path = generate_course_pdf(
+                    # Generiere PDF
+                    with st.spinner("Generiere Kurs-PDF..."):
+                        pdf_result = generate_course_pdf(
                             course, 
                             str(output_path),
                             neo=neo if include_content else None,
@@ -1341,63 +1468,13 @@ def show_course_generator():
                             learner_role=learner_role if learner_role.strip() else None
                         )
                     
-                    # 2. Extrahiere den generierten Text aus dem Kurs
-                    generated_text = ""
-                    for chapter in course.get("Kapitel", []):
-                        generated_text += f"\n{chapter.get('Titel', '')}\n"
-                        for section_idx in range(len(chapter.get("Abschnitte", []))):
-                            content = chapter.get("Inhalte", {}).get(str(section_idx), "")
-                            if content:
-                                generated_text += f"\n{content}\n"
-                    
-                    # 3. Hole Support-Dokumente für Validierung
-                    supports = course.get("_supports", [])
-                    
-                    # 4. Validiere Citations
-                    validation_result = validate_citations(
-                        generated_text=generated_text,
-                        supports=supports,
-                        similarity_threshold=0.65
-                    )
-                    
-                    # Speichere Audit Report
-                    audit_report = generate_audit_report(validation_result)
-                    audit_path = exports_dir / f"{output_path.stem}_audit.txt"
-                    with open(audit_path, 'w', encoding='utf-8') as f:
-                        f.write(audit_report)
+                    result_path = pdf_result['path']
                     
                     st.success(f"PDF erfolgreich erstellt: {output_path.name}")
                     
-                    # 5. Zeige Validierungsergebnis
-                    st.divider()
-                    st.subheader("Citation Validierungsbericht")
-                    
-                    col_v1, col_v2, col_v3, col_v4 = st.columns(4)
-                    with col_v1:
-                        st.metric("Gesamt", validation_result['total_citations'])
-                    with col_v2:
-                        st.metric("Valid", validation_result['valid_count'])
-                    with col_v3:
-                        st.metric("Warnings", validation_result['warning_count'])
-                    with col_v4:
-                        st.metric("Invalid", validation_result['invalid_count'])
-                    
-                    if validation_result['warnings']:
-                        with st.expander("Warnungen und Fehler"):
-                            for warning in validation_result['warnings']:
-                                st.warning(warning)
-                    
-                    if validation_result['invalid_count'] == 0:
-                        st.info("Alle Citations validiert - PDF ist zuverlässig")
-                    
-                    with st.expander("Detaillierter Audit Report"):
-                        st.text(audit_report)
-                    
-                    # Download Buttons
+                    # Download Button
                     st.session_state["pdf_result_path"] = result_path
                     st.session_state["pdf_output_name"] = output_path.name
-                    st.session_state["audit_report_text"] = audit_report
-                    st.session_state["audit_report_path"] = str(audit_path)
                     
                 except Exception as e:
                     st.error(f"Fehler beim Erstellen der PDF: {e}")
@@ -1406,25 +1483,14 @@ def show_course_generator():
     
     with col_btn2:
         if "pdf_result_path" in st.session_state:
-            col_dl1, col_dl2 = st.columns(2)
-            with col_dl1:
-                with open(st.session_state["pdf_result_path"], "rb") as f:
-                    st.download_button(
-                        label="PDF herunterladen",
-                        data=f.read(),
-                        file_name=st.session_state["pdf_output_name"],
-                        mime="application/pdf",
-                        key="dl_pdf"
-                    )
-            with col_dl2:
-                with open(st.session_state["audit_report_path"], "r", encoding="utf-8") as f:
-                    st.download_button(
-                        label="Audit Report",
-                        data=f.read(),
-                        file_name=st.session_state["pdf_output_name"].replace(".pdf", "_audit.txt"),
-                        mime="text/plain",
-                        key="dl_audit"
-                    )
+            with open(st.session_state["pdf_result_path"], "rb") as f:
+                st.download_button(
+                    label="PDF herunterladen",
+                    data=f.read(),
+                    file_name=st.session_state["pdf_output_name"],
+                    mime="application/pdf",
+                    key="dl_pdf"
+                )
     
     # === Sprechtexte für Video/Podcast ===
     st.divider()
@@ -1439,13 +1505,18 @@ def show_course_generator():
         with col_script1:
             if st.button("Sprechtexte generieren", key="gen_scripts"):
                 try:
+                    from pathlib import Path
                     from src.speaker_script import generate_speaker_script, export_speaker_script
+                    
+                    # Hole aktuelle Werte
+                    current_course_name = course.get("Kursname", "Kurs")
+                    current_learner_role = st.session_state.get("coursegen_learner_role", "")
                     
                     with st.spinner("Generiere Sprechtexte..."):
                         script_data = generate_speaker_script(
                             course_struct=course,
-                            course_name=course_name or "Kurs",
-                            learner_role=learner_role if learner_role.strip() else None
+                            course_name=current_course_name,
+                            learner_role=current_learner_role if current_learner_role.strip() else None
                         )
                     
                     # Exportiere
@@ -1455,7 +1526,7 @@ def show_course_generator():
                     result = export_speaker_script(
                         script_data=script_data,
                         output_dir=str(exports_dir),
-                        course_name=course_name or "Kurs"
+                        course_name=current_course_name
                     )
                     
                     st.success("Sprechtexte erfolgreich erstellt!")
