@@ -127,6 +127,8 @@ Anweisung als Dozent:
 - Strukturiere die Antwort logisch (z.B. Definition → Erklärung → Beispiele → Zusammenhänge).
 - Nutze eine klare, lehrende Sprache: Führe Studierende schrittweise durch das Thema.
 - Jede Kernaussage mit [Pxxx] / [Fxxx] belegen (Quellenangabe in eckigen Klammern).
+  WICHTIG: Zitationen enthalten NUR die ID in Klammern, KEINE Seitenzahlen oder weitere Metadaten.
+  Beispiele: [P12345], [F67890], nicht [P12345 S.5] oder [F67890 (Abb. 3)]
 - **WICHTIG für Abbildungen [F...]:** Wenn eine Abbildung relevant ist, verweise DIREKT im Fließtext darauf! 
   Beispiel: "Abbildung [F12345] zeigt den Aufbau..." oder "Wie in [F67890] dargestellt..."
   Die Abbildungen werden dann automatisch unter dem Text eingefügt.
@@ -136,6 +138,7 @@ Anweisung als Dozent:
 
 Zitierformat:
 - Verwende die ID-Kürzel [Pxxx] oder [Fxxx] direkt im Text um auf Belege zu verweisen.
+- KEINE Seitenzahlen, Jahreszahlen oder andere Metadaten in den Klammern.
 
 Bibliographie-Map (nur zur Information, nicht im Text verwenden):
 {bib_json}
@@ -148,4 +151,34 @@ Bibliographie-Map (nur zur Information, nicht im Text verwenden):
         ],
         temperature=0.2,
     )
-    return resp.choices[0].message.content or ""
+    raw = resp.choices[0].message.content or ""
+    
+    # Fix: Avoid citations directly after enumeration markers (e.g., "1[1].")
+    # Move such citations to the end of the line (before final punctuation if present).
+    try:
+        import re as _re
+        lines = raw.split("\n")
+        fixed_lines = []
+        for ln in lines:
+            # repeatedly move citations if they appear immediately after an enumeration at line start
+            while True:
+                m = _re.match(r"^\s*(?P<enum>\d+(?:[\.)\:]?\s*))\[(?P<cid>[PF][^\]]+)\]", ln)
+                if not m:
+                    break
+                enum = m.group("enum")
+                cid = m.group("cid")
+                # remove the citation from start position
+                ln = enum + ln[m.end():]
+                # insert citation at end, before trailing punctuation if any
+                end_punct = _re.match(r"^(?P<body>.*?)(?P<punct>[\.!?])\s*$", ln)
+                if end_punct:
+                    ln = end_punct.group("body") + f" [{cid}]" + end_punct.group("punct")
+                else:
+                    ln = ln.rstrip() + f" [{cid}]"
+            fixed_lines.append(ln)
+        raw = "\n".join(fixed_lines)
+    except Exception:
+        # best-effort; fall back to original text
+        pass
+    
+    return raw

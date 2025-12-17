@@ -1121,24 +1121,6 @@ def show_course_generator():
     # Neo4j Client initialisieren (wird für Graph-Zugriff und PDF-Generierung benötigt)
     neo = Neo4jClient()
     
-    # Topic-Auswahl und Konzept-Vorschläge
-    st.subheader("Kapitelvorschläge aus Wissensgraph")
-    topics = [r["name"] for r in neo.run("MATCH (t:Topic) RETURN t.name AS name ORDER BY name")]
-    selected_topic = st.selectbox("Topic aus Wissensgraph wählen", topics, key="coursegen_topic_select")
-    concepts = []
-    if selected_topic:
-        concepts = neo.list_concepts_for_topic(selected_topic)
-        st.markdown(f"**{len(concepts)} Konzepte für Topic '{selected_topic}'**")
-        concept_names = [c["name"] for c in concepts]
-        selected_concept = st.selectbox("Konzept auswählen", concept_names, key="coursegen_concept_select")
-        st.caption("Ausgewähltes Konzept: " + selected_concept if selected_concept else "")
-        if concepts and st.button("Alle Konzepte als Kapitel übernehmen"):
-            # Nur übernehmen, wenn explizit geklickt
-            st.session_state["course_struct"]["Kapitel"] = [
-                {"Titel": c["name"], "Lernziele": [], "Abschnitte": [], "Retrieval_Hinweise": {}} for c in concepts
-            ]
-            st.rerun()
-    
     # Initialisiere Session State
     if "course_struct" not in st.session_state:
         st.session_state["course_struct"] = {
@@ -1147,12 +1129,10 @@ def show_course_generator():
         }
 
     course = st.session_state["course_struct"]
-    
-    st.markdown("---")
-    st.info("Tipp: Um Inhalte aus dem Wissensgraphen zu nutzen, benenne deine Kapitel nach Konzeptnamen oder übernimm Konzepte direkt als Kapitel (Button oben).")
 
     # Kursname bearbeiten
-    course["Kursname"] = st.text_input("Kursname", value=course["Kursname"])
+    st.subheader("Kursname")
+    course["Kursname"] = st.text_input("", value=course["Kursname"], label_visibility="collapsed")
 
     # Zielgruppe / Rolle bearbeiten
     st.markdown("---")
@@ -1320,41 +1300,38 @@ def show_course_generator():
     st.markdown("---")
     st.subheader("Kurs als PDF exportieren")
     
-    col_pdf1, col_pdf2, col_pdf3 = st.columns([2, 1, 1])
-    with col_pdf1:
-        pdf_filename = st.text_input(
-            "PDF-Dateiname", 
-            value=f"{course['Kursname'].replace(' ', '_')}_Kurs.pdf",
-            help="Name der zu erstellenden PDF-Datei"
-        )
-    with col_pdf2:
-        include_content = st.checkbox(
-            "Inhalte aus Wissensgraph",
-            value=True,
-            help="Automatisch passende Inhalte aus dem Wissensgraphen einfügen"
-        )
-    with col_pdf3:
-        st.write("")  # Spacer
-
+    pdf_filename = st.text_input(
+        "PDF-Dateiname", 
+        value=f"{course['Kursname'].replace(' ', '_')}_Kurs.pdf",
+        help="Name der zu erstellenden PDF-Datei"
+    )
+    
     logo_file = st.file_uploader(
         "Logo für Deckblatt (optional)",
         type=["png", "jpg", "jpeg"],
         help="Quadratische Logos wirken am besten (z.B. 512x512)."
     )
     logo_bytes = logo_file.getvalue() if logo_file else None
-
-    with col_pdf3:
-        if st.button("PDF generieren", type="primary"):
+    
+    # Inhalte aus Wissensgraph werden standardmäßig immer eingefügt
+    include_content = True
+    
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("PDF generieren", type="primary", key="gen_pdf"):
             if not course.get("Kapitel"):
                 st.warning("Bitte füge mindestens ein Kapitel hinzu, bevor du die PDF generierst.")
             else:
                 from pathlib import Path
+                from src.citation_validator import validate_citations, generate_audit_report
+                
                 exports_dir = Path(__file__).parent.parent / "exports"
                 exports_dir.mkdir(exist_ok=True)
                 output_path = exports_dir / pdf_filename
                 
                 try:
-                    with st.spinner(f"Generiere PDF für Zielgruppe '{learner_role if learner_role.strip() else 'allgemein'}'..."):
+                    # 1. Sammle den kompletten generierten Text vor PDF-Erstellung
+                    with st.spinner("Generiere Kurs und validiere Citations..."):
                         result_path = generate_course_pdf(
                             course, 
                             str(output_path),
@@ -1363,20 +1340,155 @@ def show_course_generator():
                             cover_logo_bytes=logo_bytes,
                             learner_role=learner_role if learner_role.strip() else None
                         )
+                    
+                    # 2. Extrahiere den generierten Text aus dem Kurs
+                    generated_text = ""
+                    for chapter in course.get("Kapitel", []):
+                        generated_text += f"\n{chapter.get('Titel', '')}\n"
+                        for section_idx in range(len(chapter.get("Abschnitte", []))):
+                            content = chapter.get("Inhalte", {}).get(str(section_idx), "")
+                            if content:
+                                generated_text += f"\n{content}\n"
+                    
+                    # 3. Hole Support-Dokumente für Validierung
+                    supports = course.get("_supports", [])
+                    
+                    # 4. Validiere Citations
+                    validation_result = validate_citations(
+                        generated_text=generated_text,
+                        supports=supports,
+                        similarity_threshold=0.65
+                    )
+                    
+                    # Speichere Audit Report
+                    audit_report = generate_audit_report(validation_result)
+                    audit_path = exports_dir / f"{output_path.stem}_audit.txt"
+                    with open(audit_path, 'w', encoding='utf-8') as f:
+                        f.write(audit_report)
+                    
                     st.success(f"PDF erfolgreich erstellt: {output_path.name}")
                     
-                    # Download-Button
-                    with open(result_path, "rb") as f:
-                        st.download_button(
-                            label="PDF herunterladen",
-                            data=f.read(),
-                            file_name=output_path.name,
-                            mime="application/pdf"
-                        )
+                    # 5. Zeige Validierungsergebnis
+                    st.divider()
+                    st.subheader("Citation Validierungsbericht")
+                    
+                    col_v1, col_v2, col_v3, col_v4 = st.columns(4)
+                    with col_v1:
+                        st.metric("Gesamt", validation_result['total_citations'])
+                    with col_v2:
+                        st.metric("Valid", validation_result['valid_count'])
+                    with col_v3:
+                        st.metric("Warnings", validation_result['warning_count'])
+                    with col_v4:
+                        st.metric("Invalid", validation_result['invalid_count'])
+                    
+                    if validation_result['warnings']:
+                        with st.expander("Warnungen und Fehler"):
+                            for warning in validation_result['warnings']:
+                                st.warning(warning)
+                    
+                    if validation_result['invalid_count'] == 0:
+                        st.info("Alle Citations validiert - PDF ist zuverlässig")
+                    
+                    with st.expander("Detaillierter Audit Report"):
+                        st.text(audit_report)
+                    
+                    # Download Buttons
+                    st.session_state["pdf_result_path"] = result_path
+                    st.session_state["pdf_output_name"] = output_path.name
+                    st.session_state["audit_report_text"] = audit_report
+                    st.session_state["audit_report_path"] = str(audit_path)
+                    
                 except Exception as e:
                     st.error(f"Fehler beim Erstellen der PDF: {e}")
                     import traceback
                     st.code(traceback.format_exc())
     
-    st.markdown("---")
-    st.info("Dein Kurs wurde erfolgreich zusammengestellt! Exportiere ihn im Tab 'Gamma Export' als Präsentation.")
+    with col_btn2:
+        if "pdf_result_path" in st.session_state:
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                with open(st.session_state["pdf_result_path"], "rb") as f:
+                    st.download_button(
+                        label="PDF herunterladen",
+                        data=f.read(),
+                        file_name=st.session_state["pdf_output_name"],
+                        mime="application/pdf",
+                        key="dl_pdf"
+                    )
+            with col_dl2:
+                with open(st.session_state["audit_report_path"], "r", encoding="utf-8") as f:
+                    st.download_button(
+                        label="Audit Report",
+                        data=f.read(),
+                        file_name=st.session_state["pdf_output_name"].replace(".pdf", "_audit.txt"),
+                        mime="text/plain",
+                        key="dl_audit"
+                    )
+    
+    # === Sprechtexte für Video/Podcast ===
+    st.divider()
+    st.subheader("Sprechtexte für Video- und Podcast-Produktion")
+    st.markdown("Generiere optimierte Sprechtexte für Synthesia, ElevenLabs oder andere KI-Sprachsynthese-Systeme.")
+    
+    if not course.get("Kapitel"):
+        st.info("Bitte erstelle zuerst einen Kurs im oberen Abschnitt.")
+    else:
+        col_script1, col_script2 = st.columns([1, 1])
+        
+        with col_script1:
+            if st.button("Sprechtexte generieren", key="gen_scripts"):
+                try:
+                    from src.speaker_script import generate_speaker_script, export_speaker_script
+                    
+                    with st.spinner("Generiere Sprechtexte..."):
+                        script_data = generate_speaker_script(
+                            course_struct=course,
+                            course_name=course_name or "Kurs",
+                            learner_role=learner_role if learner_role.strip() else None
+                        )
+                    
+                    # Exportiere
+                    exports_dir = Path(__file__).parent.parent / "exports"
+                    exports_dir.mkdir(exist_ok=True)
+                    
+                    result = export_speaker_script(
+                        script_data=script_data,
+                        output_dir=str(exports_dir),
+                        course_name=course_name or "Kurs"
+                    )
+                    
+                    st.success("Sprechtexte erfolgreich erstellt!")
+                    st.write(f"**Gesamtdauer:** {script_data['total_duration']}")
+                    
+                    # Download-Buttons
+                    col_dl1, col_dl2 = st.columns(2)
+                    
+                    with col_dl1:
+                        with open(result["json_path"], "r", encoding="utf-8") as f:
+                            st.download_button(
+                                label="JSON herunterladen",
+                                data=f.read(),
+                                file_name=result["json_filename"],
+                                mime="application/json",
+                                key="dl_json"
+                            )
+                    
+                    with col_dl2:
+                        with open(result["markdown_path"], "r", encoding="utf-8") as f:
+                            st.download_button(
+                                label="Markdown herunterladen",
+                                data=f.read(),
+                                file_name=result["markdown_filename"],
+                                mime="text/markdown",
+                                key="dl_md"
+                            )
+                    
+                    # Preview
+                    with st.expander("Vorschau"):
+                        st.markdown(script_data["markdown"][:2000] + "\n...*[gekürzt]*")
+                
+                except Exception as e:
+                    st.error(f"Fehler beim Generieren der Sprechtexte: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())

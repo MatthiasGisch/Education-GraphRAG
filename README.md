@@ -68,7 +68,7 @@ result = extract_and_embed_concepts_hybrid(
 ```
 
 #### GUI-Integration:
-In der Streamlit-GUI kannst du unter "Konzept-Strategie" den Modus **"Hybrid (NER + LLM + Relationen)"** wählen, um die erweiterte Extraktion zu nutzen.
+Die Streamlit-GUI nutzt derzeit die LLM-basierte Konzept-Extraktion. Ein Hybrid-(NER+LLM)-Modus ist im Code verfügbar, jedoch nicht als GUI-Option.
 
 ### Relation Types im Graph:
 - `SEMANTIC_RELATION` - Semantische Beziehungen mit Properties:

@@ -1157,8 +1157,8 @@ cfg.SYNTHESIA_API_BASE = st.session_state["api_keys"]["synthesia_api_base"]
 tab_ingest, tab_coursegen, tab_gamma, tab_synthesia, tab_cypher = st.tabs([
     "Dokumente aufnehmen",
     "Kursgenerator",
-    "Gamma Export",
-    "PPTX → Synthesia",
+    "Slideexport",
+    "Videoexport",
     "Cypher"
 ])
 
@@ -1178,7 +1178,7 @@ with tab_coursegen:
 
 # ---- Tab: Gamma Export ----
 with tab_gamma:
-    st.subheader("Kurs als Gamma-Präsentation exportieren")
+    st.subheader("Kurs als Präsentation via Gamma exportieren")
     st.markdown("Exportiere deinen erstellten Kurs als interaktive Präsentation über die Gamma API.")
     
     # Hole aktuellen Kurs aus session_state (Kursgenerator speichert in "course_struct")
@@ -1333,15 +1333,22 @@ with tab_gamma:
 
 # ---- Tab: PPTX -> Synthesia (upload / select PPTX then send to Synthesia)
 with tab_synthesia:
-    st.subheader("🎬 PPTX → Synthesia: Erzeuge Lernvideo via Synthesia API")
+    st.subheader("Präsentation als Video via Synthesia exportieren")
     st.markdown("Lade eine `.pptx` hoch oder wähle eine vorhandene Datei aus `exports/` und sende sie an Synthesia.")
     col1, col2 = st.columns([2, 1])
     with col1:
         uploaded = st.file_uploader("PPTX hochladen (für Synthesia)", type=["pptx"])
-        pptx_files = [p.name for p in EXPORTS_DIR.glob("*.pptx")] if EXPORTS_DIR.exists() else []
+        pptx_files = []
+        if EXPORTS_DIR.exists():
+            # Suche im exports-Ordner und im gamma-Unterordner
+            pptx_files.extend([p.name for p in EXPORTS_DIR.glob("*.pptx")])
+            gamma_dir = EXPORTS_DIR / "gamma"
+            if gamma_dir.exists():
+                pptx_files.extend([p.name for p in gamma_dir.glob("*.pptx")])
+        pptx_files = list(set(pptx_files))  # Duplikate entfernen
         selected = None
         if pptx_files:
-            selected = st.selectbox("Vorhandene PPTX aus exports/ wählen", ["-- none --"] + pptx_files)
+            selected = st.selectbox("Vorhandene PPTX aus exports/ wählen", ["-- none --"] + sorted(pptx_files))
     with col2:
         voice = st.text_input("Voice (Synthesia voice id)", value="en-US")
         model = st.text_input("Model (optional)", value="")
@@ -1368,7 +1375,11 @@ with tab_synthesia:
         pptx_path = str(save_to)
         st.success(f"Hochgeladen: {save_to.name}")
     elif selected and selected != "-- none --":
-        pptx_path = str(EXPORTS_DIR / selected)
+        # Suche in exports/ und exports/gamma/
+        candidate = EXPORTS_DIR / selected
+        if not candidate.exists():
+            candidate = EXPORTS_DIR / "gamma" / selected
+        pptx_path = str(candidate) if candidate.exists() else None
 
     if gen:
         if not pptx_path:
@@ -1404,11 +1415,9 @@ with tab_synthesia:
 with tab_ingest:
     st.subheader("Dokumente aufnehmen & Metadaten verwalten")
     
-    st.info("Konzepte werden automatisch beim Ingest extrahiert. Konfiguriere unten die Extraktions-Strategie.")
-    
     # === Concept & Ingest Settings ===
     with st.expander("Konzept-Extraktion & Topic-Einstellungen", expanded=True):
-        col_topic, col_strategy = st.columns(2)
+        col_topic = st.columns(1)[0]
         
         with col_topic:
             # Topic-Auswahl mit Auto-Inference
@@ -1437,37 +1446,14 @@ with tab_ingest:
             if new_topic:
                 st.session_state["concept_topic"] = new_topic
                 selected_topic = new_topic
-        
-        with col_strategy:
-            strategy = st.radio(
-                "Konzept-Extraktions-Strategie",
-                ["Hybrid (NER + LLM + Relationen)", "LLM"],
-                index=0,
-                help="Hybrid nutzt Named Entity Recognition + LLM und extrahiert semantische Relationen. Empfohlen für wissenschaftliche Texte."
-            )
-            st.session_state["concept_mode"] = strategy
-        
-        col_params1, col_params2 = st.columns(2)
-        with col_params1:
-            auto_params = st.checkbox("Parameter automatisch anpassen", value=True, 
-                                      help="Passt max_entities/max_relations an Dokumentgröße an")
-            if not auto_params:
-                max_entities = st.slider("Max. Entitäten", 10, 100, 30)
-                max_relations = st.slider("Max. Relationen", 5, 50, 20)
-            else:
-                st.info("Parameter werden dynamisch berechnet")
-                max_entities = None
-                max_relations = None
-        
-        with col_params2:
-            check_duplicates = st.checkbox("Duplikate erkennen", value=True,
-                                          help="Prüft auf SHA256, DOI und Titel-Duplikate")
-            quality_filter = st.checkbox("Qualitätsfilter aktivieren", value=True,
-                                        help="Filtert Konzepte mit niedriger Confidence")
-            if quality_filter:
-                min_confidence = st.slider("Min. Confidence", 0.0, 1.0, 0.6, 0.05)
-            else:
-                min_confidence = 0.0
+
+        # Backend defaults (controls removed from GUI)
+        check_duplicates = True
+        quality_filter = True
+        try:
+            min_confidence = float(os.getenv("INGEST_MIN_CONFIDENCE", "0.6"))
+        except Exception:
+            min_confidence = 0.6
     
     st.markdown("---")
     
@@ -1516,15 +1502,10 @@ with tab_ingest:
         else:
             topic = topic_param or "Künstliche Intelligenz"
         
-        # Calculate dynamic parameters
-        if auto_params:
-            params = calculate_dynamic_parameters(len(paragraphs))
-            max_ent = params["max_entities"]
-            max_rel = params["max_relations"]
-            st.info(f"🎯 Dynamische Parameter: max_entities={max_ent}, max_relations={max_rel}")
-        else:
-            max_ent = max_entities
-            max_rel = max_relations
+        # Calculate dynamic parameters (always)
+        params = calculate_dynamic_parameters(len(paragraphs))
+        max_ent = params["max_entities"]
+        max_rel = params["max_relations"]
         
         # Upsert paper
         report_progress("Paper speichern", 25)
@@ -1581,35 +1562,18 @@ with tab_ingest:
         if figs_ready:
             neo.add_figures(paper_meta["paper_id"], figs_ready)
         
-        # Extract concepts
+        # Extract concepts (LLM-only)
         report_progress("Konzepte extrahieren", 70)
-        hybrid_mode = (strategy == "Hybrid (NER + LLM + Relationen)")
-        
-        if hybrid_mode:
-            full_text = "\n\n".join([p.get("text", "") for p in paragraphs_emb])
-            result = extract_and_embed_concepts_hybrid(
-                paper_title=paper_meta.get("title") or "",
-                paper_text=full_text,
-                paragraphs=paragraphs_emb,
-                topic_hint=topic,
-                max_entities=max_ent,
-                max_relations=max_rel,
-                neo_client=neo,
-                persist_to_topic=True
-            )
-            concepts = result.get('concepts', [])
-            links = result.get('paragraph_links', [])
-        else:
-            concepts, links = extract_and_embed_concepts(
-                paper_title=paper_meta.get("title") or "",
-                paragraphs=paragraphs_emb,
-                topic_hint=topic,
-                max_concepts=max_ent,
-                seed_names=None,
-                allow_new=True,
-                neo_client=neo,
-                persist_to_topic=True
-            )
+        concepts, links = extract_and_embed_concepts(
+            paper_title=paper_meta.get("title") or "",
+            paragraphs=paragraphs_emb,
+            topic_hint=topic,
+            max_concepts=max_ent,
+            seed_names=None,
+            allow_new=True,
+            neo_client=neo,
+            persist_to_topic=True
+        )
         
         # Quality filter
         report_progress("Qualität filtern", 85)
@@ -1916,23 +1880,28 @@ with tab_ingest:
                     st.rerun()
     
     st.markdown("---")
-    st.subheader("Dienstprogramme")
-    # Hinweis: Auto-Stitching erfolgt nun automatisch nach dem Ingest.
-
-    st.warning("Achtung: Löscht alle Knoten & Kanten (Schema bleibt erhalten).")
-    confirm = st.text_input("Zum Bestätigen 'DELETE' tippen", key="confirm_clear")
-    if st.button("Graph leeren"):
-        if confirm.strip().upper() == "DELETE":
-            with st.spinner("Lösche alle Knoten & Kanten …"):
-                stats = clear_graph()
-            st.success("Graph geleert")
-            st.json(stats)
-        else:
-            st.error("Bestätigung fehlt: tippe exakt 'DELETE'.")
+    
+    @st.dialog("Graph leeren - Bestätigung erforderlich")
+    def confirm_delete_dialog():
+        st.warning("Achtung: Dies löscht ALLE Knoten und Kanten. Das Schema bleibt erhalten.")
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Ja, löschen", type="primary", use_container_width=True):
+                with st.spinner("Lösche alle Knoten & Kanten …"):
+                    stats = clear_graph()
+                st.success("Graph erfolgreich geleert!")
+                st.json(stats)
+        with col2:
+            if st.button("Abbrechen", type="secondary", use_container_width=True):
+                st.rerun()
+    
+    if st.button("Graph leeren", type="secondary"):
+        confirm_delete_dialog()
 
     with tab_cypher:
         # --- Cypher ausführen & visualisieren ---
-        st.subheader("🔎 Cypher ausführen & visualisieren")
+        st.subheader("Cypher ausführen & visualisieren")
 
         # Topics aus DB (Dropdown)
         topics = list_topics()
