@@ -1181,11 +1181,43 @@ with tab_gamma:
     st.subheader("Kurs als Präsentation via Gamma exportieren")
     st.markdown("Exportiere deinen erstellten Kurs als interaktive Präsentation über die Gamma API.")
     
-    # Hole aktuellen Kurs aus session_state (Kursgenerator speichert in "course_struct")
-    course = st.session_state.get("course_struct", {})
+    # Lade verfügbare gespeicherte Kurse
+    from pathlib import Path
+    import json
+    exports_dir = Path(__file__).parent.parent / "exports"
+    exports_dir.mkdir(exist_ok=True)
+    
+    # Suche nach gespeicherten Kursen (JSON-Dateien die mit _course.json enden)
+    course_files = list(exports_dir.glob("*_course.json"))
+    available_courses = {}
+    
+    for course_file in course_files:
+        try:
+            with open(course_file, 'r', encoding='utf-8') as f:
+                course_data = json.load(f)
+                course_name = course_data.get("Kursname", course_file.stem.replace("_course", ""))
+                available_courses[course_name] = course_data
+        except Exception as e:
+            print(f"Could not load course from {course_file}: {e}")
+    
+    # Dropdown für Kursauswahl
+    st.markdown("### Kurs auswählen")
+    
+    course_options = ["Aktueller Kurs (aus Kursgenerator)"] + list(available_courses.keys())
+    selected_course_option = st.selectbox(
+        "Wähle einen Kurs für den Export",
+        options=course_options,
+        help="Wähle den aktuell bearbeiteten Kurs oder einen zuvor gespeicherten Kurs"
+    )
+    
+    # Hole den entsprechenden Kurs
+    if selected_course_option == "Aktueller Kurs (aus Kursgenerator)":
+        course = st.session_state.get("course_struct", {})
+    else:
+        course = available_courses.get(selected_course_option, {})
     
     if not course.get("Kapitel"):
-        st.warning("Bitte erstelle zuerst einen Kurs im Tab 'Kursgenerator'.")
+        st.warning("Der ausgewählte Kurs hat keine Kapitel. Bitte erstelle zuerst einen Kurs im Tab 'Kursgenerator' oder wähle einen anderen Kurs.")
     else:
         with st.expander("Gamma-Einstellungen"):
             col_g1, col_g2, col_g3 = st.columns(3)
@@ -1291,11 +1323,15 @@ with tab_gamma:
                             
                             # Sammle Quellen
                             if section_content.get("sources"):
+                                print(f"DEBUG GUI: Section '{abschnitt_title}' has {len(section_content['sources'])} sources")
                                 for source in section_content["sources"]:
                                     title = source.get("title", "")
                                     if title and title.strip() and title.strip().lower() not in ['unknown', '']:
                                         if title not in all_sources:
                                             all_sources[title] = source
+                                            print(f"DEBUG GUI: Added source: {title[:50]}")
+                            else:
+                                print(f"DEBUG GUI: Section '{abschnitt_title}' has NO sources!")
                             
                             # Erstelle Abschnittsinhalt (Gamma teilt automatisch auf)
                             section_text = f"### {abschnitt_title}\n\n"
@@ -1311,44 +1347,68 @@ with tab_gamma:
                             
                             content_sections.append(section_text)
                     
-                    # Füge Quellenverzeichnis am Ende hinzu
+                    # Füge Quellenverzeichnis am Ende hinzu - AUFGETEILT auf mehrere Folien
+                    print(f"DEBUG GUI: Total sources collected for Gamma: {len(all_sources)}")
                     if all_sources:
+                        print(f"DEBUG GUI: Creating bibliography with {len(all_sources)} sources")
                         # Sortiere alphabetisch
                         sorted_sources = sorted(all_sources.items(), key=lambda x: x[0])
                         
-                        # Erstelle Literaturverzeichnis als kontinuierlichen Text
-                        bibliography_text = "## Literaturverzeichnis\n\n"
+                        # Teile Quellen auf mehrere Folien auf (max 5 pro Folie)
+                        sources_per_slide = 5
+                        num_bibliography_slides = (len(sorted_sources) + sources_per_slide - 1) // sources_per_slide
                         
-                        for idx, (title, source_info) in enumerate(sorted_sources, 1):
-                            # Erstelle Zitat im APA-ähnlichen Format
-                            citation_parts = []
+                        for slide_idx in range(num_bibliography_slides):
+                            start_idx = slide_idx * sources_per_slide
+                            end_idx = min(start_idx + sources_per_slide, len(sorted_sources))
+                            slide_sources = sorted_sources[start_idx:end_idx]
                             
-                            # Autoren
-                            authors = (source_info.get("authors") or "").strip()
-                            if authors:
-                                authors = authors.replace(";", ",")[:100]
-                                citation_parts.append(authors)
+                            # Erstelle Literaturverzeichnis-Folie mit starker Trennung
+                            # Füge viel Whitespace hinzu, damit Gamma es als separate Folie erkennt
+                            if slide_idx == 0:
+                                bibliography_text = "\n\n\n\n# Literaturverzeichnis\n\n"
+                            else:
+                                bibliography_text = f"\n\n\n\n# Literaturverzeichnis (Teil {slide_idx + 1})\n\n"
                             
-                            # Jahr
-                            year = source_info.get("year", "")
-                            if year:
-                                citation_parts.append(f"({year})")
+                            bibliography_text += "Quellenangaben:\n\n"
                             
-                            # Titel
-                            if title:
-                                citation_parts.append(f"{title[:100]}")
+                            for idx, (title, source_info) in enumerate(slide_sources, start_idx + 1):
+                                # Erstelle Zitat im APA-ähnlichen Format
+                                citation_parts = []
+                                
+                                # Autoren
+                                authors = (source_info.get("authors") or "").strip()
+                                if authors:
+                                    authors = authors.replace(";", ",")[:100]
+                                    citation_parts.append(authors)
+                                
+                                # Jahr
+                                year = source_info.get("year", "")
+                                if year:
+                                    citation_parts.append(f"({year})")
+                                
+                                # Titel
+                                if title:
+                                    citation_parts.append(f"{title[:100]}")
+                                
+                                # Zusammenbauen
+                                citation = " ".join(citation_parts) if citation_parts else title[:150]
+                                bibliography_text += f"**[{idx}]** {citation}\n\n"
                             
-                            # Zusammenbauen
-                            citation = " ".join(citation_parts) if citation_parts else title[:150]
-                            bibliography_text += f"[{idx}] {citation}\n\n"
+                            # Füge Padding am Ende hinzu
+                            bibliography_text += "\n\n\n"
+                            
+                            content_sections.append(bibliography_text)
                         
-                        content_sections.append(bibliography_text)
+                        print(f"DEBUG GUI: Bibliography split into {num_bibliography_slides} slides")
+                        print(f"DEBUG GUI: Increasing numCards to accommodate bibliography")
+                    else:
+                        print(f"DEBUG GUI: WARNING - No sources, bibliography NOT added!")
                     
                     # Kombiniere alle Abschnitte zu einem kontinuierlichen Dokument
                     gamma_input = "\n\n".join(content_sections)
-                    
-                    with st.expander("Gamma Input Preview (erste 2000 Zeichen)"):
-                        st.code(gamma_input[:2000] + ("..." if len(gamma_input) > 2000 else ""))
+                    print(f"DEBUG GUI: Total gamma_input length: {len(gamma_input)} chars, sections: {len(content_sections)}")
+                    print(f"DEBUG GUI: Last 500 chars of gamma_input:\n{gamma_input[-500:]}")
                 
                 with st.spinner("Sende an Gamma API..."):
                     try:
@@ -1358,6 +1418,10 @@ with tab_gamma:
                         g = None
                     
                     if g is not None:
+                        # Verwende die vom Benutzer angegebene Folienanzahl ohne Anpassung
+                        # Gamma verteilt den gesamten Content (inkl. Literaturverzeichnis) auf diese Anzahl
+                        print(f"DEBUG GUI: Using numCards: {gamma_cards}")
+                        
                         body = {
                             "inputText": gamma_input,
                             "textMode": "preserve",

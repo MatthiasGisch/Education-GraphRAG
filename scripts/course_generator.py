@@ -57,7 +57,8 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         "paragraphs": [], 
         "figures": [], 
         "related_concepts": [], 
-        "concept_description": ""
+        "concept_description": "",
+        "sources": []  # Liste von Quellen für Gamma-Export
     }
     
     try:
@@ -1247,6 +1248,10 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
 
 def show_course_generator():
     # Neo4j Client initialisieren (wird für Graph-Zugriff und PDF-Generierung benötigt)
+    from pathlib import Path
+    import json
+    import re
+    
     neo = Neo4jClient()
     
     # Initialisiere Session State
@@ -1260,7 +1265,7 @@ def show_course_generator():
 
     # Kursname bearbeiten
     st.subheader("Kursname")
-    course["Kursname"] = st.text_input("", value=course["Kursname"], label_visibility="collapsed")
+    course["Kursname"] = st.text_input("Kursname", value=course["Kursname"], label_visibility="collapsed")
 
     # Zielgruppe / Rolle bearbeiten
     st.markdown("---")
@@ -1444,7 +1449,7 @@ def show_course_generator():
     # Inhalte aus Wissensgraph werden standardmäßig immer eingefügt
     include_content = True
     
-    col_btn1, col_btn2 = st.columns(2)
+    col_btn1, col_btn2, col_btn3 = st.columns(3)
     with col_btn1:
         if st.button("PDF generieren", type="primary", key="gen_pdf"):
             if not course.get("Kapitel"):
@@ -1482,6 +1487,25 @@ def show_course_generator():
                     st.code(traceback.format_exc())
     
     with col_btn2:
+        if st.button("Kurs speichern", key="save_course"):
+            if not course.get("Kapitel"):
+                st.warning("Der Kurs hat keine Kapitel zum Speichern.")
+            else:
+                exports_dir = Path(__file__).parent.parent / "exports"
+                exports_dir.mkdir(exist_ok=True)
+                
+                # Erstelle Dateinamen aus Kursnamen
+                safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", course.get("Kursname", "Kurs"))[:50]
+                course_file = exports_dir / f"{safe_name}_course.json"
+                
+                try:
+                    with open(course_file, 'w', encoding='utf-8') as f:
+                        json.dump(course, f, ensure_ascii=False, indent=2)
+                    st.success(f"Kurs gespeichert: {course_file.name}")
+                except Exception as e:
+                    st.error(f"Fehler beim Speichern: {e}")
+    
+    with col_btn3:
         if "pdf_result_path" in st.session_state:
             with open(st.session_state["pdf_result_path"], "rb") as f:
                 st.download_button(
