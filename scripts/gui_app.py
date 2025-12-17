@@ -1198,21 +1198,67 @@ with tab_gamma:
         except Exception as e:
             print(f"Could not load course from {course_file}: {e}")
     
-    # Dropdown für Kursauswahl
-    st.markdown("### Kurs auswählen")
+    # Dropdown für PDF-Auswahl
+    st.markdown("### PDF auswählen")
     
-    course_options = ["Aktueller Kurs (aus Kursgenerator)"] + list(available_courses.keys())
-    selected_course_option = st.selectbox(
-        "Wähle einen Kurs für den Export",
-        options=course_options,
-        help="Wähle den aktuell bearbeiteten Kurs oder einen zuvor gespeicherten Kurs"
-    )
+    # Suche nach generierten PDFs aus dem Kursgenerator
+    pdf_files = list(exports_dir.glob("*_Kurs.pdf"))
+    available_pdfs = {pdf_file.stem.replace("_Kurs", ""): str(pdf_file) for pdf_file in pdf_files}
     
-    # Hole den entsprechenden Kurs
-    if selected_course_option == "Aktueller Kurs (aus Kursgenerator)":
-        course = st.session_state.get("course_struct", {})
+    course = {}
+    
+    if available_pdfs:
+        selected_pdf_name = st.selectbox(
+            "Wähle eine generierte PDF",
+            options=list(available_pdfs.keys()),
+            help="PDFs die mit dem Kursgenerator erstellt wurden"
+        )
+        
+        if selected_pdf_name:
+            try:
+                from pathlib import Path
+                import fitz
+                
+                pdf_path = available_pdfs[selected_pdf_name]
+                
+                # Öffne mit PyMuPDF und extrahiere Text
+                doc = fitz.open(pdf_path)
+                num_pages = len(doc)
+                
+                st.success(f"✅ PDF geladen: {selected_pdf_name}_Kurs.pdf ({num_pages} Seiten)")
+                
+                # Extrahiere Text aus allen Seiten
+                full_text = []
+                for page_idx in range(num_pages):
+                    page = doc[page_idx]
+                    text = page.get_text("text").strip()
+                    if text:
+                        full_text.append(text)
+                
+                doc.close()
+                
+                # Erstelle einen virtuellen Kurs aus der PDF
+                course = {
+                    "Kursname": selected_pdf_name,
+                    "Kapitel": [
+                        {
+                            "Nummer": "1",
+                            "Titel": "Inhalte aus PDF",
+                            "Lernziele": [],
+                            "Abschnitte": [" ".join(full_text)],
+                            "Retrieval_Hinweise": {}
+                        }
+                    ]
+                }
+                
+                st.info(f"PDF als Kurs konvertiert: {len(full_text)} Textsegmente extrahiert")
+            
+            except Exception as e:
+                st.error(f"Fehler bei der PDF-Verarbeitung: {e}")
+                import traceback
+                st.code(traceback.format_exc())
     else:
-        course = available_courses.get(selected_course_option, {})
+        st.info("Keine generierten PDFs im Kursgenerator gefunden. Bitte erstelle zuerst eine PDF im Kursgenerator-Tab.")
     
     if not course.get("Kapitel"):
         st.warning("Der ausgewählte Kurs hat keine Kapitel. Bitte erstelle zuerst einen Kurs im Tab 'Kursgenerator' oder wähle einen anderen Kurs.")
@@ -1422,13 +1468,13 @@ with tab_gamma:
                         
                         body = {
                             "inputText": gamma_input,
-                            "textMode": "preserve",
+                            "textMode": "condense",
                             "format": "presentation",
                             "themeName": gamma_theme,
                             "cardSplit": "auto",
                             "numCards": int(gamma_cards),
                             "exportAs": "pptx",
-                            "textOptions": {"language": gamma_lang, "amount": "medium"},
+                            "textOptions": {"language": gamma_lang, "amount": "detailed"},
                             "imageOptions": {"source": gamma_img_source},
                             "cardOptions": {"dimensions": "16x9"},
                             "sharingOptions": {"externalAccess": "view", "workspaceAccess": "edit"}

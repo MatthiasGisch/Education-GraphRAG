@@ -1496,7 +1496,12 @@ def show_course_generator():
                 
                 # Erstelle Dateinamen aus Kursnamen
                 safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", course.get("Kursname", "Kurs"))[:50]
-                course_file = exports_dir / f"{safe_name}_course.json"
+                base_file = exports_dir / f"{safe_name}_course.json"
+                course_file = base_file
+                counter = 1
+                while course_file.exists():
+                    course_file = exports_dir / f"{safe_name}_course_{counter}.json"
+                    counter += 1
                 
                 try:
                     with open(course_file, 'w', encoding='utf-8') as f:
