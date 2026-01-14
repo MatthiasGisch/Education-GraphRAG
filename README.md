@@ -1,191 +1,248 @@
-# GraphRAG + Neo4j AuraDB (Text + Bilder) – Starter
-Dieses Repo ist ein minimaler, lauffähiger Startpunkt für ein **GraphRAG-Hybridsystem** mit Neo4j AuraDB:
-- PDFs ingestieren (Text + Bilder)
-- Vektorindizes (Neo4j native Vector Index)
-- Bild-Analyse via Vision-Language-Model (OpenAI GPT-4o)
-- Antwortorchestrierung (Graph→RAG; Fallback Websuche optional)
-- Einfaches FastAPI (optional, hier CLI-Skripte)
+# GraphRAG Knowledge Management System
 
-## Schnellstart
-1. **.env anlegen**
-   Kopiere `.env.example` nach `.env` und setze deine Werte (AuraDB + OpenAI):
-   ```bash
-   cp .env.example .env
-   ```
-2. **Abhängigkeiten**
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. **spaCy Modelle installieren (für Hybrid-Extraktion)**
-   ```bash
-   python -m spacy download en_core_web_sm
-   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
-   ```
-4. **Schema in Neo4j anlegen**
-   ```bash
-   python scripts/create_schema.py
-   ```
-5. **PDFs ingestieren** (Pfad(e) zu deinen PDFs angeben)
-   ```bash
-   python scripts/ingest.py /pfad/zu/deinen.pdf /weitere/datei.pdf
-   ```
-   Bilder werden in `data/images/` abgelegt und als `Figure`-Knoten verknüpft.
-6. **Fragen stellen (GraphRAG)**
-   ```bash
-   python scripts/ask.py "Erkläre Green AI und nenne Belege."
-   ```
-7. **GUI Starten**
-   ```bash
-   streamlit run .\scripts\gui_app.py
-   ```
+Ein **intelligentes Wissensmanagement-System** basierend auf GraphRAG mit Neo4j AuraDB:
+- 📄 **PDF-Ingestion** (Text + Bilder mit automatischer Strukturierung)
+- 🧠 **Vector-basiertes Retrieval** (semantische Konzeptsuche)
+- 🎓 **Automatische Kursgenerierung** (mit Bildern und Quellen)
+- 🎬 **Präsentations- & Video-Erstellung** (Gamma.app, Synthesia.io)
+- 📊 **Interaktive Graph-Visualisierung** (Plotly 3D)
+- 💬 **KI-gestützte Frage-Antwort** (OpenAI GPT-4 mit Quellenbelegen)
 
-## Features
+> **📖 Vollständige Dokumentation:** [DOCUMENTATION.md](DOCUMENTATION.md)
 
-### Hybrid Entity & Relation Extraction (NEU)
-Das System bietet jetzt eine erweiterte Extraktion, die folgendes kombiniert:
+## ⚡ Schnellstart
 
-- **Named Entity Recognition (NER)**: spaCy + SciSpacy für strukturierte Entitäten (PERSON, ORG, SCIENTIFIC_TERM, CHEMICAL, etc.)
-- **LLM-basierte Konzeptextraktion**: Erfasst abstrakte Konzepte, Methodologien und Theorien
-- **Semantische Relationen**: Extrahiert Tripel (Subject-Predicate-Object) wie IS_A, PART_OF, CAUSES, etc.
-- **Ko-Okkurrenz-Analyse**: Statistische Beziehungen zwischen häufig gemeinsam auftretenden Konzepten
+### 1. Installation
+```powershell
+# Repository klonen
+git clone <repository-url>
+cd masterthesis_neu
 
-#### Verwendung im Code:
+# Virtuelle Umgebung
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+
+# Abhängigkeiten
+pip install -r requirements.txt
+
+# spaCy-Modelle (optional, für NER)
+python scripts/install_spacy_models.py
+```
+
+### 2. Konfiguration
+```powershell
+# .env erstellen (von .env.example)
+cp .env.example .env
+# Dann editieren: NEO4J_URI, NEO4J_PASSWORD, OPENAI_API_KEY
+```
+
+### 3. Datenbank initialisieren
+```powershell
+python scripts/create_schema.py
+```
+
+### 4. PDFs ingestieren
+```powershell
+python scripts/ingest.py path/to/your.pdf
+```
+
+### 5. GUI starten
+```powershell
+streamlit run scripts/gui_app.py
+```
+**→ Öffnet im Browser:** http://localhost:8501
+
+### 6. CLI-Nutzung
+```powershell
+# Fragen stellen
+python scripts/ask.py "Was ist Deep Learning?"
+
+# Kurs generieren
+python scripts/course_generator.py "Deep Learning Grundlagen"
+```
+
+## 🚀 Hauptfunktionen
+
+### 1. Vector-basiertes Retrieval (2024)
+**Problem gelöst:** Alte MENTIONS-Relations führten zu LLM-Timeouts und niedriger Coverage (82% Paragraphen ohne Konzept-Links).
+
+**Neue Lösung:**
+- ✅ Konzepte werden OHNE Paragraph-Links extrahiert
+- ✅ Matching zur Abfragezeit via Vector-Similarity
+- ✅ Semantische Suche findet verwandte Inhalte
+- ✅ 1 LLM-Call pro Paper (statt hunderte)
+
+**Mehr Details:** [VECTOR_BASED_RETRIEVAL.md](VECTOR_BASED_RETRIEVAL.md)
+
+### 2. Hybrid Konzept-Extraktion
+Kombiniert mehrere Ansätze für optimale Ergebnisse:
+- **LLM-basiert:** Abstrakte Konzepte + Beschreibungen
+- **NER (spaCy/SciSpacy):** Named Entities (PERSON, ORG, SCIENTIFIC_TERM)
+- **Semantische Relationen:** IS_A, PART_OF, CAUSES, REQUIRES, etc.
+- **Ko-Okkurrenz:** Statistische Verbindungen
+
+### 3. Automatische Kursgenerierung
+- 🎯 KI generiert Kursstruktur aus Themenbeschreibung
+- 📚 Retrieval-basierte Inhalte mit Quellenbelegen
+- 🖼️ Automatische Bildauswahl
+- ✅ Optionale Lernziele + Quiz
+- 📤 Export: JSON, PDF, Gamma-Präsentation
+
+### 4. Interaktive Visualisierung
+- 📊 3D-Graph-Visualisierung (Plotly)
+- 🔍 Filter nach Node-/Relationstypen
+- 💾 HTML-Export (vollständig interaktiv)
+
+## 📁 Projektstruktur
+
+```
+masterthesis_neu/
+├─ scripts/               # Ausführbare Scripts
+│  ├─ gui_app.py          # Streamlit Web-GUI (Hauptanwendung)
+│  ├─ ingest.py           # PDF-Ingestion
+│  ├─ ask.py              # Frage-Antwort CLI
+│  ├─ course_generator.py # Kurs-Generator
+│  ├─ create_schema.py    # DB-Schema anlegen
+│  ├─ diagnose_db.py      # Datenbank-Diagnose
+│  ├─ reingest_all.py     # Komplette Re-Ingestion
+│  └─ ...
+├─ src/                   # Core-Bibliothek
+│  ├─ config.py           # Konfiguration (.env)
+│  ├─ neo.py              # Neo4j Client
+│  ├─ openai_client.py    # OpenAI API (LLM, Embeddings, Vision)
+│  ├─ pdf_ingest.py       # PDF-Verarbeitung
+│  ├─ concept_extract.py  # Konzept-Extraktion (LLM + NER)
+│  ├─ retriever.py        # Vector-basiertes Retrieval
+│  ├─ agent.py            # Answer Orchestration
+│  ├─ gamma_client.py     # Gamma.app Integration
+│  ├─ synthesia_client.py # Synthesia Video Generation
+│  └─ ...
+├─ data/
+│  ├─ images/             # Extrahierte Bilder aus PDFs
+│  └─ uploads/            # Hochgeladene PDFs (für Re-Ingest)
+├─ exports/               # Generierte Outputs (PDFs, Kurse, Videos)
+├─ docs/                  # Detaillierte Dokumentation
+├─ .env.example           # Konfigurationsvorlage
+├─ requirements.txt       # Python-Abhängigkeiten
+├─ README.md              # Diese Datei
+└─ DOCUMENTATION.md       # Vollständige Dokumentation
+```
+
+## 📖 Dokumentation
+
+- **[DOCUMENTATION.md](DOCUMENTATION.md)** - Vollständige System-Dokumentation
+- **[VECTOR_BASED_RETRIEVAL.md](VECTOR_BASED_RETRIEVAL.md)** - Vector-Retrieval-Architektur
+- **[RETRIEVAL_FLOW.md](RETRIEVAL_FLOW.md)** - Detaillierter Retrieval-Ablauf
+- **[REINGEST_GUIDE.md](REINGEST_GUIDE.md)** - Re-Ingestion-Prozess
+- **[NEO4J_VISUALIZATION_QUERIES.md](NEO4J_VISUALIZATION_QUERIES.md)** - Nützliche Cypher-Queries
+- **[docs/](docs/)** - Spezial-Themen (Gamma API, Plotly, Semantic Relations, etc.)
+
+## 🛠️ Wichtige CLI-Befehle
+
+```powershell
+# PDF ingestieren
+python scripts/ingest.py papers/*.pdf
+
+# Fragen stellen
+python scripts/ask.py "Was ist künstliche Intelligenz?"
+
+# Frage → PDF exportieren
+python scripts/ask_to_pdf.py "Erkläre Deep Learning"
+
+# Kurs generieren
+python scripts/course_generator.py "Mein Kurstitel"
+
+# Datenbank-Diagnose
+python scripts/diagnose_db.py
+
+# Komplette Re-Ingestion
+python scripts/reingest_all.py
+
+# Datenbank leeren (VORSICHT!)
+python scripts/clear_all.py
+```
+
+## 🌐 Web-GUI Features
+
+**Start:** `streamlit run scripts/gui_app.py`
+
+- 📂 **PDF-Upload:** Drag & Drop, Konzept-Extraktion konfigurierbar
+- 💬 **Frage-Antwort:** Intelligente Suche mit Quellenbelegen
+- 📊 **Graph-Visualisierung:** 3D-Interaktiv (Plotly), HTML-Export
+- 🎓 **Kurs-Generator:** Automatische Lerneinheiten mit Bildern
+- 🎬 **Video/Präsentation:** Gamma.app & Synthesia Integration
+- 🔧 **Wartung:** DB-Statistiken, Diagnose, Re-Ingest
+
+## 🧪 Technologie-Details
+
+### Neo4j Graph-Schema
+
+**Node-Typen:**
+- `Paper` - Wissenschaftliche Dokumente
+- `Topic` - Themengebiete
+- `Concept` - Extrahierte Konzepte (mit Embeddings)
+- `Section` - Dokumentabschnitte
+- `Paragraph` - Textabsätze (mit Embeddings)
+- `Figure` - Bilder/Abbildungen
+
+**Relationen:**
+- `HAS_SECTION`, `HAS_PARAGRAPH`, `HAS_FIGURE` - Dokumentstruktur
+- `HAS_CONCEPT` - Topic → Concepts
+- `SEMANTIC_RELATION` - Konzept-Verbindungen (IS_A, PART_OF, etc.)
+- `CO_OCCURS_WITH` - Ko-Okkurrenz-Beziehungen
+- `NEAR_FIGURE` - Paragraph ↔ Figure Proximity
+
+**Vector-Indizes:**
+- `concept_embedding_index` - Für semantische Konzeptsuche
+- `paragraph_embedding_index` - Für Textsuche
+
+### Retrieval-Strategie
+
 ```python
-from src.concept_extract import extract_and_embed_concepts_hybrid
+# 1) Query → Embedding
+query_emb = openai.embed("Was ist Deep Learning?")
 
-result = extract_and_embed_concepts_hybrid(
-    paper_title="Mein Paper",
-    paper_text=full_text,
-    paragraphs=paragraphs,
-    max_entities=30,
-    max_relations=20,
-    use_scispacy=True,
-    neo_client=neo,
-    persist_to_topic=True
-)
+# 2) Finde relevante Konzepte (Vector-Search)
+concepts = neo.vector_search_concepts(query_emb, k=10, min_score=0.6)
 
-# result enthält: concepts, relations, paragraph_links, stats
+# 3) Durchschnitts-Embedding der Konzepte
+avg_concept_emb = np.mean([c.embedding for c in concepts], axis=0)
+
+# 4) Finde Paragraphen ähnlich zum Konzept-Cluster
+paragraphs_via_concepts = neo.vector_search_paragraphs(avg_concept_emb, limit=20)
+
+# 5) Direkte Paragraph-Suche
+paragraphs_direct = neo.vector_search_paragraphs(query_emb, limit=48)
+
+# 6) Merge + Deduplizierung
+supports = merge_unique(paragraphs_via_concepts, paragraphs_direct)
 ```
 
-#### GUI-Integration:
-Die Streamlit-GUI nutzt derzeit die LLM-basierte Konzept-Extraktion. Ein Hybrid-(NER+LLM)-Modus ist im Code verfügbar, jedoch nicht als GUI-Option.
+**Vorteile:**
+- ✅ Semantische Ähnlichkeit > String-Matching
+- ✅ Findet verwandte Konzepte automatisch
+- ✅ Robust bei Variationen (Plural, Synonyme)
+- ✅ Keine LLM-Timeouts
 
-### Relation Types im Graph:
-- `SEMANTIC_RELATION` - Semantische Beziehungen mit Properties:
-  - `relation_type`: IS_A, PART_OF, CAUSES, REQUIRES, USES, etc.
-  - `confidence`: Konfidenzwert (0.0-1.0)
-  - `context`: Satz/Phrase, in dem die Relation erscheint
-  - `source`: "llm" oder "cooccurrence"
-- `CO_OCCURS_WITH` - Ko-Okkurrenz-Beziehungen mit Properties:
-  - `count`: Anzahl gemeinsamer Vorkommen
-  - `strength`: Normalisierte Stärke (0.0-1.0)
+## ⚙️ Konfiguration (.env)
 
-## Projektstruktur
-```
-graphrag-auradb-starter/
-├─ .env.example
-├─ requirements.txt
-├─ README.md
-├─ src/
-│  ├─ config.py
-│  ├─ neo.py
-│  ├─ openai_client.py
-│  ├─ pdf_ingest.py
-│  ├─ retriever.py
-│  ├─ agent.py
-│  └─ graph_schema.cypher
-├─ scripts/
-│  ├─ create_schema.py
-│  ├─ ingest.py
-│  └─ ask.py
-└─ data/
-   └─ images/
-```
+```env
+# Neo4j AuraDB (erforderlich)
+NEO4J_URI=neo4j+s://xxxxx.databases.neo4j.io
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your_password
 
-# AuraDB Cypherabfragen
+# OpenAI (erforderlich)
+OPENAI_API_KEY=sk-xxxxx
+OPENAI_MODEL=gpt-4o-mini              # oder gpt-4
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 
-## DIAGNOSE: Was ist in der Datenbank?
+# Gamma.app (optional - für Präsentationen)
+GAMMA_API_KEY=your_gamma_key
 
-### Alle Knoten-Typen zählen
-```cypher
-MATCH (n)
-RETURN labels(n) AS NodeType, count(n) AS Count
-ORDER BY Count DESC
-```
+# Synthesia.io (optional - für Videos)
+SYNTHESIA_API_KEY=your_synthesia_key
 
-### Topics und ihre Konzepte
-```cypher
-MATCH (t:Topic)
-OPTIONAL MATCH (t)-[:HAS_CONCEPT]->(c:Concept)
-RETURN t.name AS Topic, count(c) AS ConceptCount
-```
-
-### Papers und ihre Komponenten
-```cypher
-MATCH (p:Paper)
-OPTIONAL MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
-OPTIONAL MATCH (p)-[:HAS_FIGURE]->(fig:Figure)
-OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)
-RETURN p.title AS Paper, 
-       count(DISTINCT para) AS Paragraphs,
-       count(DISTINCT fig) AS Figures,
-       count(DISTINCT sec) AS Sections
-LIMIT 10
-```
-
-### Konzept-Paragraph Verknüpfungen prüfen
-```cypher
-MATCH (para:Paragraph)-[:MENTIONS]->(c:Concept)
-RETURN count(*) AS MentionsCount
-```
-
-### Semantische Relationen prüfen (Hybrid-Modus)
-```cypher
-MATCH (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
-RETURN c1.name, r.relation_type, c2.name, r.confidence
-LIMIT 20
-```
-
-## TOPIC->CONCEPTS
-```cypher
-MATCH p = (:Topic)-[:HAS_CONCEPT]->(:Concept)
-RETURN p
-LIMIT 100
-```
-
-## PAPER->PARAGRAPHS
-```cypher
-MATCH p = (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
-RETURN p
-LIMIT 100
-```
-
-## PAPER -> FIGURES/MENTIONS/PARAGRAPHS -> CONCEPTS
-```cypher
-MATCH (t:Topic {name:$topic})
-OPTIONAL MATCH (t)-[:HAS_CONCEPT]->(c:Concept)
-WITH c
-WHERE c IS NOT NULL
-OPTIONAL MATCH p1 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
-OPTIONAL MATCH p2 = (paper)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
-OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
-OPTIONAL MATCH p4 = (sec)-[:HAS_FIGURE]->(figS:Figure)
-RETURN p1, p2, p3, p4
-LIMIT 500
-```
-
-## Einfache Graph-Visualisierung (ohne Topic-Parameter)
-```cypher
-MATCH (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)-[:MENTIONS]->(c:Concept)
-OPTIONAL MATCH (paper)-[:HAS_FIGURE]->(fig:Figure)
-RETURN paper, para, c, fig
-LIMIT 100
-```
-
-## Hybrid-Modus: Konzepte mit Relationen
-```cypher
-MATCH (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
-OPTIONAL MATCH (c1)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
-RETURN c1, r, c2, para, paper
-LIMIT 100
+# Optionen
+WEB_SEARCH_ENABLED=false               # Web-Fallback aktivieren
 ```

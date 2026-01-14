@@ -132,25 +132,25 @@ RETURN node, score
 
 ## 🧪 Testing
 
-Test script: `test_retrieval.py`
-
-```bash
-python test_retrieval.py
+**Test im CLI:**
+```powershell
+python scripts/ask.py "Was ist künstliche Intelligenz?"
 ```
 
-Expected output:
+**Expected output:**
 ```
-Matched concepts: 5
+Matched concepts: 5-10
 Concept names: ['AI Speak', 'AI and Human Interaction', 'AI in Education', ...]
-Paragraphs via concepts: 10
-Paragraphs direct: 15
-Total supports: 29
+Paragraphs via concepts: 10-20
+Paragraphs direct: 15-30
+Total supports: 25-40
 ```
 
-Diagnostic scripts:
-- `test_concept_index.py` - Check if concepts exist with embeddings
-- `test_concept_scores.py` - Test concept matching at different thresholds
-- `test_concept_matching.py` - Debug concept vector search
+**Test in GUI:**
+- Streamlit GUI starten
+- Frage eingeben
+- Concept-Retrieval aktivieren
+- Ergebnisse + Debug-Info ansehen
 
 ## 🚀 Next Steps
 
@@ -193,7 +193,8 @@ GUI stitch buttons were removed to avoid redundancy.
 
 - `RETRIEVAL_FLOW.md` - Updated with vector-based approach
 - `REINGEST_GUIDE.md` - Re-ingest instructions
-- `CLEANUP_EMPTY_SECTIONS.md` - Fix orphan paragraphs
+- `DOCUMENTATION.md` - Complete system documentation
+- `NEO4J_VISUALIZATION_QUERIES.md` - Useful Cypher queries
 
 ## 🎓 Lessons Learned
 

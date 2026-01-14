@@ -1,8 +1,30 @@
-# Re-Ingest Guide: Fixing Concept Coverage
+# Re-Ingest Guide
 
-## Problem Summary
+> **Hinweis:** Diese Anleitung beschreibt den Re-Ingestion-Prozess. Für eine Gesamtübersicht siehe [DOCUMENTATION.md](DOCUMENTATION.md).
 
-**Current Status:**
+## Übersicht
+
+**Wann ist Re-Ingest nötig:**
+- Neue Extraction-Logik implementiert
+- Vector-Indizes neu aufbauen
+- Datenbank-Struktur geändert
+- Fehlerhafte Daten bereinigen
+
+**Automatische Features seit 2024:**
+- ✅ Auto-Stitching (Sections ↔ Paragraphs/Figures)
+- ✅ Vector-basierte Retrieval (keine MENTIONS mehr)
+- ✅ Diagnose-Report nach Completion
+
+## Problem Summary (Legacy - GELÖST)
+
+**Current Status (Vector-Based Architecture):**
+- ✓ No MENTIONS relations needed!
+- ✓ Concept-paragraph matching happens at retrieval time
+- ✓ Fast ingest (1 LLM call per paper)
+- ✓ Auto-stitching for document hierarchy
+- ✓ Semantic search via embeddings
+
+**Legacy Problem (Pre-2024 - GELÖST):**
 - ✗ 82% of paragraphs have NO concept links
 - ✗ Concept-based retrieval only works for 18% of content
 - ✗ 118 empty Sections
@@ -77,10 +99,22 @@ RUNNING DIAGNOSTICS
   Orphan Paragraphs: 0  ← Should be 0
 ```
 
-**Expected Improvement:**
-- Paragraph concept coverage: 82% → **60-80%** ✓
-- Empty Sections: 118 → **0** ✓
-- Orphan Paragraphs: 367 → **0** ✓
+**Expected Results:**
+```
+RUNNING DIAGNOSTICS
+============================================================
+  Total Papers: 6+
+  Total Paragraphs: 1000+
+  Total Concepts: 100+
+  Empty Sections: 0
+  Orphan Paragraphs: 0
+  Vector Indices: concept_embedding_index, paragraph_embedding_index
+```
+
+**Key Metrics:**
+- Empty Sections: **0** ✓ (Auto-Stitching aktiv)
+- Orphan Paragraphs: **0** ✓ (Auto-Stitching aktiv)
+- Concepts with embeddings: **100%** ✓ (Vector-Retrieval)
 
 ### Step 4: Run Additional Diagnostics
 

@@ -1,6 +1,8 @@
 # Neo4j Visualisierung - Cypher Queries
 
-Diese Queries kannst du direkt in der Neo4j Browser Console ausführen (http://localhost:7474/browser/)
+> **Hinweis:** Diese Datei enthält nützliche Cypher-Queries für Neo4j Browser. Für eine Gesamtübersicht siehe [DOCUMENTATION.md](DOCUMENTATION.md).
+
+Diese Queries kannst du direkt in der Neo4j Browser Console ausführen.
 
 ---
 
@@ -42,18 +44,20 @@ LIMIT 500
 
 **Was:** Zeigt Konzept-Verbindungen mit semantischen Relationen
 
-### 4. Concept-Retrieval Test
+### 4. Vector-Based Concept Retrieval (Simulation)
 
 ```cypher
+// Simuliert Vector-Search (ohne tatsächliches Embedding)
 MATCH (c:Concept)
 WHERE c.name CONTAINS "SUCHBEGRIFF"
-MATCH (c)-[:MENTIONS]->(para:Paragraph)
-MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
+WITH c LIMIT 10
+MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
+WHERE para.embedding IS NOT NULL
 RETURN p, para, c
 LIMIT 20
 ```
 
-**Was:** Simuliert Concept-Based Retrieval
+**Was:** Zeigt wie Vector-based Retrieval funktioniert (ohne MENTIONS!)
 
 ### 5. Datenqualität überprüfen
 

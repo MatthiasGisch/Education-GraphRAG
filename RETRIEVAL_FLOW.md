@@ -1,4 +1,6 @@
-# Retrieval-Flow im Course Generator
+# Retrieval-Flow im System
+
+> **Hinweis:** Diese Datei beschreibt den detaillierten Retrieval-Ablauf. Für eine Gesamtübersicht siehe [DOCUMENTATION.md](DOCUMENTATION.md).
 
 ## Überblick: Wo findet Retrieval statt?
 
