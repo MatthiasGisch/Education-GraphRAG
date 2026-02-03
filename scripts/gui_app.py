@@ -1185,80 +1185,117 @@ with tab_gamma:
     exports_dir = Path(__file__).parent.parent / "exports"
     exports_dir.mkdir(exist_ok=True)
     
-    # Suche nach gespeicherten Kursen (JSON-Dateien die mit _course.json enden)
-    course_files = list(exports_dir.glob("*_course.json"))
-    available_courses = {}
+    # Suche nach gespeicherten Kursen (JSON-Dateien die mit _course*.json enden)
+    # (z.B. _course.json, _course_1.json, _course_2.json, ...)
+    course_files = list(exports_dir.glob("*_course*.json"))
+    available_courses = []
     
     for course_file in course_files:
         try:
             with open(course_file, 'r', encoding='utf-8') as f:
                 course_data = json.load(f)
                 course_name = course_data.get("Kursname", course_file.stem.replace("_course", ""))
-                available_courses[course_name] = course_data
+                available_courses.append({
+                    "name": course_name,
+                    "file": course_file.name,
+                    "path": str(course_file),
+                    "data": course_data
+                })
         except Exception as e:
             print(f"Could not load course from {course_file}: {e}")
     
-    # Dropdown für PDF-Auswahl
-    st.markdown("### PDF auswählen")
+    course = {}
+
+    # Dropdown für gespeicherte Kurse (JSON)
+    st.markdown("### Kurs auswählen (JSON)")
+    if available_courses:
+        # Erzeuge eindeutige Labels (bei gleichen Kursnamen Dateiname ergänzen)
+        name_counts = {}
+        for entry in available_courses:
+            name_counts[entry["name"]] = name_counts.get(entry["name"], 0) + 1
+
+        options = []
+        label_to_entry = {}
+        for entry in available_courses:
+            if name_counts.get(entry["name"], 0) > 1:
+                label = f"{entry['name']} ({entry['file']})"
+            else:
+                label = entry["name"]
+            options.append(label)
+            label_to_entry[label] = entry
+
+        selected_course_label = st.selectbox(
+            "Wähle einen gespeicherten Kurs",
+            options=options,
+            help="Gespeicherte Kurse aus dem Kursgenerator"
+        )
+        if selected_course_label:
+            selected_entry = label_to_entry[selected_course_label]
+            course = selected_entry["data"]
+            st.success(f"✅ Kurs geladen: {selected_entry['name']}")
+    else:
+        st.info("Keine gespeicherten Kurse gefunden. Bitte zuerst im Kursgenerator speichern.")
+
+    # Dropdown für PDF-Auswahl (Fallback)
+    st.markdown("### PDF auswählen (Fallback)")
     
     # Suche nach generierten PDFs aus dem Kursgenerator
     pdf_files = list(exports_dir.glob("*_Kurs.pdf"))
     available_pdfs = {pdf_file.stem.replace("_Kurs", ""): str(pdf_file) for pdf_file in pdf_files}
     
-    course = {}
-    
-    if available_pdfs:
-        selected_pdf_name = st.selectbox(
-            "Wähle eine generierte PDF",
-            options=list(available_pdfs.keys()),
-            help="PDFs die mit dem Kursgenerator erstellt wurden"
-        )
-        
-        if selected_pdf_name:
-            try:
-                from pathlib import Path
-                import fitz
-                
-                pdf_path = available_pdfs[selected_pdf_name]
-                
-                # Öffne mit PyMuPDF und extrahiere Text
-                doc = fitz.open(pdf_path)
-                num_pages = len(doc)
-                
-                st.success(f"✅ PDF geladen: {selected_pdf_name}_Kurs.pdf ({num_pages} Seiten)")
-                
-                # Extrahiere Text aus allen Seiten
-                full_text = []
-                for page_idx in range(num_pages):
-                    page = doc[page_idx]
-                    text = page.get_text("text").strip()
-                    if text:
-                        full_text.append(text)
-                
-                doc.close()
-                
-                # Erstelle einen virtuellen Kurs aus der PDF
-                course = {
-                    "Kursname": selected_pdf_name,
-                    "Kapitel": [
-                        {
-                            "Nummer": "1",
-                            "Titel": "Inhalte aus PDF",
-                            "Lernziele": [],
-                            "Abschnitte": [" ".join(full_text)],
-                            "Retrieval_Hinweise": {}
-                        }
-                    ]
-                }
-                
-                st.info(f"PDF als Kurs konvertiert: {len(full_text)} Textsegmente extrahiert")
+    if not course.get("Kapitel"):
+        if available_pdfs:
+            selected_pdf_name = st.selectbox(
+                "Wähle eine generierte PDF",
+                options=list(available_pdfs.keys()),
+                help="PDFs die mit dem Kursgenerator erstellt wurden"
+            )
             
-            except Exception as e:
-                st.error(f"Fehler bei der PDF-Verarbeitung: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-    else:
-        st.info("Keine generierten PDFs im Kursgenerator gefunden. Bitte erstelle zuerst eine PDF im Kursgenerator-Tab.")
+            if selected_pdf_name:
+                try:
+                    from pathlib import Path
+                    import fitz
+                    
+                    pdf_path = available_pdfs[selected_pdf_name]
+                    
+                    # Öffne mit PyMuPDF und extrahiere Text
+                    doc = fitz.open(pdf_path)
+                    num_pages = len(doc)
+                    
+                    st.success(f"✅ PDF geladen: {selected_pdf_name}_Kurs.pdf ({num_pages} Seiten)")
+                    
+                    # Extrahiere Text aus allen Seiten
+                    full_text = []
+                    for page_idx in range(num_pages):
+                        page = doc[page_idx]
+                        text = page.get_text("text").strip()
+                        if text:
+                            full_text.append(text)
+                    
+                    doc.close()
+                    
+                    # Erstelle einen virtuellen Kurs aus der PDF
+                    course = {
+                        "Kursname": selected_pdf_name,
+                        "Kapitel": [
+                            {
+                                "Nummer": "1",
+                                "Titel": "Inhalte aus PDF",
+                                "Lernziele": [],
+                                "Abschnitte": [" ".join(full_text)],
+                                "Retrieval_Hinweise": {}
+                            }
+                        ]
+                    }
+                    
+                    st.info(f"PDF als Kurs konvertiert: {len(full_text)} Textsegmente extrahiert")
+                
+                except Exception as e:
+                    st.error(f"Fehler bei der PDF-Verarbeitung: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+        else:
+            st.info("Keine generierten PDFs im Kursgenerator gefunden. Bitte erstelle zuerst eine PDF im Kursgenerator-Tab.")
     
     if not course.get("Kapitel"):
         st.warning("Der ausgewählte Kurs hat keine Kapitel. Bitte erstelle zuerst einen Kurs im Tab 'Kursgenerator' oder wähle einen anderen Kurs.")
