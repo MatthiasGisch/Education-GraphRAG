@@ -1,5 +1,5 @@
 from __future__ import annotations
-import base64, json
+import base64, json, re
 from typing import List, Dict, Any
 from openai import OpenAI
 from .config import OPENAI_API_KEY
@@ -59,7 +59,6 @@ def describe_image(path: str) -> Dict[str, Any]:
         data = {"caption": text, "figure_type": "other", "entities": [], "ocr_hints": []}
     
     # Post-processing: Entferne Emojis falls doch welche durchgekommen sind
-    import re
     caption = data.get("caption", "")
     if caption:
         # Emoji-Pattern: alle Unicode-Emojis entfernen
@@ -156,13 +155,12 @@ Bibliographie-Map (nur zur Information, nicht im Text verwenden):
     # Fix: Avoid citations directly after enumeration markers (e.g., "1[1].")
     # Move such citations to the end of the line (before final punctuation if present).
     try:
-        import re as _re
         lines = raw.split("\n")
         fixed_lines = []
         for ln in lines:
             # repeatedly move citations if they appear immediately after an enumeration at line start
             while True:
-                m = _re.match(r"^\s*(?P<enum>\d+(?:[\.)\:]?\s*))\[(?P<cid>[PF][^\]]+)\]", ln)
+                m = re.match(r"^\s*(?P<enum>\d+(?:[\.)\:]?\s*))\[(?P<cid>[PF][^\]]+)\]", ln)
                 if not m:
                     break
                 enum = m.group("enum")
@@ -170,7 +168,7 @@ Bibliographie-Map (nur zur Information, nicht im Text verwenden):
                 # remove the citation from start position
                 ln = enum + ln[m.end():]
                 # insert citation at end, before trailing punctuation if any
-                end_punct = _re.match(r"^(?P<body>.*?)(?P<punct>[\.!?])\s*$", ln)
+                end_punct = re.match(r"^(?P<body>.*?)(?P<punct>[\.!?])\s*$", ln)
                 if end_punct:
                     ln = end_punct.group("body") + f" [{cid}]" + end_punct.group("punct")
                 else:

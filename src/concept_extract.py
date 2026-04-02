@@ -1,8 +1,10 @@
 # src/concept_extract.py
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
-import os, re, uuid, json
+import os, re, uuid, json, logging
 from openai import OpenAI
+
+log = logging.getLogger(__name__)
 
 # Import our new hybrid extraction module
 from .entity_relation_extract import extract_entities_and_relations
@@ -288,11 +290,12 @@ def extract_and_embed_concepts(
                                     mapped_existing[name_l] = info[0].get('concept_id')
                                 else:
                                     mapped_existing[name_l] = existing_id
-                            except Exception:
+                            except Exception as e:
+                                log.warning("Neo4j canonical fetch failed: %s", e)
                                 mapped_existing[name_l] = existing_id
                             mapped_to_existing = True
-                except Exception:
-                    # on error, fall back to creating the concept
+                except Exception as e:
+                    log.warning("Concept deduplication failed, creating new: %s", e)
                     mapped_to_existing = False
 
             if not mapped_to_existing:
@@ -321,8 +324,6 @@ def extract_and_embed_concepts(
             continue
         c_obj = by_name.get(cname) or alt_map.get(cname)
         if not c_obj:
-            if not allow_new:
-                continue
             continue
         conf = float(l.get("confidence") or 0.7)
         links.append({"paragraph_id": pid, "concept_id": c_obj["concept_id"], "confidence": conf})
@@ -334,9 +335,8 @@ def extract_and_embed_concepts(
             if concepts:
                 # MERGE semantics inside add_concepts prevent duplicates
                 neo_client.add_concepts(topic_hint, concepts)
-        except Exception:
-            # Silent failure (GUI/CLI should not crash); still return concepts for preview
-            pass
+        except Exception as e:
+            log.warning("Failed to persist concepts to Neo4j (non-fatal): %s", e)
 
     return concepts, links
 
