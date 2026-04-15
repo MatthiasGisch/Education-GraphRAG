@@ -110,7 +110,22 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
                 "page": s.get("page"),
                 "section": s.get("section_title"),
             }
-            ctx_lines.append(f"[{ref_id}] {s['paper_title']} • Abb. • S.{s.get('page')} :: {s.get('caption','')[:300]}")
+            # Analyse-Metadaten anreichern, damit das LLM weiß was IN der Abbildung ist
+            figure_type = s.get("figure_type", "")
+            entities    = s.get("entities") or []
+            ocr_hints   = s.get("ocr_hints") or []
+            meta_parts  = []
+            if figure_type and figure_type != "other":
+                meta_parts.append(f"Typ: {figure_type}")
+            if entities:
+                meta_parts.append(f"Schlüsselbegriffe: {', '.join(entities[:6])}")
+            if ocr_hints:
+                meta_parts.append(f"Erkennbarer Text: {', '.join(ocr_hints[:3])}")
+            meta_str = (" [" + " | ".join(meta_parts) + "]") if meta_parts else ""
+            ctx_lines.append(
+                f"[{ref_id}] {s['paper_title']} • Abb. • S.{s.get('page')} :: "
+                f"{s.get('caption','')[:300]}{meta_str}"
+            )
 
     # BIB JSON als String (vom Modell nicht verändern)
     bib_json = json.dumps(bib, ensure_ascii=False)

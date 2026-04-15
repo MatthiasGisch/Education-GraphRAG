@@ -1,11 +1,14 @@
 # src/agent.py
 from __future__ import annotations
 from typing import List, Dict, Any
-import os, re, json
+import os, re, json, logging
+
+log = logging.getLogger(__name__)
 
 from .neo import Neo4jClient
 from .retriever import hybrid_retrieve, concept_based_retrieve
 from .openai_client import grounded_answer
+from .citation_validator import validate_citations
 
 # ---------------- Config / Defaults ----------------
 USE_SERP = bool(os.getenv("SERPAPI_API_KEY", ""))
@@ -112,6 +115,17 @@ def _effective_supports(supports: List[Dict[str, Any]], min_score: float) -> int
                 n += 1
     return n
 
+def _validate(answer: str, supports: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Führt Citation-Validierung durch. Gibt None zurück wenn nicht anwendbar oder fehlgeschlagen."""
+    graph_supports = [s for s in supports if s.get("type") in {"paragraph", "figure"}]
+    if not graph_supports:
+        return None
+    try:
+        return validate_citations(answer, graph_supports)
+    except Exception as e:
+        log.warning("Citation validation failed (non-fatal): %s", e)
+        return None
+
 # ---------------- Orchestrierung ----------------
 def answer_query(
     query: str,
@@ -177,7 +191,8 @@ def answer_query(
         debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff, "decision": "graph_only"})
         answer = grounded_answer(query, supports)
         mode = "graph" if eff >= min_supports else "graph_low_coverage"
-        return {"mode": mode, "answer": answer, "supports": supports, "debug": debug}
+        return {"mode": mode, "answer": answer, "supports": supports, "debug": debug,
+                "citation_validation": _validate(answer, supports)}
 
     # 3) AUTO → erst Graph, dann ggf. Web
     if use_concept_retrieval:
@@ -203,7 +218,8 @@ def answer_query(
     if eff >= min_supports:
         debug["decision"] = "graph_ok"
         answer = grounded_answer(query, supports)
-        return {"mode": "graph", "answer": answer, "supports": supports, "debug": debug}
+        return {"mode": "graph", "answer": answer, "supports": supports, "debug": debug,
+                "citation_validation": _validate(answer, supports)}
 
     # zu wenig valide Belege → Web-Fallback
     # Wenn GAR KEINE Belege: Tool *erzwingen*, sonst (bei wenigen) "auto"

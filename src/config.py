@@ -26,3 +26,24 @@ DEFAULT_CHUNK_OVERLAP = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "150"))
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
 os.makedirs(IMAGES_DIR, exist_ok=True)
+
+
+def resolve_image_path(uri: str) -> str:
+    """
+    Gibt den absoluten Pfad zu einer Bilddatei zurück.
+
+    Strategie (in dieser Reihenfolge):
+    1. Falls ``uri`` bereits ein existierender absoluter Pfad ist → direkt zurückgeben.
+    2. Falls ``uri`` nur ein Dateiname ist → mit IMAGES_DIR kombinieren.
+    3. Sonst → ``uri`` unverändert zurückgeben (Caller muss Fehler behandeln).
+
+    Damit ist der Code portierbar: Wenn das Projekt umgezogen wird, reicht es,
+    IMAGES_DIR in der .env anzupassen; bestehende absolute Pfade bleiben als
+    Fallback erhalten.
+    """
+    if os.path.isabs(uri) and os.path.exists(uri):
+        return uri
+    candidate = os.path.join(IMAGES_DIR, os.path.basename(uri))
+    if os.path.exists(candidate):
+        return candidate
+    return uri

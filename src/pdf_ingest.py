@@ -492,6 +492,7 @@ def read_pdf_text_and_images(path: str):
                     "dpi_x": dpi_x,
                     "dpi_y": dpi_y,
                     "format": temp_format,
+                    "section_title": sec["title"] if sec else None,
                 })
                 
             except Exception as e:
@@ -524,14 +525,44 @@ def analyze_and_embed_figures(figures: List[Dict[str, Any]]) -> List[Dict[str, A
     out = []
     for f in tqdm(figures, desc="Analyzing figures"):
         analysis = describe_image(f["image_path"])
-        caption = analysis.get("caption", "")
-        emb = embed_text(caption if caption else "figure")
+        caption = analysis.get("caption", "") or ""
+        figure_type = analysis.get("figure_type", "other") or "other"
+
+        # Entitäten normalisieren (Liste oder kommagetrennte Zeichenkette)
+        entities = analysis.get("entities") or []
+        if isinstance(entities, str):
+            entities = [e.strip() for e in entities.split(",") if e.strip()]
+
+        # OCR-Hinweise normalisieren
+        ocr_hints = analysis.get("ocr_hints") or []
+        if isinstance(ocr_hints, str):
+            ocr_hints = [ocr_hints] if ocr_hints.strip() else []
+
+        # Reiches Embedding: Caption + Typ + Entitäten + OCR-Hinweise + Section + Label
+        section_title = f.get("section_title") or ""
+        figure_label  = f.get("figure_label") or ""
+        rich_parts = [caption, figure_type]
+        if entities:
+            rich_parts.append(" ".join(entities[:10]))
+        if ocr_hints:
+            rich_parts.append(" ".join(ocr_hints[:5]))
+        if section_title:
+            rich_parts.append(section_title)
+        if figure_label:
+            rich_parts.append(figure_label)
+        rich_text = " ".join(p for p in rich_parts if p).strip() or "figure"
+
+        emb = embed_text(rich_text)
         out.append({
-            "figure_id": f["figure_id"],
-            "page": f["page"],
-            "image_uri": os.path.abspath(f["image_path"]),
-            "caption": caption,
-            "analysis_json": json.dumps(analysis, ensure_ascii=False),
-            "embedding": emb,
+            "figure_id":      f["figure_id"],
+            "page":           f["page"],
+            "image_uri":      os.path.abspath(f["image_path"]),
+            "image_filename": os.path.basename(f["image_path"]),
+            "caption":        caption,
+            "figure_type":    figure_type,
+            "entities":       entities,
+            "ocr_hints":      ocr_hints,
+            "analysis_json":  json.dumps(analysis, ensure_ascii=False),
+            "embedding":      emb,
         })
     return out

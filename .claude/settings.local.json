@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 -m py_compile src/*.py)"
+      "Bash(python3 -m py_compile src/*.py)",
+      "Bash(grep -r \"KnowledgeGraph\\\\|get_embedding\" /c/Users/matth/Desktop/masterthesis_neu/src /c/Users/matth/Desktop/masterthesis_neu/scripts /c/Users/matth/Desktop/masterthesis_neu/test*.py)",
+      "Bash(find /c/Users/matth/Desktop/masterthesis_neu/kursgenerierung -name \"*.py\" -type f -exec basename {} \\\\;)",
+      "Bash(grep -n \"def embed_text\\\\|def _embed\\\\|def get_embedding\" /c/Users/matth/Desktop/masterthesis_neu/src/*.py /c/Users/matth/Desktop/masterthesis_neu/kursgenerierung/**/*.py)",
+      "Bash(grep -n \"OpenAI\\(\\)\\\\|OpenAI\\(api_key=\\\\|_client =\" /c/Users/matth/Desktop/masterthesis_neu/src/*.py)",
+      "Bash(grep -n \"Neo4jClient\\(\\)\" /c/Users/matth/Desktop/masterthesis_neu/src/*.py /c/Users/matth/Desktop/masterthesis_neu/scripts/*.py)",
+      "Bash(ls -lh /c/Users/matth/Desktop/masterthesis_neu/test*.py /c/Users/matth/Desktop/masterthesis_neu/tests/)"
     ]
   }
 }

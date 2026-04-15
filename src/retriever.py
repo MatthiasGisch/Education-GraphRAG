@@ -82,23 +82,27 @@ def _vsearch_figures(neo: Neo4jClient, embedding: List[float], k: int = 8) -> Li
         MATCH (p:Paper)-[:HAS_FIGURE]->(f)
         OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_FIGURE]->(f)
         RETURN
-          'figure'                 AS type,
-          f.figure_id              AS figure_id,
-          f.caption                AS caption,
-          f.figure_label           AS figure_label,
-          f.page                   AS page,
+          'figure'                          AS type,
+          f.figure_id                       AS figure_id,
+          f.caption                         AS caption,
+          f.figure_label                    AS figure_label,
+          f.page                            AS page,
           coalesce(f.image_uri, f.image_path) AS image_uri,
-          f.analysis_json          AS analysis_json,
-          p.paper_id               AS paper_id,
-          p.title                  AS paper_title,
-          p.doi                    AS doi,
-          p.url                    AS url,
+          f.image_filename                  AS image_filename,
+          f.analysis_json                   AS analysis_json,
+          coalesce(f.figure_type, 'other')  AS figure_type,
+          coalesce(f.entities, [])          AS entities,
+          coalesce(f.ocr_hints, [])         AS ocr_hints,
+          p.paper_id                        AS paper_id,
+          p.title                           AS paper_title,
+          p.doi                             AS doi,
+          p.url                             AS url,
           COALESCE(p.author, p.creator, '') AS authors,
           COALESCE(p.publication_year, p.year, p.creationDate, '') AS year,
           COALESCE(p.source, p.subject, '') AS source,
-          sec.section_id           AS section_id,
-          sec.title                AS section_title,
-          toFloat(score)           AS score
+          sec.section_id                    AS section_id,
+          sec.title                         AS section_title,
+          toFloat(score)                    AS score
         ORDER BY score DESC
         LIMIT $k
         """,
@@ -120,7 +124,7 @@ def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict
     rows = neo.run(
         """
         UNWIND $ids AS fid
-        MATCH (f:Figure {figure_id: fid})<-[:REFERS_TO|:CAPTIONS]-(para:Paragraph)
+        MATCH (f:Figure {figure_id: fid})<-[rel:REFERS_TO|CAPTIONS|NEAR]-(para:Paragraph)
         MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
         OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
         RETURN
@@ -137,7 +141,7 @@ def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict
           COALESCE(p.source, p.subject, '') AS source,
           sec.section_id     AS section_id,
           sec.title          AS section_title,
-          0.99               AS score
+          CASE type(rel) WHEN 'NEAR' THEN 0.75 ELSE 0.99 END AS score
         LIMIT $limit
         """,
         {"ids": fig_ids, "limit": limit},

@@ -172,16 +172,20 @@ class Neo4jClient:
                     UNWIND $figures AS row
                     MATCH (p:Paper {paper_id:$paper_id})
                     MERGE (f:Figure {figure_id: row.figure_id})
-                    SET f.caption = row.caption,
-                        f.page = row.page,
-                        f.image_uri = row.image_uri,
-                        f.image_path = coalesce(row.image_path, row.image_uri),
+                    SET f.caption       = row.caption,
+                        f.page          = row.page,
+                        f.image_uri     = row.image_uri,
+                        f.image_filename = coalesce(row.image_filename, ''),
+                        f.image_path    = coalesce(row.image_path, row.image_uri),
                         f.analysis_json = row.analysis_json,
-                        f.embedding = row.embedding,
-                        f.bbox = row.bbox,
-                        f.page_width = row.page_width,
-                        f.page_height = row.page_height,
-                        f.figure_label = row.figure_label
+                        f.embedding     = row.embedding,
+                        f.bbox          = row.bbox,
+                        f.page_width    = row.page_width,
+                        f.page_height   = row.page_height,
+                        f.figure_label  = row.figure_label,
+                        f.figure_type   = coalesce(row.figure_type, 'other'),
+                        f.entities      = coalesce(row.entities, []),
+                        f.ocr_hints     = coalesce(row.ocr_hints, [])
                     MERGE (p)-[:HAS_FIGURE]->(f)
                     """,
                     {"paper_id": paper_id, "figures": batch},
@@ -366,6 +370,50 @@ class Neo4jClient:
         res = self.run(cypher)
         return int(res[0]["c"]) if res and "c" in res[0] else 0
 
+    def link_figures_to_concepts(self, figures: list[dict]) -> dict:
+        """
+        Verknüpft Figure-Knoten mit Concept-Knoten basierend auf den
+        von GPT-4o extrahierten Entitäten (aus analyze_and_embed_figures).
+        Erstellt: Figure -[:MENTIONS {confidence, source}]-> Concept
+
+        Args:
+            figures: Liste der gemergten Figure-Dicts (mit 'figure_id' und 'entities')
+        Returns:
+            {"linked": int, "attempted": int}
+        """
+        links = []
+        for fig in figures:
+            fig_id  = fig.get("figure_id")
+            entities = fig.get("entities") or []
+            if not fig_id or not entities:
+                continue
+            for entity in entities:
+                entity = (entity or "").strip()
+                if entity:
+                    links.append({"figure_id": fig_id, "entity_name": entity})
+
+        if not links:
+            return {"linked": 0, "attempted": 0}
+
+        result = self.run(
+            """
+            UNWIND $links AS L
+            MATCH (f:Figure {figure_id: L.figure_id})
+            OPTIONAL MATCH (c:Concept)
+              WHERE toLower(c.name) = toLower(L.entity_name)
+                 OR L.entity_name IN [al IN coalesce(c.alt_labels, []) | al]
+            WITH f, c, L
+            WHERE c IS NOT NULL
+            MERGE (f)-[r:MENTIONS]->(c)
+            SET r.confidence = 0.8,
+                r.source     = 'vision_analysis'
+            RETURN count(r) AS linked
+            """,
+            {"links": links},
+        )
+        linked = result[0].get("linked", 0) if result else 0
+        return {"linked": linked, "attempted": len(links)}
+
     def stitch_document_hierarchy(self) -> dict:
         """
         Verbindet Paragraphs/Figures mit ihren Sections basierend auf Seitenbereichen.
@@ -453,7 +501,8 @@ class Neo4jClient:
         MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
         WHERE para.page IN range(fpage-$tol, fpage+$tol)
           AND toLower(para.text) CONTAINS pref
-        MERGE (para)-[:CAPTIONS]->(f)
+        MERGE (para)-[r:CAPTIONS]->(f)
+        SET r.confidence = 1.0, r.match_type = 'caption_prefix_long'
         """, {"prefix": prefix_length, "tol": page_tolerance})
 
         # PASS 1b: CAPTIONS mit kürzerem Präfix, nur gleiche Seite
@@ -468,7 +517,8 @@ class Neo4jClient:
         MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
         WHERE para.page = fpage
           AND toLower(para.text) CONTAINS pref
-        MERGE (para)-[:CAPTIONS]->(f)
+        MERGE (para)-[r:CAPTIONS]->(f)
+        SET r.confidence = 0.9, r.match_type = 'caption_prefix_short'
         """)
 
         # PASS 2a: REFERS_TO mit figure_label direkt
@@ -482,7 +532,8 @@ class Neo4jClient:
         MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
         WHERE para.page IN range(fpage-$tol, fpage+$tol)
           AND toLower(replace(para.text,'.','')) CONTAINS flbl
-        MERGE (para)-[:REFERS_TO]->(f)
+        MERGE (para)-[r:REFERS_TO]->(f)
+        SET r.confidence = 0.9, r.match_type = 'figure_label_exact'
         """, {"tol": page_tolerance})
 
         # PASS 2b: REFERS_TO mit Varianten (figure/fig/abb)
@@ -492,7 +543,7 @@ class Neo4jClient:
         WITH p, f,
              toLower(coalesce(replace(f.figure_label,'.',''), '')) AS flbl,
              coalesce(f.page,-1) AS fpage
-        WHERE flbl =~ '.*\\d+.*'   // nur wenn Ziffern drin sind
+        WHERE flbl =~ '.*\\d+.*'
         WITH p, f, fpage,
              replace(replace(replace(replace(flbl,'figure',''),'fig',''),'abb',''),'  ',' ') AS numish
         MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
@@ -502,7 +553,8 @@ class Neo4jClient:
                toLower(para.text) CONTAINS ('fig ' + numish)    OR
                toLower(para.text) CONTAINS ('abb ' + numish)
           )
-        MERGE (para)-[:REFERS_TO]->(f)
+        MERGE (para)-[r:REFERS_TO]->(f)
+        SET r.confidence = 0.8, r.match_type = 'figure_label_variant'
         """, {"tol": page_tolerance})
 
         # PASS 3: NEAR Fallback
@@ -514,7 +566,8 @@ class Neo4jClient:
         WITH f, para
         ORDER BY size(coalesce(para.text,'')) DESC
         WITH f, head(collect(para)) AS best
-        MERGE (best)-[:NEAR]->(f)
+        MERGE (best)-[r:NEAR]->(f)
+        SET r.confidence = 0.5, r.match_type = 'spatial_proximity'
         """)
 
         cap_after = cnt("CAPTIONS")

@@ -42,18 +42,24 @@ def _merge_figure_meta_with_analysis(fig_meta: List[Dict[str, Any]],
         # image_uri bevorzugen, ansonsten aus meta (image_path) übernehmen
         image_uri = fa.get("image_uri") or base.get("image_uri") or base.get("image_path")
         merged.append({
-            "figure_id": fa["figure_id"],
-            "page": fa.get("page", base.get("page")),
-            "image_uri": image_uri,
-            "caption": fa.get("caption", base.get("figure_label", "")),
-            "analysis_json": fa.get("analysis_json"),
+            "figure_id":      fa["figure_id"],
+            "page":           fa.get("page", base.get("page")),
+            "image_uri":      image_uri,
+            "image_filename": fa.get("image_filename") or base.get("image_filename"),
+            "caption":        fa.get("caption", base.get("figure_label", "")),
+            "analysis_json":  fa.get("analysis_json"),
+
+            # Neue Analyse-Felder (aus reichem Embedding)
+            "figure_type": fa.get("figure_type", "other"),
+            "entities":    fa.get("entities", []),
+            "ocr_hints":   fa.get("ocr_hints", []),
 
             # Embedding aus Analyse
             "embedding": fa.get("embedding"),
 
             # Provenance-Felder aus Meta
-            "bbox": base.get("bbox"),
-            "page_width": base.get("page_width"),
+            "bbox":        base.get("bbox"),
+            "page_width":  base.get("page_width"),
             "page_height": base.get("page_height"),
             "figure_label": base.get("figure_label"),
         })
@@ -128,6 +134,13 @@ def ingest_one(pdf_path: Path, neo: Neo4jClient) -> Dict[str, Any]:
     figs_ready = _merge_figure_meta_with_analysis(figures, figs_analysed) if figures else []
     if figs_ready:
         neo.add_figures(paper_meta["paper_id"], figs_ready)
+        # Figure → Concept Verlinkung basierend auf extrahierten Entitäten
+        try:
+            fig_concept_stats = neo.link_figures_to_concepts(figs_ready)
+            print(f"  Figure→Concept links: {fig_concept_stats.get('linked', 0)} created "
+                  f"(of {fig_concept_stats.get('attempted', 0)} attempted)")
+        except Exception as e:
+            print(f"  ⚠ Figure→Concept linking failed (non-fatal): {e}")
 
     return {
         "paper_id": paper_meta["paper_id"],
