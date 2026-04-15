@@ -7,7 +7,11 @@
       "Bash(grep -n \"def embed_text\\\\|def _embed\\\\|def get_embedding\" /c/Users/matth/Desktop/masterthesis_neu/src/*.py /c/Users/matth/Desktop/masterthesis_neu/kursgenerierung/**/*.py)",
       "Bash(grep -n \"OpenAI\\(\\)\\\\|OpenAI\\(api_key=\\\\|_client =\" /c/Users/matth/Desktop/masterthesis_neu/src/*.py)",
       "Bash(grep -n \"Neo4jClient\\(\\)\" /c/Users/matth/Desktop/masterthesis_neu/src/*.py /c/Users/matth/Desktop/masterthesis_neu/scripts/*.py)",
-      "Bash(ls -lh /c/Users/matth/Desktop/masterthesis_neu/test*.py /c/Users/matth/Desktop/masterthesis_neu/tests/)"
+      "Bash(ls -lh /c/Users/matth/Desktop/masterthesis_neu/test*.py /c/Users/matth/Desktop/masterthesis_neu/tests/)",
+      "Bash(grep -n \"def update_paper_progress\\\\|progress_callback\\\\|report_progress\" C:\\\\\\\\Users\\\\\\\\matth\\\\\\\\Desktop\\\\\\\\masterthesis_neu\\\\\\\\scripts\\\\\\\\gui_app.py)",
+      "Bash(python -m spacy download en_core_web_sm)",
+      "Bash(pip install:*)",
+      "Bash(python -c ':*)"
     ]
   }
 }

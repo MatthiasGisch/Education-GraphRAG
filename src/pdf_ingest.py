@@ -514,16 +514,42 @@ def chunk_text(text: str, size: int, overlap: int) -> List[str]:
         start = max(0, end - overlap)
     return parts
 
-def embed_paragraphs(paragraphs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def embed_paragraphs(
+    paragraphs: List[Dict[str, Any]],
+    progress_fn=None,
+) -> List[Dict[str, Any]]:
+    """
+    Bettet jeden Paragraphen ein.
+    progress_fn(label: str, pct: int) wird bei jedem Schritt aufgerufen (0-100).
+    Wenn progress_fn None ist, wird tqdm verwendet.
+    """
     out = []
-    for p in tqdm(paragraphs, desc="Embedding paragraphs"):
+    n = len(paragraphs)
+    iterable = paragraphs if progress_fn else tqdm(paragraphs, desc="Embedding paragraphs")
+    for i, p in enumerate(iterable):
+        if progress_fn and n > 0:
+            progress_fn(f"Paragraph einbetten {i + 1}/{n}", int(100 * i / n))
         emb = embed_text(p["text"])
         out.append({**p, "embedding": emb})
+    if progress_fn:
+        progress_fn(f"Paragraph-Embeddings fertig ({n})", 100)
     return out
 
-def analyze_and_embed_figures(figures: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def analyze_and_embed_figures(
+    figures: List[Dict[str, Any]],
+    progress_fn=None,
+) -> List[Dict[str, Any]]:
+    """
+    Analysiert und bettet Abbildungen ein.
+    progress_fn(label: str, pct: int) wird bei jeder Abbildung aufgerufen (0-100).
+    Wenn progress_fn None ist, wird tqdm verwendet.
+    """
     out = []
-    for f in tqdm(figures, desc="Analyzing figures"):
+    n = len(figures)
+    iterable = figures if progress_fn else tqdm(figures, desc="Analyzing figures")
+    for i, f in enumerate(iterable):
+        if progress_fn and n > 0:
+            progress_fn(f"Abbildung analysieren {i + 1}/{n}", int(100 * i / n))
         analysis = describe_image(f["image_path"])
         caption = analysis.get("caption", "") or ""
         figure_type = analysis.get("figure_type", "other") or "other"
@@ -565,4 +591,6 @@ def analyze_and_embed_figures(figures: List[Dict[str, Any]]) -> List[Dict[str, A
             "analysis_json":  json.dumps(analysis, ensure_ascii=False),
             "embedding":      emb,
         })
+    if progress_fn:
+        progress_fn(f"Abbildungen fertig ({n})", 100)
     return out

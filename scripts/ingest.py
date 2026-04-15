@@ -122,12 +122,42 @@ def ingest_one(pdf_path: Path, neo: Neo4jClient) -> Dict[str, Any]:
     concepts = extraction_result["concepts"]
     links = extraction_result["paragraph_links"]
     relations = extraction_result["relations"]
-    
-    print(f"  Extracted: {len(concepts)} concepts, {len(relations)} relations")
-    
-    # Verknüpfe Paragraphen mit Konzepten
+
+    print(f"  Extracted: {len(concepts)} concepts, {len(relations)} relations, {len(links)} para-links")
+
+    # Verknüpfe Paragraphen mit Konzepten (MENTIONS edges)
     if links:
         neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
+
+    # Schreibe semantische Relationen in den Graphen (SEMANTIC_RELATION + CO_OCCURS_WITH)
+    if relations:
+        try:
+            # Separate co-occurrence from semantic relations
+            cooc_rels = [r for r in relations if r.get("predicate") == "co_occurs_with"]
+            sem_rels  = [r for r in relations if r.get("predicate") != "co_occurs_with"]
+
+            if sem_rels:
+                sem_stats = neo.add_semantic_relations(paper_meta["paper_id"], sem_rels)
+                print(f"  SEMANTIC_RELATION: {sem_stats.get('created', 0)} created, "
+                      f"{sem_stats.get('updated', 0)} updated, "
+                      f"{sem_stats.get('skipped', 0)} skipped")
+
+            if cooc_rels:
+                # Convert to expected format for add_cooccurrence_relations
+                cooc_fmt = [
+                    {
+                        "concept1":  r["subject"],
+                        "concept2":  r["object"],
+                        "count":     1,
+                        "strength":  float(r.get("confidence", 0.6)),
+                    }
+                    for r in cooc_rels
+                ]
+                cooc_stats = neo.add_cooccurrence_relations(paper_meta["paper_id"], cooc_fmt)
+                print(f"  CO_OCCURS_WITH: {cooc_stats.get('created', 0)} created, "
+                      f"{cooc_stats.get('updated', 0)} updated")
+        except Exception as e:
+            print(f"  ⚠ Failed to write semantic relations (non-fatal): {e}")
 
     # --- Figures: VLM-Analyse + Embedding, dann Mergen mit Meta & Schreiben ---
     figs_analysed = analyze_and_embed_figures(figures) if figures else []

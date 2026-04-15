@@ -1612,6 +1612,14 @@ with tab_ingest:
         def report_progress(step: str, pct: int):
             if progress_callback:
                 progress_callback(step, pct)
+
+        def _sub(base: int, span: int):
+            """Erzeugt einen Sub-Progress-Callback, der [0, 100] auf [base, base+span] mappt."""
+            if not progress_callback:
+                return None
+            def fn(label: str, pct: int):
+                report_progress(label, min(100, base + int(pct * span / 100)))
+            return fn
         
         # Read PDF
         report_progress("PDF lesen", 5)
@@ -1676,13 +1684,13 @@ with tab_ingest:
             neo.add_sections(paper_meta["paper_id"], sections)
         
         report_progress("Paragraphen embedden", 40)
-        paragraphs_emb = embed_paragraphs(paragraphs)
+        paragraphs_emb = embed_paragraphs(paragraphs, progress_fn=_sub(40, 10))
         report_progress("Paragraphen speichern", 50)
         neo.add_paragraphs(paper_meta["paper_id"], paragraphs_emb)
         
         # Figures
         report_progress("Figures analysieren", 60)
-        figs_analysed = analyze_and_embed_figures(figures) if figures else []
+        figs_analysed = analyze_and_embed_figures(figures, progress_fn=_sub(60, 10)) if figures else []
         by_id = {f["figure_id"]: f for f in figures}
         figs_ready = []
         for fa in figs_analysed:
@@ -1703,31 +1711,49 @@ with tab_ingest:
         if figs_ready:
             neo.add_figures(paper_meta["paper_id"], figs_ready)
         
-        # Extract concepts (LLM-only)
+        # Extract concepts (Hybrid: NER + LLM + deterministic text matching)
         report_progress("Konzepte extrahieren", 70)
-        concepts, links = extract_and_embed_concepts(
+        full_text = "\n\n".join(p.get("text", "") for p in paragraphs_emb)
+        extraction_result = extract_and_embed_concepts_hybrid(
             paper_title=paper_meta.get("title") or "",
+            paper_text=full_text,
             paragraphs=paragraphs_emb,
             topic_hint=topic,
-            max_concepts=max_ent,
-            seed_names=None,
-            allow_new=True,
+            max_entities=max_ent,
+            max_relations=max_rel,
+            use_scispacy=True,
             neo_client=neo,
-            persist_to_topic=True
+            persist_to_topic=True,
+            progress_fn=_sub(70, 20),
         )
-        
-        # Quality filter
-        report_progress("Qualität filtern", 85)
-        if quality_filter and concepts:
-            concepts, links = filter_low_quality_concepts(concepts, min_confidence, links)
-        
-        # Link paragraphs to concepts
+        concepts  = extraction_result["concepts"]
+        links     = extraction_result["paragraph_links"]
+        relations = extraction_result["relations"]
+
+        # Link paragraphs to concepts (MENTIONS edges)
         report_progress("Links erstellen", 90)
         if links:
             try:
                 neo.link_paragraphs_to_concepts(paper_meta["paper_id"], links)
             except Exception as e:
                 st.warning(f"⚠️ Link-Fehler: {e}")
+
+        # Write semantic relations (SEMANTIC_RELATION + CO_OCCURS_WITH)
+        if relations:
+            try:
+                cooc_rels = [r for r in relations if r.get("predicate") == "co_occurs_with"]
+                sem_rels  = [r for r in relations if r.get("predicate") != "co_occurs_with"]
+                if sem_rels:
+                    neo.add_semantic_relations(paper_meta["paper_id"], sem_rels)
+                if cooc_rels:
+                    cooc_fmt = [
+                        {"concept1": r["subject"], "concept2": r["object"],
+                         "count": 1, "strength": float(r.get("confidence", 0.6))}
+                        for r in cooc_rels
+                    ]
+                    neo.add_cooccurrence_relations(paper_meta["paper_id"], cooc_fmt)
+            except Exception as e:
+                st.warning(f"⚠️ Relations-Fehler (non-fatal): {e}")
         
         # Auto-attach to umbrella
         report_progress("Finalisierung", 95)
@@ -1789,6 +1815,7 @@ with tab_ingest:
             paper_progress_bar = st.progress(0)
             paper_status = st.empty()
             paper_percent = st.empty()
+            paper_detail = st.empty()   # Granulare Fortschrittsanzeige
             
             for idx, f in enumerate(uploaded):
                 try:
@@ -1804,11 +1831,12 @@ with tab_ingest:
                     out_path = UPLOAD_DIR / f.name
                     out_path.write_bytes(f.read())
                     
-                    # Callback für Paper-Fortschritt
+                    # Callback für Paper-Fortschritt (auch für Sub-Steps)
                     def update_paper_progress(step: str, pct: int):
-                        paper_status.text(f"{f.name} - {step}")
                         paper_progress_bar.progress(pct / 100)
                         paper_percent.metric("Paper-Fortschritt", f"{pct}%")
+                        paper_status.text(f"{f.name} — {step}")
+                        paper_detail.caption(f"↳ {step}")
                     
                     rep = ingest_one_pdf_enhanced(out_path, use_auto_topic, selected_topic, progress_callback=update_paper_progress)
                     
@@ -1837,6 +1865,7 @@ with tab_ingest:
             paper_status.empty()
             paper_progress_bar.empty()
             paper_percent.empty()
+            paper_detail.empty()
             
             # Final summary
             st.markdown("---")

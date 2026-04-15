@@ -143,14 +143,15 @@ def _ask_llm_for_concepts(
         "seed_policy": instr,
         "paragraphs": short_paras
     }
-    resp = client.responses.create(
+    resp = client.chat.completions.create(
         model="gpt-4o-mini",
-        input=[
+        messages=[
             {"role":"system","content":sys},
             {"role":"user","content":json.dumps(user, ensure_ascii=False)}
-        ]
+        ],
+        temperature=0.2,
     )
-    raw = getattr(resp, "output_text", None) or ""
+    raw = (resp.choices[0].message.content or "") if resp.choices else ""
 
     # 1) Try explicit ```json { ... } ``` block
     m = _JSON_BLOCK_RE.search(raw)
@@ -352,106 +353,152 @@ def extract_and_embed_concepts_hybrid(
     topic_hint: str = "Künstliche Intelligenz",
     max_entities: int = 30,
     max_relations: int = 20,
+    use_scispacy: bool = True,
     neo_client: Optional['Neo4jClient'] = None,
-    persist_to_topic: bool = False
+    persist_to_topic: bool = False,
+    progress_fn=None,
 ) -> Dict[str, Any]:
     """
-    SIMPLIFIED approach: Extract concepts ONLY, skip paragraph-linking.
-    Paragraph-linking happens during retrieval via vector similarity (better anyway).
-    This is FAST and RELIABLE.
-    
-    Returns concepts without paragraph_links.
+    Full hybrid extraction pipeline: NER (spaCy/SciSpacy) + LLM concepts + semantic relations.
+
+    Steps:
+      1. `extract_entities_and_relations` → entities (with embeddings) + semantic/co-occurrence relations
+      2. Convert entities to concept dicts (concept_id slug, alt_labels, description, embedding)
+      3. Build paragraph_links by substring-matching concept names inside paragraph text (confidence=0.75)
+      4. (optional) Persist concepts + topic link to Neo4j
+
+    Returns:
+      {
+        "concepts":        [concept_dict, ...],
+        "relations":       [relation_dict, ...],   # filled – semantic + co-occurrence
+        "paragraph_links": [link_dict, ...],        # filled – text-based matching
+        "stats":           {...}
+      }
     """
-    import logging
-    log = logging.getLogger(__name__)
-    
-    log.info(f"Extracting concepts for: {paper_title}")
-    
-    # Extract concepts from paper using LLM (single call)
-    sys_prompt = (
-        "Extract key concepts from academic text. "
-        "Return JSON: {\"concepts\":[{\"name\":\"...\",\"description\":\"...\"}]}"
-    )
-    
-    # Use first 2000 chars of paper text for concept extraction
-    sample_text = f"{paper_title}\n\n{paper_text[:2000]}"
-    
-    user_msg = f"""Extract maximum {max_entities} key concepts.
+    log.info("extract_and_embed_concepts_hybrid: starting for '%s'", paper_title)
+    if progress_fn:
+        progress_fn("NER + LLM Extraktion läuft …", 0)
 
-Text:
-{sample_text}
-
-JSON only, no explanation."""
-    
+    # ------------------------------------------------------------------
+    # Step 1: Full NER + LLM entity/relation extraction
+    # ------------------------------------------------------------------
     try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_msg}
-            ],
-            temperature=0.1,
-            timeout=60,
-            max_tokens=1000
+        extraction = extract_entities_and_relations(
+            text=paper_text,
+            paragraphs=paragraphs,
+            max_entities=max_entities,
+            max_relations=max_relations,
+            use_scispacy=use_scispacy,
+            extract_cooccurrence=True,
         )
-        concepts_raw = resp.choices[0].message.content
-        concepts_data = _try_parse_llm_response(concepts_raw)
-        concept_list = concepts_data.get("concepts", [])
-        log.info(f"LLM returned {len(concept_list)} concepts")
     except Exception as e:
-        log.warning(f"Concept extraction failed: {e}")
-        concept_list = []
-    
-    # Convert to concept objects with embeddings
-    concepts = []
-    seen_names = set()
-    
-    for c in concept_list:
-        name = c.get("name", "").strip()
-        if not name or name in seen_names or len(name) < 2:
+        log.warning("extract_entities_and_relations failed, falling back to empty: %s", e)
+        extraction = {"entities": [], "relations": [], "stats": {}}
+
+    raw_entities: List[Dict[str, Any]] = extraction.get("entities") or []
+    relations:    List[Dict[str, Any]] = extraction.get("relations") or []
+    ext_stats:    Dict[str, Any]       = extraction.get("stats") or {}
+
+    log.info(
+        "Extraction done: %d entities, %d relations",
+        len(raw_entities), len(relations),
+    )
+    if progress_fn:
+        progress_fn(
+            f"{len(raw_entities)} Entitäten, {len(relations)} Relationen extrahiert – Konzepte aufbereiten …",
+            40,
+        )
+
+    # ------------------------------------------------------------------
+    # Step 2: Convert to concept dicts (deduplicate by slug)
+    # ------------------------------------------------------------------
+    concepts: List[Dict[str, Any]] = []
+    seen_slugs: set = set()
+
+    for ent in raw_entities:
+        name = (ent.get("name") or "").strip()
+        if not name or len(name) < 2:
             continue
-        seen_names.add(name)
-        
-        description = c.get("description", "").strip()[:200]  # Limit description
-        
-        # Embed concept name
-        emb = _embed([name])[0] if name else []
-        
+        cid = _slug(name)
+        if cid in seen_slugs:
+            continue
+        seen_slugs.add(cid)
+
         concepts.append({
-            "concept_id": _slug(name),
-            "name": name,
-            "type": "concept",
-            "source": "llm",
-            "description": description,
-            "alt_labels": [],
-            "embedding": emb
+            "concept_id":  cid,
+            "name":        name,
+            "type":        ent.get("type", "concept"),
+            "source":      ent.get("source", "hybrid"),
+            "description": (ent.get("description") or "").strip()[:300],
+            "alt_labels":  [],
+            "embedding":   ent.get("embedding") or [],
         })
-    
-    log.info(f"Created {len(concepts)} concept objects with embeddings")
-    
-    # NO paragraph linking - happens during retrieval via vector similarity
-    # This is faster and actually works better
-    paragraph_links = []
-    
-    # Persist concepts to Neo4j
+
+    log.info("Built %d concept objects", len(concepts))
+    if progress_fn:
+        progress_fn(f"{len(concepts)} Konzepte aufgebaut – Paragraph-Links erstellen …", 60)
+
+    # ------------------------------------------------------------------
+    # Step 3: Paragraph → Concept links via substring matching
+    # ------------------------------------------------------------------
+    # Build a lookup: lowercase name → concept_id
+    name_to_id: Dict[str, str] = {c["name"].lower(): c["concept_id"] for c in concepts}
+
+    paragraph_links: List[Dict[str, Any]] = []
+    seen_links: set = set()   # (paragraph_id, concept_id)
+
+    for para in paragraphs:
+        pid   = para.get("paragraph_id")
+        ptext = (para.get("text") or "").lower()
+        if not pid or not ptext:
+            continue
+
+        for cname_lower, cid in name_to_id.items():
+            if len(cname_lower) < 3:
+                continue  # Skip very short names to avoid false matches
+            if cname_lower in ptext:
+                link_key = (pid, cid)
+                if link_key not in seen_links:
+                    seen_links.add(link_key)
+                    paragraph_links.append({
+                        "paragraph_id": pid,
+                        "concept_id":   cid,
+                        "confidence":   0.75,
+                    })
+
+    log.info("Built %d paragraph→concept links", len(paragraph_links))
+    if progress_fn:
+        progress_fn(f"{len(paragraph_links)} Para-Links erstellt – in Neo4j schreiben …", 80)
+
+    # ------------------------------------------------------------------
+    # Step 4: (optional) Persist to Neo4j
+    # ------------------------------------------------------------------
     if persist_to_topic and neo_client and topic_hint:
         try:
             neo_client.upsert_topic(topic_hint)
             if concepts:
                 neo_client.add_concepts(topic_hint, concepts)
-                log.info(f"Persisted {len(concepts)} concepts")
+                log.info("Persisted %d concepts to topic '%s'", len(concepts), topic_hint)
         except Exception as e:
-            log.warning(f"Neo4j persistence failed: {e}")
-    
+            log.warning("Neo4j persistence failed (non-fatal): %s", e)
+
+    if progress_fn:
+        progress_fn(
+            f"Konzeptextraktion fertig: {len(concepts)} Konzepte, "
+            f"{len(paragraph_links)} Links, {len(relations)} Relationen",
+            100,
+        )
+
     return {
         "concepts": concepts,
-        "relations": [],
-        "paragraph_links": paragraph_links,  # Empty - linking happens at retrieval time
+        "relations": relations,
+        "paragraph_links": paragraph_links,
         "stats": {
-            "total_paragraphs": len(paragraphs),
-            "concepts_extracted": len(concepts),
-            "paragraph_links": 0,  # N/A for this approach
-            "note": "Paragraph linking happens during retrieval via vector similarity"
-        }
+            **ext_stats,
+            "total_paragraphs":  len(paragraphs),
+            "concepts_created":  len(concepts),
+            "paragraph_links":   len(paragraph_links),
+            "relations_total":   len(relations),
+        },
     }
 
