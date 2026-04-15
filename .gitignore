@@ -42,7 +42,7 @@ env/
 .ipynb_checkpoints
 
 # Data & Uploads
-data/uploads/
+data/
 
 # Exports (dynamisch generierte Dateien)
 exports/
