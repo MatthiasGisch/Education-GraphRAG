@@ -1014,7 +1014,14 @@ if "api_keys" not in st.session_state:
         "gamma_api_key": cfg.GAMMA_API_KEY or "",
         "gamma_api_url": cfg.GAMMA_API_URL or "",
         "synthesia_api_key": cfg.SYNTHESIA_API_KEY or "",
-        "synthesia_api_base": cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1"
+        "synthesia_api_base": cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1",
+        # LM Studio
+        "llm_mode": cfg.LLM_MODE or "cloud",
+        "lmstudio_base_url": cfg.LMSTUDIO_BASE_URL or "http://localhost:1234/v1",
+        "lmstudio_chat_model": cfg.LMSTUDIO_CHAT_MODEL or "local-model",
+        "lmstudio_vision_model": cfg.LMSTUDIO_VISION_MODEL or "local-vision-model",
+        "lmstudio_embed_model": cfg.LMSTUDIO_EMBED_MODEL or "nomic-embed-text",
+        "lmstudio_embed_dim": str(cfg.LMSTUDIO_EMBED_DIM or "768"),
     }
     persisted = load_user_config() or {}
     # Only take known keys from persisted config
@@ -1067,14 +1074,69 @@ with colB:
             st.sidebar.error(f"Schema-Fehler: {e}")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**OpenAI**")
-st.session_state["api_keys"]["openai_api_key"] = st.sidebar.text_input(
-    "OPENAI_API_KEY",
-    value=st.session_state["api_keys"]["openai_api_key"],
-    type="password",
-    placeholder="sk-...",
-    help="API Key für OpenAI (GPT, Embeddings)"
+st.sidebar.markdown("**Sprachmodell-Modus**")
+_mode_options = ["Cloud (OpenAI)", "Lokal (LM Studio)"]
+_mode_index = 1 if st.session_state["api_keys"].get("llm_mode") == "local" else 0
+_selected_mode = st.sidebar.radio(
+    "Betriebsmodus",
+    _mode_options,
+    index=_mode_index,
+    key="llm_mode_radio",
+    help="Cloud: GPT-4o-mini über OpenAI API  |  Lokal: eigenes Modell über LM Studio"
 )
+st.session_state["api_keys"]["llm_mode"] = "local" if _selected_mode == "Lokal (LM Studio)" else "cloud"
+
+if st.session_state["api_keys"]["llm_mode"] == "cloud":
+    st.sidebar.markdown("**OpenAI**")
+    st.session_state["api_keys"]["openai_api_key"] = st.sidebar.text_input(
+        "OPENAI_API_KEY",
+        value=st.session_state["api_keys"]["openai_api_key"],
+        type="password",
+        placeholder="sk-...",
+        help="API Key für OpenAI (GPT, Embeddings)"
+    )
+else:
+    st.sidebar.markdown("**LM Studio Konfiguration**")
+    st.sidebar.info(
+        "LM Studio muss laufen und der lokale Server gestartet sein. "
+        "Lade ein Chat-Modell, ein Vision-Modell (z.B. LLaVA / Qwen2-VL) "
+        "und ein Embedding-Modell (z.B. nomic-embed-text).",
+    )
+    st.session_state["api_keys"]["lmstudio_base_url"] = st.sidebar.text_input(
+        "LM Studio Server URL",
+        value=st.session_state["api_keys"].get("lmstudio_base_url", "http://localhost:1234/v1"),
+        placeholder="http://localhost:1234/v1",
+        help="Basis-URL des LM Studio Local Servers (Standard: http://localhost:1234/v1)"
+    )
+    st.session_state["api_keys"]["lmstudio_chat_model"] = st.sidebar.text_input(
+        "Chat-Modell (Text)",
+        value=st.session_state["api_keys"].get("lmstudio_chat_model", "local-model"),
+        placeholder="z.B. mistral-7b-instruct",
+        help="Modellname exakt wie in LM Studio angezeigt (für Textgenerierung)"
+    )
+    st.session_state["api_keys"]["lmstudio_vision_model"] = st.sidebar.text_input(
+        "Vision-Modell (Bilder)",
+        value=st.session_state["api_keys"].get("lmstudio_vision_model", "local-vision-model"),
+        placeholder="z.B. llava-v1.5-7b",
+        help="Multimodales Modell für Bildbeschreibung (LLaVA, Qwen2-VL, Llama 3.2 Vision, ...)"
+    )
+    st.session_state["api_keys"]["lmstudio_embed_model"] = st.sidebar.text_input(
+        "Embedding-Modell",
+        value=st.session_state["api_keys"].get("lmstudio_embed_model", "nomic-embed-text"),
+        placeholder="z.B. nomic-embed-text",
+        help="Embedding-Modell für Vektorsuche (muss in LM Studio geladen sein)"
+    )
+    st.session_state["api_keys"]["lmstudio_embed_dim"] = st.sidebar.text_input(
+        "Embedding-Dimension",
+        value=st.session_state["api_keys"].get("lmstudio_embed_dim", "768"),
+        placeholder="768",
+        help="Ausgabe-Dimensionen des Embedding-Modells (nomic-embed-text=768, mxbai-embed-large=1024)"
+    )
+    st.sidebar.warning(
+        "Hinweis: Wenn du von Cloud auf Lokal wechselst und ein anderes Embedding-Modell "
+        "verwendest, ändern sich die Vektor-Dimensionen. Du musst dann alle PDFs neu ingestieren "
+        "und die Neo4j-Vektorindizes neu aufbauen (Schema anlegen → Neu ingestieren)."
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Gamma Präsentationen**")
@@ -1136,7 +1198,13 @@ with c3:
             "gamma_api_key": cfg.GAMMA_API_KEY or "",
             "gamma_api_url": cfg.GAMMA_API_URL or "",
             "synthesia_api_key": cfg.SYNTHESIA_API_KEY or "",
-            "synthesia_api_base": cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1"
+            "synthesia_api_base": cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1",
+            "llm_mode": cfg.LLM_MODE or "cloud",
+            "lmstudio_base_url": cfg.LMSTUDIO_BASE_URL or "http://localhost:1234/v1",
+            "lmstudio_chat_model": cfg.LMSTUDIO_CHAT_MODEL or "local-model",
+            "lmstudio_vision_model": cfg.LMSTUDIO_VISION_MODEL or "local-vision-model",
+            "lmstudio_embed_model": cfg.LMSTUDIO_EMBED_MODEL or "nomic-embed-text",
+            "lmstudio_embed_dim": str(cfg.LMSTUDIO_EMBED_DIM or "768"),
         }
         st.rerun()
 
@@ -1149,6 +1217,16 @@ cfg.GAMMA_API_KEY = st.session_state["api_keys"]["gamma_api_key"]
 cfg.GAMMA_API_URL = st.session_state["api_keys"]["gamma_api_url"]
 cfg.SYNTHESIA_API_KEY = st.session_state["api_keys"]["synthesia_api_key"]
 cfg.SYNTHESIA_API_BASE = st.session_state["api_keys"]["synthesia_api_base"]
+# LM Studio
+cfg.LLM_MODE            = st.session_state["api_keys"]["llm_mode"]
+cfg.LMSTUDIO_BASE_URL   = st.session_state["api_keys"].get("lmstudio_base_url", "http://localhost:1234/v1")
+cfg.LMSTUDIO_CHAT_MODEL    = st.session_state["api_keys"].get("lmstudio_chat_model", "local-model")
+cfg.LMSTUDIO_VISION_MODEL  = st.session_state["api_keys"].get("lmstudio_vision_model", "local-vision-model")
+cfg.LMSTUDIO_EMBED_MODEL   = st.session_state["api_keys"].get("lmstudio_embed_model", "nomic-embed-text")
+try:
+    cfg.LMSTUDIO_EMBED_DIM = int(st.session_state["api_keys"].get("lmstudio_embed_dim", "768"))
+except ValueError:
+    cfg.LMSTUDIO_EMBED_DIM = 768
 
 
 # =========================

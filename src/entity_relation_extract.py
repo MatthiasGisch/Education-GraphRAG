@@ -9,13 +9,10 @@ import os
 import re
 import json
 import logging
-from openai import OpenAI
-
 log = logging.getLogger(__name__)
 
-# Global client and models
-client = OpenAI()
-EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-large")
+from . import config as cfg
+from .openai_client import embed_text, _chat_client, _chat_model
 
 # Lazy-load spaCy models to avoid import-time failures
 _SPACY_NLP = None
@@ -68,11 +65,11 @@ def _embed(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
     try:
-        resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
-        return [d.embedding for d in resp.data]
+        return [embed_text(t) for t in texts]
     except Exception as e:
         log.error(f"Embedding failed: {e}")
-        return [[0.0] * 3072] * len(texts)  # fallback
+        dim = cfg.LMSTUDIO_EMBED_DIM if cfg.LLM_MODE == "local" else 3072
+        return [[0.0] * dim] * len(texts)  # fallback
 
 
 # =============================================================================
@@ -203,8 +200,8 @@ Extract up to {max_concepts} concepts. Be selective and focus on the most import
     text_sample = text[:4000] if len(text) > 4000 else text
     
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = _chat_client().chat.completions.create(
+            model=_chat_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Extract key concepts from this text:\n\n{text_sample}"}
@@ -397,8 +394,8 @@ Entities found:
 Extract semantic relationships between these entities."""
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = _chat_client().chat.completions.create(
+            model=_chat_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}

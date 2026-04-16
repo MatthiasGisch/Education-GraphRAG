@@ -9,6 +9,16 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# LLM-Betriebsmodus: "cloud" (OpenAI) oder "local" (LM Studio)
+LLM_MODE = os.getenv("LLM_MODE", "cloud")
+
+# LM Studio Konfiguration
+LMSTUDIO_BASE_URL   = os.getenv("LMSTUDIO_BASE_URL",   "http://localhost:1234/v1")
+LMSTUDIO_CHAT_MODEL    = os.getenv("LMSTUDIO_CHAT_MODEL",    "local-model")
+LMSTUDIO_VISION_MODEL  = os.getenv("LMSTUDIO_VISION_MODEL",  "local-vision-model")
+LMSTUDIO_EMBED_MODEL   = os.getenv("LMSTUDIO_EMBED_MODEL",   "nomic-embed-text")
+LMSTUDIO_EMBED_DIM     = int(os.getenv("LMSTUDIO_EMBED_DIM", "768"))
+
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
 
 # Optional Gamma API (falls vorhanden)

@@ -2,8 +2,6 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
 import os, re, uuid, json, logging
-from openai import OpenAI
-
 log = logging.getLogger(__name__)
 
 # Import our new hybrid extraction module
@@ -14,8 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .neo import Neo4jClient
 
-EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-large")
-client = OpenAI()
+from .openai_client import embed_text, _chat_client, _chat_model
 
 # JSON fence extractor (used to robustly parse LLM output)
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -30,8 +27,7 @@ def _slug(s: str) -> str:
 def _embed(texts: List[str]) -> List[List[float]]:
     if not texts:
         return []
-    resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
-    return [d.embedding for d in resp.data]
+    return [embed_text(t) for t in texts]
 
 # ---------- Public: Seeds zu Concept-Objekten (mit Embedding) ----------
 def seed_names_to_concepts(seed_names: List[str]) -> List[Dict[str, Any]]:
@@ -143,8 +139,8 @@ def _ask_llm_for_concepts(
         "seed_policy": instr,
         "paragraphs": short_paras
     }
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+    resp = _chat_client().chat.completions.create(
+        model=_chat_model(),
         messages=[
             {"role":"system","content":sys},
             {"role":"user","content":json.dumps(user, ensure_ascii=False)}

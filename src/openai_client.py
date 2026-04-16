@@ -2,29 +2,63 @@ from __future__ import annotations
 import base64, json, re
 from typing import List, Dict, Any
 from openai import OpenAI
-from .config import OPENAI_API_KEY
+from . import config as cfg
 
-_client: OpenAI | None = None
 
+# ---------------------------------------------------------------------------
+# Interne Client-Factories (lesen cfg zur Laufzeit → GUI-Änderungen wirken)
+# ---------------------------------------------------------------------------
+
+def _make_openai_client() -> OpenAI:
+    if not cfg.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY fehlt. Bitte in der Sidebar oder .env eintragen.")
+    return OpenAI(api_key=cfg.OPENAI_API_KEY)
+
+
+def _make_lmstudio_client() -> OpenAI:
+    return OpenAI(base_url=cfg.LMSTUDIO_BASE_URL, api_key="lm-studio")
+
+
+def _chat_client() -> OpenAI:
+    return _make_lmstudio_client() if cfg.LLM_MODE == "local" else _make_openai_client()
+
+
+def _embed_client() -> OpenAI:
+    return _make_lmstudio_client() if cfg.LLM_MODE == "local" else _make_openai_client()
+
+
+# Modell-Auswahl zur Laufzeit
+def _chat_model() -> str:
+    return cfg.LMSTUDIO_CHAT_MODEL if cfg.LLM_MODE == "local" else "gpt-4o-mini"
+
+
+def _vision_model() -> str:
+    return cfg.LMSTUDIO_VISION_MODEL if cfg.LLM_MODE == "local" else "gpt-4o-mini"
+
+
+def _embed_model() -> str:
+    return cfg.LMSTUDIO_EMBED_MODEL if cfg.LLM_MODE == "local" else "text-embedding-3-large"
+
+
+# Rückwärtskompatibilität: client() wird von altem Code noch erwartet
 def client() -> OpenAI:
-    global _client
-    if _client is None:
-        if not OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY missing. Check .env")
-        _client = OpenAI(api_key=OPENAI_API_KEY)
-    return _client
+    return _chat_client()
 
-# ---- Embeddings (text-embedding-3-large -> 3072-D) ----
-def embed_text(text: str, model: str = "text-embedding-3-large") -> List[float]:
-    resp = client().embeddings.create(model=model, input=text)
+
+# ---- Embeddings ----
+def embed_text(text: str, model: str | None = None) -> List[float]:
+    m = model or _embed_model()
+    resp = _embed_client().embeddings.create(model=m, input=text)
     return resp.data[0].embedding  # type: ignore
 
-# ---- Vision: describe image via GPT-4o ----
+
+# ---- Vision: Bild beschreiben ----
 def _image_to_data_url(path: str) -> str:
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
     return f"data:{mime};base64,{b64}"
+
 
 def describe_image(path: str) -> Dict[str, Any]:
     data_url = _image_to_data_url(path)
@@ -44,8 +78,8 @@ def describe_image(path: str) -> Dict[str, Any]:
         )},
         {"type": "image_url", "image_url": {"url": data_url}},
     ]
-    resp = client().chat.completions.create(
-        model="gpt-4o-mini",
+    resp = _chat_client().chat.completions.create(
+        model=_vision_model(),
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_parts},
@@ -57,24 +91,24 @@ def describe_image(path: str) -> Dict[str, Any]:
         data = json.loads(text)
     except Exception:
         data = {"caption": text, "figure_type": "other", "entities": [], "ocr_hints": []}
-    
-    # Post-processing: Entferne Emojis falls doch welche durchgekommen sind
+
+    # Post-processing: Emojis entfernen
     caption = data.get("caption", "")
     if caption:
-        # Emoji-Pattern: alle Unicode-Emojis entfernen
         emoji_pattern = re.compile(
             "["
-            "\U0001F600-\U0001F64F"  # Emoticons
-            "\U0001F300-\U0001F5FF"  # Symbole & Piktogramme
-            "\U0001F680-\U0001F6FF"  # Transport & Karten
-            "\U0001F1E0-\U0001F1FF"  # Flaggen
-            "\U00002702-\U000027B0"  # Dingbats
-            "\U000024C2-\U0001F251"  # Eingeschlossene Zeichen
+            "\U0001F600-\U0001F64F"
+            "\U0001F300-\U0001F5FF"
+            "\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF"
+            "\U00002702-\U000027B0"
+            "\U000024C2-\U0001F251"
             "]+", flags=re.UNICODE
         )
         data["caption"] = emoji_pattern.sub("", caption).strip()
-    
+
     return data
+
 
 def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
     sys = (
@@ -87,7 +121,6 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
         "z.B. 'Wie Abbildung [F12345] zeigt...' oder 'In [F67890] ist dargestellt...'. "
         "Die Bilder werden dann automatisch an dieser Stelle im PDF eingefügt."
     )
-    # Kontext mit strukturierter Provenance
     bib = {}
     ctx_lines = []
     for s in supports:
@@ -110,7 +143,6 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
                 "page": s.get("page"),
                 "section": s.get("section_title"),
             }
-            # Analyse-Metadaten anreichern, damit das LLM weiß was IN der Abbildung ist
             figure_type = s.get("figure_type", "")
             entities    = s.get("entities") or []
             ocr_hints   = s.get("ocr_hints") or []
@@ -127,7 +159,6 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
                 f"{s.get('caption','')[:300]}{meta_str}"
             )
 
-    # BIB JSON als String (vom Modell nicht verändern)
     bib_json = json.dumps(bib, ensure_ascii=False)
 
     user = f"""
@@ -143,7 +174,7 @@ Anweisung als Dozent:
 - Jede Kernaussage mit [Pxxx] / [Fxxx] belegen (Quellenangabe in eckigen Klammern).
   WICHTIG: Zitationen enthalten NUR die ID in Klammern, KEINE Seitenzahlen oder weitere Metadaten.
   Beispiele: [P12345], [F67890], nicht [P12345 S.5] oder [F67890 (Abb. 3)]
-- **WICHTIG für Abbildungen [F...]:** Wenn eine Abbildung relevant ist, verweise DIREKT im Fließtext darauf! 
+- **WICHTIG für Abbildungen [F...]:** Wenn eine Abbildung relevant ist, verweise DIREKT im Fließtext darauf!
   Beispiel: "Abbildung [F12345] zeigt den Aufbau..." oder "Wie in [F67890] dargestellt..."
   Die Abbildungen werden dann automatisch unter dem Text eingefügt.
 - Wenn möglich, verdeutliche Zusammenhänge und Anwendungsbereiche.
@@ -157,32 +188,27 @@ Zitierformat:
 Bibliographie-Map (nur zur Information, nicht im Text verwenden):
 {bib_json}
 """
-    resp = client().chat.completions.create(
-        model="gpt-4o-mini",
+    resp = _chat_client().chat.completions.create(
+        model=_chat_model(),
         messages=[
-            {"role":"system", "content": sys},
-            {"role":"user", "content": user},
+            {"role": "system", "content": sys},
+            {"role": "user", "content": user},
         ],
         temperature=0.2,
     )
     raw = resp.choices[0].message.content or ""
-    
-    # Fix: Avoid citations directly after enumeration markers (e.g., "1[1].")
-    # Move such citations to the end of the line (before final punctuation if present).
+
     try:
         lines = raw.split("\n")
         fixed_lines = []
         for ln in lines:
-            # repeatedly move citations if they appear immediately after an enumeration at line start
             while True:
                 m = re.match(r"^\s*(?P<enum>\d+(?:[\.)\:]?\s*))\[(?P<cid>[PF][^\]]+)\]", ln)
                 if not m:
                     break
                 enum = m.group("enum")
                 cid = m.group("cid")
-                # remove the citation from start position
                 ln = enum + ln[m.end():]
-                # insert citation at end, before trailing punctuation if any
                 end_punct = re.match(r"^(?P<body>.*?)(?P<punct>[\.!?])\s*$", ln)
                 if end_punct:
                     ln = end_punct.group("body") + f" [{cid}]" + end_punct.group("punct")
@@ -191,7 +217,6 @@ Bibliographie-Map (nur zur Information, nicht im Text verwenden):
             fixed_lines.append(ln)
         raw = "\n".join(fixed_lines)
     except Exception:
-        # best-effort; fall back to original text
         pass
-    
+
     return raw
