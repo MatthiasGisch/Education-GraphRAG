@@ -1550,41 +1550,36 @@ with tab_gamma:
                 import traceback
                 st.code(traceback.format_exc())
 
-# ---- Tab: PPTX -> Synthesia (upload / select PPTX then send to Synthesia)
+# ---- Tab: Videoexport (Synthesia Cloud oder lokal per TTS)
 with tab_synthesia:
-    st.subheader("Präsentation als Video via Synthesia exportieren")
-    st.markdown("Lade eine `.pptx` hoch oder wähle eine vorhandene Datei aus `exports/` und sende sie an Synthesia.")
+    st.subheader("Präsentation als Video exportieren")
+
+    video_mode = st.radio(
+        "Videogenerierung",
+        ["Lokal (TTS + MoviePy, kostenlos)", "Cloud (Synthesia API)"],
+        index=0,
+        horizontal=True,
+        help="Lokal: Folientexte werden per TTS vertont und per MoviePy zu einem MP4 zusammengefügt.  "
+             "Cloud: Synthesia erstellt ein Avatar-Video (kostenpflichtig).",
+    )
+
+    st.markdown("---")
+
+    # ---- PPTX auswählen (gemeinsam für beide Modi) ----
     col1, col2 = st.columns([2, 1])
     with col1:
-        uploaded = st.file_uploader("PPTX hochladen (für Synthesia)", type=["pptx"])
+        uploaded = st.file_uploader("PPTX hochladen", type=["pptx"], key="video_pptx_upload")
         pptx_files = []
         if EXPORTS_DIR.exists():
-            # Suche im exports-Ordner und im gamma-Unterordner
             pptx_files.extend([p.name for p in EXPORTS_DIR.glob("*.pptx")])
             gamma_dir = EXPORTS_DIR / "gamma"
             if gamma_dir.exists():
                 pptx_files.extend([p.name for p in gamma_dir.glob("*.pptx")])
-        pptx_files = list(set(pptx_files))  # Duplikate entfernen
+        pptx_files = list(set(pptx_files))
         selected = None
         if pptx_files:
-            selected = st.selectbox("Vorhandene PPTX aus exports/ wählen", ["-- none --"] + sorted(pptx_files))
-    with col2:
-        voice = st.text_input("Voice (Synthesia voice id)", value="en-US")
-        model = st.text_input("Model (optional)", value="")
-        # Allow pasting an API key here if .env cannot be edited
-        api_key = st.text_input("Synthesia API Key (paste here if not in .env)", value=st.session_state.get("synthesia_api_key", ""), type="password")
-        api_url = st.text_input("Synthesia API Base URL", value=st.session_state.get("synthesia_api_base", cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1"))
-        # duration controls
-        st.markdown("---")
-        total_minutes = st.number_input("Gesamtlänge (Minuten, optional)", min_value=0.0, value=0.0, step=0.5)
-        per_slide_seconds = st.number_input("Sekunden pro Folie (optional, überschreibt Gesamtlänge)", min_value=0.0, value=0.0, step=0.5)
-        fallback_local = st.checkbox("Bei Fehler lokal erzeugen (Fallback)", value=True)
-        # persist in session for the current user/session only
-        if api_key:
-            st.session_state["synthesia_api_key"] = api_key
-        if api_url:
-            st.session_state["synthesia_api_base"] = api_url
-        gen = st.button("An Synthesia senden und Video erzeugen")
+            selected = st.selectbox("Oder vorhandene PPTX aus exports/ wählen",
+                                    ["-- none --"] + sorted(pptx_files))
 
     pptx_path = None
     if uploaded is not None:
@@ -1594,41 +1589,136 @@ with tab_synthesia:
         pptx_path = str(save_to)
         st.success(f"Hochgeladen: {save_to.name}")
     elif selected and selected != "-- none --":
-        # Suche in exports/ und exports/gamma/
         candidate = EXPORTS_DIR / selected
         if not candidate.exists():
             candidate = EXPORTS_DIR / "gamma" / selected
         pptx_path = str(candidate) if candidate.exists() else None
 
-    if gen:
-        if not pptx_path:
-            st.error("Bitte zuerst eine PPTX hochladen oder eine vorhandene auswählen.")
-        else:
-            # prefer API key provided in the UI/session, otherwise fallback to cfg
-            use_key = st.session_state.get("synthesia_api_key") or cfg.SYNTHESIA_API_KEY
-            use_url = st.session_state.get("synthesia_api_base") or cfg.SYNTHESIA_API_BASE
-            if not use_key:
-                st.error("Synthesia API Key nicht konfiguriert. Füge ihn in .env ein oder füge ihn hier in das Feld 'Synthesia API Key' ein.")
+    # ======================================================
+    # LOKAL-MODUS
+    # ======================================================
+    if video_mode.startswith("Lokal"):
+        with col2:
+            st.markdown("**TTS-Einstellungen**")
+            tts_backend = st.selectbox(
+                "TTS-Backend",
+                ["edge-tts (empfohlen, kostenlos)", "pyttsx3 (offline)"],
+                index=0,
+                help="edge-tts: Microsoft Edge TTS, kostenlos, sehr gute Qualität.  "
+                     "pyttsx3: vollständig offline, nutzt Windows SAPI.",
+            )
+            tts_backend_key = "edge-tts" if tts_backend.startswith("edge") else "pyttsx3"
+
+            tts_voice = st.text_input(
+                "Stimme",
+                value="de-DE-KatjaNeural" if tts_backend_key == "edge-tts" else "",
+                help="edge-tts Beispiele: de-DE-KatjaNeural, de-DE-ConradNeural, en-US-AriaNeural.  "
+                     "pyttsx3: Teil des Stimmnamens (z.B. 'Katja'), leer = Standardstimme.",
+            )
+            use_llm = st.checkbox(
+                "LLM-Narration (Vortragstexte per KI generieren)",
+                value=False,
+                help="Das konfigurierte Sprachmodell (Cloud oder LM Studio) schreibt einen "
+                     "natürlichen Vortragstext pro Folie statt den Rohtext vorzulesen.",
+            )
+            narration_lang = st.selectbox("Sprache", ["de (Deutsch)", "en (Englisch)"], index=0)
+            narration_lang_key = "de" if narration_lang.startswith("de") else "en"
+            fallback_sec = st.number_input("Foliendauer ohne Audio (Sekunden)", min_value=1.0,
+                                           value=5.0, step=0.5)
+            gen_local = st.button("Video lokal generieren", type="primary")
+
+        st.info(
+            "**Benötigte Pakete** (einmalig in der Konsole installieren):  \n"
+            "`pip install moviepy edge-tts`  \n"
+            "Für Offline-TTS zusätzlich: `pip install pyttsx3`"
+        )
+
+        if gen_local:
+            if not pptx_path:
+                st.error("Bitte zuerst eine PPTX hochladen oder eine vorhandene auswählen.")
             else:
-                out_dir = EXPORTS_DIR
-                with st.spinner("Sende an Synthesia und warte auf Ergebnis (kann einige Minuten dauern)…"):
+                progress_placeholder = st.empty()
+                def _update_progress(msg: str):
+                    progress_placeholder.info(msg)
+
+                with st.spinner("Video wird generiert..."):
                     try:
-                        mp4 = generate_video_from_pptx_via_synthesia(
-                            pptx_path,
-                            str(out_dir),
-                            voice=voice or "en-US",
-                            api_key=use_key,
-                            api_base=(use_url or None),
-                            total_minutes=(total_minutes or None),
-                            per_slide_seconds=(per_slide_seconds or None),
-                            fallback_local=fallback_local,
+                        from src.local_tts_video import generate_local_video
+                        mp4 = generate_local_video(
+                            pptx_path=pptx_path,
+                            out_dir=str(EXPORTS_DIR / "videos"),
+                            tts_backend=tts_backend_key,
+                            tts_voice=tts_voice,
+                            use_llm_narration=use_llm,
+                            narration_language=narration_lang_key,
+                            fallback_duration=fallback_sec,
+                            progress_callback=_update_progress,
                         )
-                        st.success(f"Video erhalten: {Path(mp4).name}")
+                        progress_placeholder.empty()
+                        st.success(f"Video fertig: {Path(mp4).name}")
                         st.video(mp4)
                         with open(mp4, "rb") as fh:
-                            st.download_button("MP4 herunterladen", fh.read(), file_name=Path(mp4).name, mime="video/mp4")
+                            st.download_button("MP4 herunterladen", fh.read(),
+                                               file_name=Path(mp4).name, mime="video/mp4")
+                    except RuntimeError as e:
+                        st.error(str(e))
                     except Exception as e:
-                        st.error(f"Fehler beim Synthesia-Aufruf: {e}")
+                        st.error(f"Fehler bei der lokalen Videogenerierung: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+    # ======================================================
+    # CLOUD-MODUS (Synthesia)
+    # ======================================================
+    else:
+        with col2:
+            st.markdown("**Synthesia-Einstellungen**")
+            voice = st.text_input("Voice (Synthesia voice id)", value="en-US")
+            api_key = st.text_input("Synthesia API Key", type="password",
+                                    value=st.session_state.get("synthesia_api_key", ""))
+            api_url = st.text_input("Synthesia API Base URL",
+                                    value=st.session_state.get("synthesia_api_base",
+                                                                cfg.SYNTHESIA_API_BASE or "https://api.synthesia.io/v1"))
+            st.markdown("---")
+            total_minutes = st.number_input("Gesamtlänge (Minuten, optional)", min_value=0.0,
+                                            value=0.0, step=0.5)
+            per_slide_seconds = st.number_input("Sekunden pro Folie (optional)", min_value=0.0,
+                                                value=0.0, step=0.5)
+            fallback_local = st.checkbox("Bei Fehler lokal erzeugen (Fallback)", value=True)
+            if api_key:
+                st.session_state["synthesia_api_key"] = api_key
+            if api_url:
+                st.session_state["synthesia_api_base"] = api_url
+            gen = st.button("An Synthesia senden", type="primary")
+
+        if gen:
+            if not pptx_path:
+                st.error("Bitte zuerst eine PPTX hochladen oder eine vorhandene auswählen.")
+            else:
+                use_key = st.session_state.get("synthesia_api_key") or cfg.SYNTHESIA_API_KEY
+                use_url = st.session_state.get("synthesia_api_base") or cfg.SYNTHESIA_API_BASE
+                if not use_key:
+                    st.error("Synthesia API Key nicht konfiguriert.")
+                else:
+                    with st.spinner("Sende an Synthesia und warte auf Ergebnis..."):
+                        try:
+                            mp4 = generate_video_from_pptx_via_synthesia(
+                                pptx_path,
+                                str(EXPORTS_DIR),
+                                voice=voice or "en-US",
+                                api_key=use_key,
+                                api_base=(use_url or None),
+                                total_minutes=(total_minutes or None),
+                                per_slide_seconds=(per_slide_seconds or None),
+                                fallback_local=fallback_local,
+                            )
+                            st.success(f"Video erhalten: {Path(mp4).name}")
+                            st.video(mp4)
+                            with open(mp4, "rb") as fh:
+                                st.download_button("MP4 herunterladen", fh.read(),
+                                                   file_name=Path(mp4).name, mime="video/mp4")
+                        except Exception as e:
+                            st.error(f"Fehler beim Synthesia-Aufruf: {e}")
 
 # ---- Tab: Ingest & Konzepte (Unified) ----
 with tab_ingest:
