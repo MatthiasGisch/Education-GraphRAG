@@ -16,7 +16,12 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/neo.py'\\).read\\(\\)\\); print\\('neo.py OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/gui_app.py'\\).read\\(\\)\\); print\\('gui_app.py OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/neo.py', encoding='utf-8'\\).read\\(\\)\\); print\\('neo.py OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/gui_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('gui_app.py OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/gui_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('gui_app.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/entity_relation_extract.py', encoding='utf-8'\\).read\\(\\)\\); print\\('entity_relation_extract.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/gui_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/pdf_ingest.py', encoding='utf-8'\\).read\\(\\)\\); print\\('pdf_ingest.py OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/concept_extract.py', encoding='utf-8'\\).read\\(\\)\\); print\\('concept_extract.py OK'\\)\")"
     ]
   }
 }

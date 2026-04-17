@@ -135,8 +135,13 @@ def extract_paragraph_blocks(page) -> list[dict]:
     Robust: liest page.get_text('rawdict') und baut Absätze.
     - Unterstützt Spans ohne 'text' (nimmt dann 'chars' zusammen)
     - Ignoriert fehlerhafte / leere Lines
+    - Filtert sehr kurze Blöcke (< MIN_PARA_CHARS Zeichen) heraus
+    - Teilt sehr lange Blöcke an Absatz-/Satzgrenzen auf (MAX_BLOCK_CHARS)
     Rückgabe: Liste aus Dicts mit text, bbox, order_in_page, page_width/-height, char_start/-end
     """
+    MIN_PARA_CHARS = 50    # Kürzere Blöcke (Überschriften, Seitenzahlen etc.) überspringen
+    MAX_BLOCK_CHARS = 600  # Blöcke länger als das werden aufgeteilt
+
     rd = page.get_text("rawdict") or {}
     W, H = page.rect.width, page.rect.height
     paras: list[dict] = []
@@ -171,19 +176,91 @@ def extract_paragraph_blocks(page) -> list[dict]:
         if not text:
             continue
 
-        order += 1
         x0, y0, x1, y1 = (b.get("bbox") or (0, 0, 0, 0))
-        paras.append({
-            "text": text,
-            "bbox": [x0, y0, x1, y1],
-            "order_in_page": order,
-            "page_width": W,
-            "page_height": H,
-            "char_start": 0,
-            "char_end": len(text),
-        })
+        bbox = [x0, y0, x1, y1]
+
+        # Großen Block in Teilabsätze aufteilen
+        sub_texts = _split_block(text, MAX_BLOCK_CHARS)
+
+        for sub in sub_texts:
+            sub = sub.strip()
+            if len(sub) < MIN_PARA_CHARS:
+                continue  # Überschrift, Seitenzahl, leere Zeile o.ä.
+            order += 1
+            paras.append({
+                "text": sub,
+                "bbox": bbox,
+                "order_in_page": order,
+                "page_width": W,
+                "page_height": H,
+                "char_start": 0,
+                "char_end": len(sub),
+            })
 
     return paras
+
+
+def _split_block(text: str, max_chars: int) -> list[str]:
+    """
+    Teilt einen langen Textblock intelligent auf:
+    1. Zuerst an Doppel-Zeilenumbrüchen (natürliche Absatzgrenzen)
+    2. Falls ein Teilstück immer noch zu lang: an Satzenden ('. ', '! ', '? ')
+    3. Als letzten Ausweg: harter Schnitt an max_chars
+
+    Kurze Teilstücke werden mit dem nächsten zusammengeführt, um
+    fragmentierte Sätze zu vermeiden.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    # Schritt 1: Aufteilen an Absatzgrenzen (\n\n oder einzelne \n zwischen Sätzen)
+    parts: list[str] = []
+    for para in re.split(r"\n{2,}", text):
+        para = para.strip()
+        if not para:
+            continue
+        if len(para) <= max_chars:
+            parts.append(para)
+        else:
+            # Schritt 2: Aufteilen an Satzgrenzen
+            parts.extend(_split_at_sentences(para, max_chars))
+
+    # Kurze Fragmente (< 80 Zeichen) mit dem vorherigen zusammenführen
+    merged: list[str] = []
+    for p in parts:
+        if merged and len(p) < 80:
+            merged[-1] = merged[-1] + " " + p
+        else:
+            merged.append(p)
+
+    return merged if merged else [text]
+
+
+def _split_at_sentences(text: str, max_chars: int) -> list[str]:
+    """Teilt Text an Satzgrenzen auf; nutzt harten Schnitt als letzten Ausweg."""
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks: list[str] = []
+    current = ""
+    for sent in sentences:
+        if not current:
+            current = sent
+        elif len(current) + 1 + len(sent) <= max_chars:
+            current += " " + sent
+        else:
+            if current:
+                chunks.append(current)
+            current = sent
+    if current:
+        chunks.append(current)
+    # Harter Schnitt falls ein einzelner Satz immer noch zu lang ist
+    final: list[str] = []
+    for c in chunks:
+        if len(c) <= max_chars:
+            final.append(c)
+        else:
+            for i in range(0, len(c), max_chars):
+                final.append(c[i:i + max_chars])
+    return final
 
 def extract_images_with_bbox(page) -> list[dict]:
     """
@@ -374,19 +451,22 @@ def read_pdf_text_and_images(path: str):
         # --- TEXTPFAD (robust + Fallback) ---
         text_blocks = extract_paragraph_blocks(page)
         if not text_blocks:
-            # Fallback: Plain-Text der Seite + Chunking
+            # Fallback: Plain-Text der Seite, satzbasiert aufgeteilt
             raw_text = page.get_text("text") or ""
-            for chunk in chunk_text(raw_text, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP):
-                if not chunk.strip():
+            fallback_order = 0
+            for sub in _split_block(raw_text.strip(), 600):
+                sub = sub.strip()
+                if len(sub) < 50:
                     continue
+                fallback_order += 1
                 text_blocks.append({
-                    "text": chunk.strip(),
+                    "text": sub,
                     "bbox": [0, 0, page.rect.width, page.rect.height],
-                    "order_in_page": 9999,  # Fallback-Order
+                    "order_in_page": fallback_order,
                     "page_width": page.rect.width,
                     "page_height": page.rect.height,
                     "char_start": 0,
-                    "char_end": len(chunk),
+                    "char_end": len(sub),
                 })
 
         for tb in text_blocks:

@@ -18,6 +18,41 @@ from .openai_client import embed_text, _chat_client, _chat_model
 _SPACY_NLP = None
 _SCISPACY_NLP = None
 
+# Regex für robustes JSON-Parsing aus LLM-Antworten (auch bei Präambel / Markdown-Blöcken)
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", re.DOTALL)
+_BRACE_JSON_RE = re.compile(r"(\{[\s\S]*\})", re.DOTALL)
+
+
+def _parse_json_robust(text: str) -> dict:
+    """
+    Versucht JSON aus einem LLM-Response-String zu extrahieren.
+    Funktioniert auch wenn das Modell Präambeln, Markdown-Blöcke oder
+    Erklärungstext um das JSON herum ausgibt (häufig bei lokalen Modellen).
+    """
+    if not text:
+        return {}
+    # 1) Direkt parsen (OpenAI-Modelle liefern sauberes JSON)
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # 2) ```json ... ``` Block extrahieren
+    m = _JSON_BLOCK_RE.search(text)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+    # 3) Erstes { ... } im Text extrahieren
+    m2 = _BRACE_JSON_RE.search(text)
+    if m2:
+        try:
+            return json.loads(m2.group(1))
+        except Exception:
+            pass
+    log.warning("_parse_json_robust: Kein gültiges JSON gefunden. Rohtext: %.200s", text)
+    return {}
+
 
 def _get_spacy_nlp():
     """Lazy-load standard spaCy model."""
@@ -183,6 +218,8 @@ Focus on domain-specific concepts that NER systems typically miss.{ner_context}
 
 For each concept, provide a brief, didactic description suitable for students learning the topic.
 
+IMPORTANT: Respond ONLY with a valid JSON object — no explanation, no markdown, no preamble.
+
 Return JSON format:
 {{
   "concepts": [
@@ -198,7 +235,12 @@ Extract up to {max_concepts} concepts. Be selective and focus on the most import
 
     # Truncate text for API efficiency
     text_sample = text[:4000] if len(text) > 4000 else text
-    
+
+    # response_format nur bei OpenAI (cloud) setzen – lokale Modelle unterstützen es oft nicht
+    extra_kwargs: dict = {}
+    if cfg.LLM_MODE != "local":
+        extra_kwargs["response_format"] = {"type": "json_object"}
+
     try:
         response = _chat_client().chat.completions.create(
             model=_chat_model(),
@@ -207,14 +249,14 @@ Extract up to {max_concepts} concepts. Be selective and focus on the most import
                 {"role": "user", "content": f"Extract key concepts from this text:\n\n{text_sample}"}
             ],
             temperature=0.3,
-            response_format={"type": "json_object"}
+            **extra_kwargs
         )
-        
-        result_text = response.choices[0].message.content
-        data = json.loads(result_text)
-        
+
+        result_text = (response.choices[0].message.content or "").strip()
+        data = _parse_json_robust(result_text)
+
         concepts = data.get("concepts", [])
-        
+
         # Validate and clean
         valid_concepts = []
         for c in concepts:
@@ -224,9 +266,9 @@ Extract up to {max_concepts} concepts. Be selective and focus on the most import
                     "type": c.get("type", "domain_term"),
                     "description": c.get("description", "").strip()
                 })
-        
+
         return valid_concepts[:max_concepts]
-        
+
     except Exception as e:
         log.error(f"LLM concept extraction failed: {e}")
         return []
@@ -367,6 +409,8 @@ Focus on meaningful, factual relationships that are pedagogically valuable. Use 
 
 For context, include the exact sentence or phrase that expresses this relationship - this helps students see the relation in context.
 
+IMPORTANT: Respond ONLY with a valid JSON object — no explanation, no markdown, no preamble.
+
 Return JSON format:
 {{
   "relations": [
@@ -384,7 +428,7 @@ Extract up to {max_relations} most important relations for learning purposes."""
 
     # Truncate text
     text_sample = text[:5000] if len(text) > 5000 else text
-    
+
     user_prompt = f"""Text to analyze:
 {text_sample}
 
@@ -392,6 +436,11 @@ Entities found:
 {entity_list_str}
 
 Extract semantic relationships between these entities."""
+
+    # response_format nur bei OpenAI (cloud) setzen – lokale Modelle unterstützen es oft nicht
+    extra_kwargs: dict = {}
+    if cfg.LLM_MODE != "local":
+        extra_kwargs["response_format"] = {"type": "json_object"}
 
     try:
         response = _chat_client().chat.completions.create(
@@ -401,14 +450,14 @@ Extract semantic relationships between these entities."""
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.3,
-            response_format={"type": "json_object"}
+            **extra_kwargs
         )
-        
-        result_text = response.choices[0].message.content
-        data = json.loads(result_text)
-        
+
+        result_text = (response.choices[0].message.content or "").strip()
+        data = _parse_json_robust(result_text)
+
         relations = data.get("relations", [])
-        
+
         # Validate and clean
         valid_relations = []
         for r in relations:
@@ -418,11 +467,11 @@ Extract semantic relationships between these entities."""
                     "predicate": r["predicate"].strip().lower().replace(" ", "_"),
                     "object": r["object"].strip(),
                     "confidence": float(r.get("confidence", 0.8)),
-                    "context": r.get("context", "").strip()[:200]  # Limit context length
+                    "context": r.get("context", "").strip()[:200]
                 })
-        
+
         return valid_relations[:max_relations]
-        
+
     except Exception as e:
         log.error(f"LLM relation extraction failed: {e}")
         return []

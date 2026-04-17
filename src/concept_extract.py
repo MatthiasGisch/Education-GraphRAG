@@ -2,7 +2,11 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
 import os, re, uuid, json, logging
+import numpy as np
 log = logging.getLogger(__name__)
+
+# Ähnlichkeitsschwellwert für Embedding-basierte Paragraph→Concept-Links
+EMB_LINK_THRESHOLD = 0.50
 
 # Import our new hybrid extraction module
 from .entity_relation_extract import extract_entities_and_relations
@@ -462,7 +466,60 @@ def extract_and_embed_concepts_hybrid(
                         "confidence":   0.75,
                     })
 
-    log.info("Built %d paragraph→concept links", len(paragraph_links))
+    log.info("Substring-matching: %d paragraph→concept links", len(paragraph_links))
+
+    # ------------------------------------------------------------------
+    # Step 3b: Embedding-Fallback für Paragraphen ohne Substring-Link
+    # ------------------------------------------------------------------
+    # Paragraphen die keinen einzigen Link haben, werden über Kosinus-Ähnlichkeit
+    # mit den Konzept-Embeddings verknüpft (Schwelle: EMB_LINK_THRESHOLD).
+    linked_pids = {lnk["paragraph_id"] for lnk in paragraph_links}
+    unlinked_paras = [
+        p for p in paragraphs
+        if p.get("paragraph_id") not in linked_pids and p.get("embedding")
+    ]
+    concepts_with_emb = [c for c in concepts if c.get("embedding")]
+
+    if unlinked_paras and concepts_with_emb:
+        try:
+            # Konzept-Embedding-Matrix (n_concepts × dim), normiert
+            c_mat = np.array([c["embedding"] for c in concepts_with_emb], dtype=np.float32)
+            c_norms = np.linalg.norm(c_mat, axis=1, keepdims=True)
+            c_norms = np.where(c_norms < 1e-9, 1.0, c_norms)
+            c_mat_norm = c_mat / c_norms
+
+            emb_links = 0
+            for para in unlinked_paras:
+                p_emb = np.array(para["embedding"], dtype=np.float32)
+                p_norm = np.linalg.norm(p_emb)
+                if p_norm < 1e-9:
+                    continue  # Zero-Vektor (Embedding fehlgeschlagen) → überspringen
+                p_emb_norm = p_emb / p_norm
+
+                # Ähnlichkeit zu allen Konzepten auf einmal (Vektorprodukt)
+                sims = c_mat_norm @ p_emb_norm  # shape: (n_concepts,)
+
+                for ci, sim in enumerate(sims):
+                    if float(sim) >= EMB_LINK_THRESHOLD:
+                        concept = concepts_with_emb[ci]
+                        link_key = (para["paragraph_id"], concept["concept_id"])
+                        if link_key not in seen_links:
+                            seen_links.add(link_key)
+                            paragraph_links.append({
+                                "paragraph_id": para["paragraph_id"],
+                                "concept_id":   concept["concept_id"],
+                                "confidence":   round(float(sim), 3),
+                            })
+                            emb_links += 1
+
+            log.info(
+                "Embedding-Fallback: %d zusätzliche Links für %d vorher unverknüpfte Paragraphen",
+                emb_links, len(unlinked_paras),
+            )
+        except Exception as e:
+            log.warning("Embedding-Fallback fehlgeschlagen (non-fatal): %s", e)
+
+    log.info("Gesamt paragraph→concept links: %d", len(paragraph_links))
     if progress_fn:
         progress_fn(f"{len(paragraph_links)} Para-Links erstellt – in Neo4j schreiben …", 80)
 

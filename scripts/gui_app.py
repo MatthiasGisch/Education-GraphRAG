@@ -1138,6 +1138,56 @@ else:
         "und die Neo4j-Vektorindizes neu aufbauen (Schema anlegen → Neu ingestieren)."
     )
 
+    # --- LM Studio Verbindungstest ---
+    if st.sidebar.button("🔌 LM Studio testen", key="test_lmstudio", use_container_width=True):
+        _base   = st.session_state["api_keys"].get("lmstudio_base_url", "http://localhost:1234/v1")
+        _chat   = st.session_state["api_keys"].get("lmstudio_chat_model", "local-model")
+        _embed  = st.session_state["api_keys"].get("lmstudio_embed_model", "nomic-embed-text")
+
+        from openai import OpenAI as _OAI
+        _cli = _OAI(base_url=_base, api_key="lm-studio")
+
+        # 1) Verfügbare Modelle auflisten
+        try:
+            _models = [m.id for m in _cli.models.list().data]
+            st.sidebar.success(f"✅ Verbunden — {len(_models)} Modell(e) geladen")
+            if _models:
+                st.sidebar.caption("Geladen: " + ", ".join(_models))
+            if _chat not in _models:
+                st.sidebar.warning(f"⚠️ Chat-Modell **'{_chat}'** nicht gefunden!\n\nVerfügbar: {', '.join(_models) or '—'}")
+            if _embed not in _models:
+                st.sidebar.warning(f"⚠️ Embedding-Modell **'{_embed}'** nicht gefunden!\n\nVerfügbar: {', '.join(_models) or '—'}")
+        except Exception as _e:
+            st.sidebar.error(f"❌ Keine Verbindung zu `{_base}`\n\n`{_e}`")
+            st.sidebar.stop()
+
+        # 2) Chat-Modell testen
+        try:
+            _r = _cli.chat.completions.create(
+                model=_chat,
+                messages=[{"role": "user", "content": 'Reply with exactly: {"ok": true}'}],
+                temperature=0,
+                max_tokens=20,
+            )
+            _ans = (_r.choices[0].message.content or "").strip()
+            st.sidebar.success(f"✅ Chat-Modell antwortet: `{_ans[:80]}`")
+        except Exception as _e:
+            st.sidebar.error(f"❌ Chat-Modell Fehler: `{_e}`")
+
+        # 3) Embedding-Modell testen
+        try:
+            _er = _cli.embeddings.create(model=_embed, input="test embedding")
+            _dim = len(_er.data[0].embedding)
+            st.sidebar.success(f"✅ Embedding-Modell: {_dim} Dimensionen")
+            _cfg_dim = int(st.session_state["api_keys"].get("lmstudio_embed_dim", 768))
+            if _dim != _cfg_dim:
+                st.sidebar.warning(
+                    f"⚠️ Eingestellte Dimension ({_cfg_dim}) ≠ tatsächliche Dimension ({_dim}). "
+                    f"Bitte Embedding-Dimension auf **{_dim}** setzen!"
+                )
+        except Exception as _e:
+            st.sidebar.error(f"❌ Embedding-Modell Fehler: `{_e}`")
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Gamma Präsentationen**")
 st.session_state["api_keys"]["gamma_api_key"] = st.sidebar.text_input(
@@ -2017,7 +2067,19 @@ with tab_ingest:
                         
                         # Validation
                         validation = validate_ingestion_quality(rep)
-                        
+
+                        # Spezifische Diagnose wenn 0 Konzepte im lokalen Modus
+                        if rep.get("n_concepts", 0) == 0 and cfg.LLM_MODE == "local":
+                            st.error(
+                                "❌ **0 Konzepte extrahiert (Lokaler Modus)**\n\n"
+                                "Mögliche Ursachen:\n"
+                                "- LM Studio Server läuft nicht oder ist nicht erreichbar\n"
+                                "- Modellname stimmt nicht mit dem geladenen Modell überein\n"
+                                "- Das Modell hat nicht im erwarteten JSON-Format geantwortet\n\n"
+                                "👉 Nutze **'🔌 LM Studio testen'** in der Sidebar um die Verbindung zu prüfen.\n\n"
+                                "👉 Starte die GUI neu (`Strg+C` → `streamlit run`) damit Code-Änderungen wirksam werden."
+                            )
+
                         # Show summary
                         with st.expander(f"{rep['title']} ({validation['quality_label']})"):
                             summary = create_ingestion_summary(rep, validation)
