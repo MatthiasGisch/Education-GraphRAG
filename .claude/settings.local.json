@@ -11,7 +11,12 @@
       "Bash(grep -n \"def update_paper_progress\\\\|progress_callback\\\\|report_progress\" C:\\\\\\\\Users\\\\\\\\matth\\\\\\\\Desktop\\\\\\\\masterthesis_neu\\\\\\\\scripts\\\\\\\\gui_app.py)",
       "Bash(python -m spacy download en_core_web_sm)",
       "Bash(pip install:*)",
-      "Bash(python -c ':*)"
+      "Bash(python -c ':*)",
+      "Bash(git -C \"C:/Users/matth/Desktop/masterthesis-neu\" branch --show-current)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/neo.py'\\).read\\(\\)\\); print\\('neo.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/gui_app.py'\\).read\\(\\)\\); print\\('gui_app.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/neo.py', encoding='utf-8'\\).read\\(\\)\\); print\\('neo.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/gui_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('gui_app.py OK'\\)\")"
     ]
   }
 }

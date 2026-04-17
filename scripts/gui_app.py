@@ -1232,8 +1232,9 @@ except ValueError:
 # =========================
 # Main Tabs
 # =========================
-tab_ingest, tab_coursegen, tab_gamma, tab_synthesia, tab_cypher = st.tabs([
+tab_ingest, tab_papers, tab_coursegen, tab_gamma, tab_synthesia, tab_cypher = st.tabs([
     "Dokumente aufnehmen",
+    "Paperverwaltung",
     "Kursgenerator",
     "Slideexport",
     "Videoexport",
@@ -1722,7 +1723,7 @@ with tab_synthesia:
 
 # ---- Tab: Ingest & Konzepte (Unified) ----
 with tab_ingest:
-    st.subheader("Dokumente aufnehmen & Metadaten verwalten")
+    st.subheader("Dokumente aufnehmen")
     
     # === Concept & Ingest Settings ===
     with st.expander("Konzept-Extraktion & Topic-Einstellungen", expanded=True):
@@ -2133,92 +2134,6 @@ with tab_ingest:
 
     st.markdown("---")
     
-    # === Paper-Metadaten bearbeiten ===
-    with st.expander("Vorhandene Papers bearbeiten", expanded=False):
-        st.markdown("**Bearbeite Metadaten für bereits aufgenommene Papers**")
-        
-        neo = get_neo()
-        all_papers = neo.run("""
-            MATCH (p:Paper)
-            RETURN p.paper_id AS paper_id, p.title AS title,
-                   p.author AS author, p.publication_year AS publication_year,
-                   p.doi AS doi, p.url AS url, p.source AS source, p.publisher AS publisher
-            ORDER BY p.title
-        """)
-        
-        if not all_papers:
-            st.info("Noch keine Papers im System. Nutze den Ingest unten, um Papers hochzuladen.")
-        else:
-            # Paper-Auswahl
-            paper_titles = {p["title"] or f"Ohne Titel ({p['paper_id']})": p["paper_id"] for p in all_papers}
-            selected_title = st.selectbox("Paper auswählen", options=list(paper_titles.keys()))
-            selected_paper_id = paper_titles[selected_title]
-            
-            # Hole aktuelle Metadaten
-            paper_data = next(p for p in all_papers if p["paper_id"] == selected_paper_id)
-            
-            st.markdown("---")
-            
-            # Bearbeitungsformular
-            with st.form(key=f"edit_paper_{selected_paper_id}"):
-                st.markdown(f"**Bearbeite: {paper_data['title'] or 'Ohne Titel'}**")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    new_title = st.text_input("Titel", value=paper_data.get("title") or "")
-                    new_author = st.text_area("Autor(en) (komma-getrennt)", value=paper_data.get("author") or "", height=80)
-                    new_year = st.text_input("Erscheinungsjahr", value=paper_data.get("publication_year") or "")
-                    new_doi = st.text_input("DOI", value=paper_data.get("doi") or "")
-                
-                with col2:
-                    new_url = st.text_input("URL", value=paper_data.get("url") or "")
-                    new_source = st.text_input("Quelle", value=paper_data.get("source") or "")
-                    new_publisher = st.text_input("Verlag", value=paper_data.get("publisher") or "")
-                
-                col_save, col_reset = st.columns(2)
-                with col_save:
-                    save_btn = st.form_submit_button("Änderungen speichern", type="primary", use_container_width=True)
-                with col_reset:
-                    reset_btn = st.form_submit_button("Zurücksetzen", use_container_width=True)
-                
-                if save_btn:
-                    updates = {}
-                    if new_title != (paper_data.get("title") or ""):
-                        updates["title"] = new_title
-                    if new_author != (paper_data.get("author") or ""):
-                        # Konvertiere komma-getrennt zu semikolon
-                        authors_list = [a.strip() for a in new_author.split(",") if a.strip()]
-                        updates["author"] = ";".join(authors_list)
-                    if new_year != (paper_data.get("publication_year") or ""):
-                        updates["publication_year"] = new_year
-                    if new_doi != (paper_data.get("doi") or ""):
-                        updates["doi"] = new_doi
-                    if new_url != (paper_data.get("url") or ""):
-                        updates["url"] = new_url
-                    if new_source != (paper_data.get("source") or ""):
-                        updates["source"] = new_source
-                    if new_publisher != (paper_data.get("publisher") or ""):
-                        updates["publisher"] = new_publisher
-                    
-                    if updates:
-                        # Update in Neo4j
-                        set_parts = []
-                        params = {"pid": selected_paper_id}
-                        for k, v in updates.items():
-                            params[k] = v
-                            set_parts.append(f"p.{k} = ${k}")
-                        cypher = "MATCH (p:Paper {paper_id:$pid}) SET " + ", ".join(set_parts)
-                        neo.run(cypher, params)
-                        st.success("Metadaten erfolgreich aktualisiert!")
-                        st.rerun()
-                    else:
-                        st.info("Keine Änderungen vorgenommen.")
-                
-                if reset_btn:
-                    st.rerun()
-    
-    st.markdown("---")
-    
     @st.dialog("Graph leeren - Bestätigung erforderlich")
     def confirm_delete_dialog():
         st.warning("Achtung: Dies löscht ALLE Knoten und Kanten. Das Schema bleibt erhalten.")
@@ -2236,6 +2151,215 @@ with tab_ingest:
     
     if st.button("Graph leeren", type="secondary"):
         confirm_delete_dialog()
+
+    # ---- Tab: Paperverwaltung ----
+    with tab_papers:
+        st.subheader("Paperverwaltung")
+        st.markdown("Übersicht, Bearbeitung und Verwaltung aller aufgenommenen Papers im Wissensgraph.")
+
+        neo_pm = get_neo()
+        papers_list = neo_pm.list_papers()
+
+        if not papers_list:
+            st.info("Noch keine Papers im System. Nutze den Tab **'Dokumente aufnehmen'**, um PDFs hochzuladen.")
+        else:
+            # --- Kennzahlen-Übersicht ---
+            total_papers = len(papers_list)
+            total_paras  = sum((p.get("n_paragraphs") or 0) for p in papers_list)
+            total_figs   = sum((p.get("n_figures")   or 0) for p in papers_list)
+            total_secs   = sum((p.get("n_sections")  or 0) for p in papers_list)
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Papers",       total_papers)
+            m2.metric("Paragraphen",  total_paras)
+            m3.metric("Abbildungen",  total_figs)
+            m4.metric("Abschnitte",   total_secs)
+
+            st.markdown("---")
+
+            # --- Suchfilter ---
+            search_pm = st.text_input(
+                "🔍 Suche nach Titel oder Autor",
+                placeholder="Suchbegriff eingeben …",
+                key="pm_search",
+            )
+
+            filtered_papers = papers_list
+            if search_pm:
+                s = search_pm.lower()
+                filtered_papers = [
+                    p for p in papers_list
+                    if s in (p.get("title")  or "").lower()
+                    or s in (p.get("author") or "").lower()
+                ]
+
+            st.caption(f"{len(filtered_papers)} von {total_papers} Paper(s) angezeigt")
+            st.markdown("")
+
+            # --- Paper-Liste ---
+            for paper in filtered_papers:
+                pid     = paper["paper_id"]
+                title   = paper.get("title")  or "Ohne Titel"
+                author  = paper.get("author") or "—"
+                year    = paper.get("publication_year") or "—"
+                pages   = paper.get("pages")  or "—"
+                n_para  = paper.get("n_paragraphs") or 0
+                n_fig   = paper.get("n_figures")    or 0
+                n_sec   = paper.get("n_sections")   or 0
+                raw_date = paper.get("ingested_at") or ""
+                ingested = raw_date[:10] if raw_date else "—"
+                doi      = paper.get("doi") or ""
+
+                # Dateigröße human-readable
+                fsize = paper.get("file_size") or 0
+                if fsize >= 1_048_576:
+                    fsize_str = f"{fsize / 1_048_576:.1f} MB"
+                elif fsize >= 1024:
+                    fsize_str = f"{fsize / 1024:.0f} KB"
+                else:
+                    fsize_str = f"{fsize} B" if fsize else "—"
+
+                is_editing  = st.session_state.get(f"pm_editing_{pid}",  False)
+                is_deleting = st.session_state.get(f"pm_confirm_{pid}", False)
+
+                with st.container(border=True):
+                    col_info, col_stats, col_edit, col_del = st.columns([4, 2, 1, 1])
+
+                    with col_info:
+                        st.markdown(f"**{title}**")
+                        st.caption(
+                            f"👤 {author}  •  📅 {year}  •  "
+                            f"📄 {pages} Seiten  •  💾 {fsize_str}  •  "
+                            f"Aufgenommen: {ingested}"
+                        )
+                        if doi:
+                            st.caption(f"DOI: `{doi}`")
+
+                    with col_stats:
+                        s1, s2, s3 = st.columns(3)
+                        s1.metric("Para",    n_para, label_visibility="visible")
+                        s2.metric("Abb.",    n_fig,  label_visibility="visible")
+                        s3.metric("Abschn.", n_sec,  label_visibility="visible")
+
+                    with col_edit:
+                        st.markdown("")  # vertikaler Abstand
+                        edit_label = "✏️" if not is_editing else "✖️"
+                        edit_help  = "Metadaten bearbeiten" if not is_editing else "Bearbeitung schließen"
+                        if st.button(edit_label, key=f"edit_btn_{pid}",
+                                     help=edit_help, use_container_width=True):
+                            if is_editing:
+                                st.session_state.pop(f"pm_editing_{pid}", None)
+                            else:
+                                st.session_state[f"pm_editing_{pid}"] = True
+                                st.session_state.pop(f"pm_confirm_{pid}", None)
+                            st.rerun()
+
+                    with col_del:
+                        st.markdown("")  # vertikaler Abstand
+                        if st.button("🗑️", key=f"del_btn_{pid}",
+                                     help=f"Paper löschen: {title}",
+                                     use_container_width=True):
+                            st.session_state[f"pm_confirm_{pid}"] = True
+                            st.session_state.pop(f"pm_editing_{pid}", None)
+                            st.rerun()
+
+                # --- Inline-Bearbeitungsformular ---
+                if is_editing:
+                    with st.container(border=False):
+                        st.markdown(f"##### ✏️ Metadaten bearbeiten: *{title}*")
+                        with st.form(key=f"pm_edit_form_{pid}"):
+                            fc1, fc2 = st.columns(2)
+                            with fc1:
+                                new_title  = st.text_input("Titel",
+                                    value=paper.get("title") or "")
+                                new_author = st.text_area("Autor(en) (komma-getrennt)",
+                                    value=paper.get("author") or "", height=80)
+                                new_year   = st.text_input("Erscheinungsjahr",
+                                    value=paper.get("publication_year") or "")
+                                new_doi    = st.text_input("DOI",
+                                    value=paper.get("doi") or "")
+                            with fc2:
+                                new_url       = st.text_input("URL",
+                                    value=paper.get("url") or "")
+                                new_source    = st.text_input("Quelle",
+                                    value=paper.get("source") or "")
+                                new_publisher = st.text_input("Verlag",
+                                    value=paper.get("publisher") or "")
+
+                            fb_save, fb_cancel = st.columns(2)
+                            with fb_save:
+                                save_btn = st.form_submit_button(
+                                    "💾 Speichern", type="primary", use_container_width=True)
+                            with fb_cancel:
+                                cancel_btn = st.form_submit_button(
+                                    "Abbrechen", use_container_width=True)
+
+                            if save_btn:
+                                updates = {}
+                                if new_title != (paper.get("title") or ""):
+                                    updates["title"] = new_title
+                                if new_author != (paper.get("author") or ""):
+                                    authors_list = [a.strip() for a in new_author.split(",") if a.strip()]
+                                    updates["author"] = ";".join(authors_list)
+                                if new_year != (paper.get("publication_year") or ""):
+                                    updates["publication_year"] = new_year
+                                if new_doi != (paper.get("doi") or ""):
+                                    updates["doi"] = new_doi
+                                if new_url != (paper.get("url") or ""):
+                                    updates["url"] = new_url
+                                if new_source != (paper.get("source") or ""):
+                                    updates["source"] = new_source
+                                if new_publisher != (paper.get("publisher") or ""):
+                                    updates["publisher"] = new_publisher
+
+                                if updates:
+                                    set_parts = []
+                                    params = {"pid": pid}
+                                    for k, v in updates.items():
+                                        params[k] = v
+                                        set_parts.append(f"p.{k} = ${k}")
+                                    neo_pm.run(
+                                        "MATCH (p:Paper {paper_id:$pid}) SET " + ", ".join(set_parts),
+                                        params,
+                                    )
+                                    st.success("✅ Metadaten erfolgreich aktualisiert!")
+                                else:
+                                    st.info("Keine Änderungen vorgenommen.")
+                                st.session_state.pop(f"pm_editing_{pid}", None)
+                                st.rerun()
+
+                            if cancel_btn:
+                                st.session_state.pop(f"pm_editing_{pid}", None)
+                                st.rerun()
+
+                # --- Inline-Löschbestätigung ---
+                if is_deleting:
+                    st.warning(
+                        f"⚠️ **Wirklich löschen?** Dies entfernt das Paper "
+                        f"*'{title}'* mit allen {n_para} Paragraphen, "
+                        f"{n_fig} Abbildungen und {n_sec} Abschnitten aus dem Graph. "
+                        f"Konzepte bleiben erhalten."
+                    )
+                    c_yes, c_no, _ = st.columns([1, 1, 4])
+                    with c_yes:
+                        if st.button("✅ Ja, löschen", key=f"pm_yes_{pid}",
+                                     type="primary", use_container_width=True):
+                            with st.spinner(f"Lösche '{title}' …"):
+                                del_result = neo_pm.delete_paper(pid)
+                            d = del_result.get("deleted", {})
+                            st.success(
+                                f"Paper gelöscht — "
+                                f"{d.get('paragraphs', 0)} Paragraphen, "
+                                f"{d.get('figures', 0)} Abbildungen, "
+                                f"{d.get('sections', 0)} Abschnitte entfernt."
+                            )
+                            st.session_state.pop(f"pm_confirm_{pid}", None)
+                            st.rerun()
+                    with c_no:
+                        if st.button("❌ Abbrechen", key=f"pm_no_{pid}",
+                                     use_container_width=True):
+                            st.session_state.pop(f"pm_confirm_{pid}", None)
+                            st.rerun()
 
     with tab_cypher:
         # --- Cypher ausführen & visualisieren ---

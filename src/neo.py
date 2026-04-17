@@ -867,6 +867,106 @@ class Neo4jClient:
             {"cid": concept_id}
         )
         return {"deleted": result[0]["deleted"] if result else 0}
+
+    # ------------------------------------------------------------------
+    # Paper-Verwaltung
+    # ------------------------------------------------------------------
+
+    def list_papers(self) -> List[Dict]:
+        """Gibt alle Papers mit Statistiken und allen editierbaren Metadaten zurück."""
+        result = self.run(
+            """
+            MATCH (p:Paper)
+            OPTIONAL MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+            OPTIONAL MATCH (p)-[:HAS_FIGURE]->(fig:Figure)
+            OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)
+            RETURN
+                p.paper_id          AS paper_id,
+                p.title             AS title,
+                p.author            AS author,
+                p.publication_year  AS publication_year,
+                p.doi               AS doi,
+                p.url               AS url,
+                p.source            AS source,
+                p.publisher         AS publisher,
+                p.page_count        AS pages,
+                p.ingested_at       AS ingested_at,
+                p.file_size         AS file_size,
+                count(DISTINCT para) AS n_paragraphs,
+                count(DISTINCT fig)  AS n_figures,
+                count(DISTINCT sec)  AS n_sections
+            ORDER BY p.ingested_at DESC
+            """
+        )
+        return result or []
+
+    def delete_paper(self, paper_id: str) -> Dict[str, Any]:
+        """
+        Löscht ein Paper und alle zugehörigen Knoten/Kanten vollständig aus dem Graph.
+
+        Gelöscht werden: Paragraphen, Abbildungen, Abschnitte, SEMANTIC_RELATION-
+        und CO_OCCURS_WITH-Kanten mit dieser paper_id sowie der Paper-Knoten selbst.
+        Konzepte bleiben erhalten (können paper-übergreifend geteilt sein).
+
+        Returns:
+            {"paper_id": str, "deleted": {"papers", "paragraphs", "figures", "sections"}}
+        """
+        # Zähle vor dem Löschen für die Rückmeldung
+        counts = self.run(
+            """
+            MATCH (p:Paper {paper_id: $pid})
+            OPTIONAL MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+            OPTIONAL MATCH (p)-[:HAS_FIGURE]->(fig:Figure)
+            OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)
+            RETURN
+                count(DISTINCT p)    AS papers,
+                count(DISTINCT para) AS paragraphs,
+                count(DISTINCT fig)  AS figures,
+                count(DISTINCT sec)  AS sections
+            """,
+            {"pid": paper_id},
+        )
+        c = counts[0] if counts else {}
+
+        # 1) Semantic Relations dieses Papers löschen
+        self.run(
+            "MATCH ()-[r:SEMANTIC_RELATION {paper_id: $pid}]-() DELETE r",
+            {"pid": paper_id},
+        )
+
+        # 2) Co-Occurrence Relations dieses Papers löschen
+        self.run(
+            "MATCH ()-[r:CO_OCCURS_WITH {paper_id: $pid}]-() DELETE r",
+            {"pid": paper_id},
+        )
+
+        # 3) Paragraphen, Abbildungen, Abschnitte (DETACH entfernt alle Kanten)
+        self.run(
+            """
+            MATCH (p:Paper {paper_id: $pid})
+            OPTIONAL MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
+            OPTIONAL MATCH (p)-[:HAS_FIGURE]->(fig:Figure)
+            OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)
+            DETACH DELETE para, fig, sec
+            """,
+            {"pid": paper_id},
+        )
+
+        # 4) Paper-Knoten selbst löschen
+        self.run(
+            "MATCH (p:Paper {paper_id: $pid}) DETACH DELETE p",
+            {"pid": paper_id},
+        )
+
+        return {
+            "paper_id": paper_id,
+            "deleted": {
+                "papers":     c.get("papers", 0),
+                "paragraphs": c.get("paragraphs", 0),
+                "figures":    c.get("figures", 0),
+                "sections":   c.get("sections", 0),
+            },
+        }
     
     def merge_concepts(self, source_id: str, target_id: str) -> dict:
         """Merge source concept into target concept."""
