@@ -19,6 +19,11 @@ import streamlit.components.v1 as components
 from neo4j.graph import Path as NeoPath, Node as NeoNode, Relationship as NeoRel
 import plotly.graph_objects as go
 import networkx as nx
+try:
+    from streamlit_agraph import agraph, Node as ANode, Edge as AEdge, Config as AConfig
+    _AGRAPH_AVAILABLE = True
+except ImportError:
+    _AGRAPH_AVAILABLE = False
 
 # ---- Projekt-Root in sys.path aufnehmen ----
 ROOT = Path(__file__).resolve().parents[1]
@@ -565,44 +570,49 @@ def run_cypher_with_params(query_text: str, for_graph: bool = False) -> list[dic
         return neo.run(cypher, params)
 
 
-def visualize_with_plotly(
-    records: List[Dict[str, Any]], 
+def visualize_with_agraph(
+    records: List[Dict[str, Any]],
     height: int = 650,
-    layout: str = 'spring',
-    node_size_mode: str = 'degree',
+    layout: str = 'cose',
     show_edge_labels: bool = True,
-    color_by: str = 'type'
 ) -> None:
     """
-    Plotly + NetworkX basierte Graph-Visualisierung mit mehreren Layout-Algorithmen.
-    
+    streamlit-agraph basierte interaktive Graph-Visualisierung.
+
     Args:
-        records: Liste von Neo4j-Records (wie bei visualize_records_as_graph)
+        records: Liste von Neo4j-Records
         height: Höhe der Visualisierung in Pixeln
-        layout: Layout-Algorithmus ('spring', 'kamada_kawai', 'circular', 'hierarchical', 'shell')
-        node_size_mode: Größenberechnung ('degree', 'uniform', 'betweenness')
+        layout: Layout-Algorithmus ('cose', 'dagre', 'circle', 'breadthfirst', 'grid')
         show_edge_labels: Zeige Relationsnamen auf Kanten
-        color_by: Färbung ('type', 'degree', 'community')
     """
-    # 1) Datenstrukturen für Knoten & Kanten sammeln
+    if not _AGRAPH_AVAILABLE:
+        st.error("streamlit-agraph nicht installiert. Bitte ausführen: `.venv/Scripts/pip install streamlit-agraph` und Streamlit mit `.venv/Scripts/streamlit run scripts/gui_app.py` starten.")
+        return
+
+    # Farb-Mapping nach Node-Typ
+    color_map = {
+        'Concept':   '#FFD700',
+        'Paper':     '#4A90E2',
+        'Paragraph': '#7ED321',
+        'Figure':    '#BD10E0',
+        'Section':   '#F5A623',
+        'Topic':     '#E74C3C',
+    }
+    default_color = '#CCCCCC'
+
     processed_nodes: Dict[str, Dict[str, Any]] = {}
     processed_edges: List[tuple] = []
-    node_set = set()
-    
+
     def _extract_node_info(obj: Any) -> tuple:
-        """Hilfsfunktion: Extrahiere (node_id, label, group) aus verschiedenen Objekttypen."""
         if isinstance(obj, NeoNode):
             nid = str(obj.element_id)
             labels = list(obj.labels) if obj.labels else ["Node"]
-            label_str = ":".join(labels)
+            group = labels[0]
             props = dict(obj)
-            
-            # Bestimme Anzeige-Label
             display_label = props.get("name", props.get("title", props.get("text", nid)))
-            if isinstance(display_label, str) and len(display_label) > 50:
-                display_label = display_label[:47] + "..."
-            
-            return nid, display_label, label_str, props
+            if isinstance(display_label, str) and len(display_label) > 40:
+                display_label = display_label[:37] + "..."
+            return nid, display_label, group, props
         elif isinstance(obj, dict):
             nid = str(obj.get("id", obj.get("element_id", id(obj))))
             label = obj.get("label", obj.get("name", "Node"))
@@ -611,9 +621,8 @@ def visualize_with_plotly(
         else:
             nid = str(id(obj))
             return nid, str(obj), "unknown", {}
-    
+
     def _walk(obj: Any):
-        """Rekursiv durch Neo4j-Objekte laufen."""
         if isinstance(obj, NeoPath):
             for node in obj.nodes:
                 _walk(node)
@@ -622,268 +631,105 @@ def visualize_with_plotly(
         elif isinstance(obj, NeoNode):
             nid, label, group, props = _extract_node_info(obj)
             if nid not in processed_nodes:
-                processed_nodes[nid] = {
-                    'label': label,
-                    'group': group,
-                    'properties': props
-                }
-                node_set.add(nid)
+                processed_nodes[nid] = {'label': label, 'group': group, 'properties': props}
         elif isinstance(obj, NeoRel):
             src_id = str(obj.start_node.element_id)
             dst_id = str(obj.end_node.element_id)
-            rel_type = obj.type if obj.type else "RELATED"
-            
+            rel_type = obj.type or "RELATED"
             _walk(obj.start_node)
             _walk(obj.end_node)
             processed_edges.append((src_id, dst_id, rel_type))
         elif isinstance(obj, dict):
-            # Triplet-Format: {source, target, relation}
             if "source" in obj and "target" in obj:
-                src = obj["source"]
-                tgt = obj["target"]
-                rel = obj.get("relation", "RELATED")
-                
-                src_info = _extract_node_info(src)
-                tgt_info = _extract_node_info(tgt)
-                
-                if src_info[0] not in processed_nodes:
-                    processed_nodes[src_info[0]] = {
-                        'label': src_info[1],
-                        'group': src_info[2],
-                        'properties': src_info[3]
-                    }
-                if tgt_info[0] not in processed_nodes:
-                    processed_nodes[tgt_info[0]] = {
-                        'label': tgt_info[1],
-                        'group': tgt_info[2],
-                        'properties': tgt_info[3]
-                    }
-                
-                processed_edges.append((src_info[0], tgt_info[0], rel))
+                si = _extract_node_info(obj["source"])
+                ti = _extract_node_info(obj["target"])
+                for info in (si, ti):
+                    if info[0] not in processed_nodes:
+                        processed_nodes[info[0]] = {'label': info[1], 'group': info[2], 'properties': info[3]}
+                processed_edges.append((si[0], ti[0], obj.get("relation", "RELATED")))
             else:
-                # Nested dicts
                 for v in obj.values():
                     _walk(v)
         elif isinstance(obj, (list, tuple)):
             for item in obj:
                 _walk(item)
-    
-    # Records durchlaufen
+
     for rec in records:
-        if isinstance(rec, dict):
-            _walk(rec)
-        else:
-            _walk(rec)
-    
-    # Debug-Ausgabe
-    st.info(f"🔍 Debug: {len(processed_nodes)} Knoten, {len(processed_edges)} Kanten gefunden")
-    
+        _walk(rec)
+
     if not processed_nodes:
-        st.warning("⚠️ Keine Knoten gefunden zum Visualisieren. Prüfe ob die Query Nodes/Paths zurückgibt.")
+        st.warning("Keine Knoten gefunden. Prüfe ob die Query Nodes/Paths zurückgibt.")
         return
-    
-    # 2) NetworkX Graph aufbauen
-    G = nx.DiGraph()
-    
+
+    st.info(f"Graph: {len(processed_nodes)} Knoten, {len(processed_edges)} Kanten")
+
+    # agraph Nodes & Edges aufbauen
+    agraph_nodes = []
+    agraph_edges = []
+
     for nid, meta in processed_nodes.items():
-        G.add_node(nid, **meta)
-    
+        group = meta.get('group', 'default')
+        color = color_map.get(group, default_color)
+        props = meta.get('properties', {})
+
+        # Tooltip aus Properties
+        tooltip_parts = [f"Typ: {group}"]
+        for k, v in list(props.items())[:6]:
+            if k not in ('embedding',):
+                v_str = str(v)[:60]
+                tooltip_parts.append(f"{k}: {v_str}")
+        tooltip = "\n".join(tooltip_parts)
+
+        agraph_nodes.append(ANode(
+            id=nid,
+            label=meta.get('label', nid),
+            size=25,
+            color=color,
+            title=tooltip,
+            font={"color": "white", "size": 13, "strokeWidth": 3, "strokeColor": "#000000"},
+        ))
+
+    seen_edges = set()
     for src, dst, rel_type in processed_edges:
-        if src in G and dst in G:
-            G.add_edge(src, dst, relation=rel_type)
-    
-    # Debug-Ausgabe
-    st.info(f"📊 NetworkX Graph: {len(G.nodes())} Knoten, {len(G.edges())} Kanten")
-    
-    if len(G.nodes()) == 0:
-        st.warning("⚠️ Graph ist leer nach NetworkX-Erstellung.")
-        return
-    
-    # 3) Layout berechnen
-    try:
-        if layout == 'spring':
-            pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-        elif layout == 'kamada_kawai':
-            pos = nx.kamada_kawai_layout(G)
-        elif layout == 'circular':
-            pos = nx.circular_layout(G)
-        elif layout == 'shell':
-            pos = nx.shell_layout(G)
-        elif layout == 'hierarchical':
-            # Versuche hierarchisches Layout
-            if nx.is_directed_acyclic_graph(G):
-                pos = nx.planar_layout(G) if nx.check_planarity(G)[0] else nx.spring_layout(G, k=1.0, iterations=50)
-            else:
-                # Fallback zu spring wenn nicht DAG
-                pos = nx.spring_layout(G, k=1.0, iterations=50, seed=42)
-        else:
-            pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-    except:
-        # Fallback bei Layout-Problemen
-        pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-    
-    # 4) Kanten-Visualisierung
-    edge_traces = []
-    
-    for edge in G.edges(data=True):
-        x0, y0 = pos[edge[0]]
-        x1, y1 = pos[edge[1]]
-        
-        # Kanten-Linie
-        edge_trace = go.Scatter(
-            x=[x0, x1, None],
-            y=[y0, y1, None],
-            mode='lines',
-            line=dict(width=1, color='#888'),
-            hoverinfo='none',
-            showlegend=False
-        )
-        edge_traces.append(edge_trace)
-        
-        # Kanten-Label (optional)
-        if show_edge_labels:
-            rel_type = edge[2].get('relation', '')
-            if rel_type:
-                edge_label_trace = go.Scatter(
-                    x=[(x0 + x1) / 2],
-                    y=[(y0 + y1) / 2],
-                    mode='text',
-                    text=[rel_type],
-                    textfont=dict(size=8, color='#666'),
-                    hoverinfo='none',
-                    showlegend=False
-                )
-                edge_traces.append(edge_label_trace)
-    
-    # 5) Knoten-Visualisierung
-    node_x = []
-    node_y = []
-    node_text = []
-    node_hover = []
-    node_color = []
-    node_size = []
-    
-    # Farb-Mapping nach Typ
-    color_map = {
-        'Concept': '#FFD700',      # Gold
-        'Paper': '#4A90E2',        # Blau
-        'Paragraph': '#7ED321',    # Grün
-        'Figure': '#BD10E0',       # Lila
-        'Section': '#F5A623',      # Orange
-        'default': '#CCCCCC'       # Grau
-    }
-    
-    # Community Detection (optional)
-    communities = None
-    if color_by == 'community' and len(G) > 2:
-        try:
-            communities = nx.community.greedy_modularity_communities(G.to_undirected())
-            node_to_community = {}
-            for i, comm in enumerate(communities):
-                for node in comm:
-                    node_to_community[node] = i
-        except:
-            communities = None
-    
-    # Betweenness Centrality (optional)
-    betweenness = None
-    if node_size_mode == 'betweenness':
-        try:
-            betweenness = nx.betweenness_centrality(G)
-        except:
-            betweenness = None
-    
-    for node in G.nodes():
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        
-        node_info = processed_nodes[node]
-        label = node_info.get('label', '')
-        group = node_info.get('group', 'default')
-        props = node_info.get('properties', {})
-        
-        node_text.append(label)
-        
-        # Hover-Text mit Details
-        hover_parts = [f"<b>{label}</b>", f"Typ: {group}"]
-        if props:
-            for k, v in list(props.items())[:5]:  # Nur erste 5 Properties
-                if k not in ['embedding', 'label', 'name', 'title']:
-                    v_str = str(v)
-                    if len(v_str) > 50:
-                        v_str = v_str[:47] + "..."
-                    hover_parts.append(f"{k}: {v_str}")
-        
-        degree = G.degree(node)
-        hover_parts.append(f"Verbindungen: {degree}")
-        node_hover.append("<br>".join(hover_parts))
-        
-        # Farbe bestimmen
-        if color_by == 'type':
-            node_color.append(color_map.get(group, color_map['default']))
-        elif color_by == 'degree':
-            node_color.append(degree)
-        elif color_by == 'community' and communities:
-            comm_id = node_to_community.get(node, 0)
-            node_color.append(comm_id)
-        else:
-            node_color.append(color_map.get(group, color_map['default']))
-        
-        # Größe bestimmen
-        if node_size_mode == 'degree':
-            size = 10 + min(degree * 3, 50)
-        elif node_size_mode == 'betweenness' and betweenness:
-            size = 10 + betweenness[node] * 100
-        else:
-            size = 20
-        node_size.append(size)
-    
-    # Knoten-Trace
-    node_trace = go.Scatter(
-        x=node_x,
-        y=node_y,
-        mode='markers+text',
-        text=node_text,
-        textposition="top center",
-        textfont=dict(size=10, color='#000'),
-        hovertext=node_hover,
-        hoverinfo='text',
-        marker=dict(
-            size=node_size,
-            color=node_color,
-            colorscale='Viridis' if color_by in ['degree', 'community'] else None,
-            showscale=color_by in ['degree', 'community'],
-            colorbar=dict(
-                thickness=15,
-                title=color_by.capitalize(),
-                xanchor='left',
-                titleside='right'
-            ) if color_by in ['degree', 'community'] else None,
-            line=dict(width=2, color='#FFF')
-        ),
-        showlegend=False
+        if src in processed_nodes and dst in processed_nodes:
+            key = (src, dst, rel_type)
+            if key not in seen_edges:
+                seen_edges.add(key)
+                agraph_edges.append(AEdge(
+                    source=src,
+                    target=dst,
+                    label=rel_type if show_edge_labels else "",
+                    color="#888888",
+                ))
+
+    use_physics = layout not in ('circle', 'breadthfirst', 'grid')
+    config = AConfig(
+        width="100%",
+        height=height,
+        directed=True,
+        physics=use_physics,
+        hierarchical=(layout == 'dagre'),
+        # vis.js passthrough options
+        interaction={
+            "zoomView": True,
+            "zoomSpeed": 1,
+            "navigationButtons": True,
+            "keyboard": True,
+            "hover": True,
+        },
+        edges={
+            "smooth": {"type": "continuous"},
+            "font": {"size": 11, "color": "#cccccc", "strokeWidth": 2, "strokeColor": "#000000"},
+            "arrows": {"to": {"enabled": True, "scaleFactor": 0.6}},
+        },
+        nodes={
+            "borderWidth": 2,
+            "borderWidthSelected": 4,
+            "shadow": True,
+        },
     )
-    
-    # 6) Figure erstellen
-    fig = go.Figure(data=edge_traces + [node_trace])
-    
-    fig.update_layout(
-        title=dict(
-            text=f'Knowledge Graph Visualization ({layout.replace("_", " ").title()} Layout)',
-            font=dict(size=16)
-        ),
-        showlegend=False,
-        hovermode='closest',
-        margin=dict(b=20, l=5, r=5, t=40),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        plot_bgcolor='#F8F9FA',
-        height=height
-    )
-    
-    # 7) In Streamlit anzeigen
-    st.plotly_chart(fig, use_container_width=True)
+
+    agraph(nodes=agraph_nodes, edges=agraph_edges, config=config)
 
 
 # ---------- Query orchestrator (UI helper) ----------
@@ -2424,135 +2270,94 @@ with tab_ingest:
                             st.rerun()
 
     with tab_cypher:
-        # --- Cypher ausführen & visualisieren ---
-        st.subheader("Cypher ausführen & visualisieren")
+        st.subheader("Graph Explorer")
 
-        # Topics aus DB (Dropdown)
+        # --- Presets ---
         topics = list_topics()
-        colTop, colPreset = st.columns([1,1])
-        with colTop:
-            selected_topic = st.selectbox("Topic aus der DB", topics or ["(keins gefunden)"])
-            # JSON-Param für topic setzen
-            st.session_state["cypher_params_box"] = json.dumps({"topic": selected_topic}, ensure_ascii=False, indent=2)
-            st.session_state["cypher_ui_params"] = {"topic": selected_topic}
-
-        # Simplified presets (kept small for clarity)
         presets = {
-            "Topic → Concepts → Paragraphs & Figures":
-            """\
-    :param topic => "Künstliche Intelligenz";
-    MATCH p1 = (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
-    OPTIONAL MATCH p2 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
-    OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
-    OPTIONAL MATCH p4 = (para)-[:HAS_FIGURE]->(figS:Figure)
-    RETURN p1, p2, p3, p4
-    LIMIT 500
-    """,
-            "Alle Paper → Paragraphen":
-            """\
-    MATCH p = (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
-    RETURN p
-    LIMIT 400
-    """,
-            "Concept-Netzwerk (SEMANTIC_RELATION)":
-            """\
-    MATCH p = (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
-    RETURN p
-    LIMIT 200
-    """,
+            "Gesamtübersicht (Topic → Konzepte → Paper → Absätze → Abbildungen)": """\
+MATCH path = (t:Topic)-[:HAS_CONCEPT]->(c:Concept)
+RETURN path LIMIT 60
+UNION ALL
+MATCH path = (c:Concept)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
+RETURN path LIMIT 80
+UNION ALL
+MATCH path = (paper:Paper)-[:HAS_FIGURE]->(f:Figure)
+RETURN path LIMIT 40
+""",
+            "Alle Paper": """\
+MATCH path = (p:Paper)-[:HAS_CONCEPT]->(c:Concept)
+RETURN path LIMIT 120
+""",
+            "Konzept-Netzwerk": """\
+MATCH path = (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
+RETURN path LIMIT 150
+""",
+            "Paper → Abschnitte → Absätze": """\
+MATCH path = (p:Paper)-[:HAS_SECTION]->(s:Section)-[:HAS_PARAGRAPH]->(para:Paragraph)
+RETURN path LIMIT 80
+""",
+            "Paper → Abbildungen": """\
+MATCH path = (p:Paper)-[:HAS_FIGURE]->(f:Figure)
+RETURN path LIMIT 80
+""",
         }
 
-        with colPreset:
-            preset_name = st.selectbox("Preset wählen", list(presets.keys()))
-            if st.button("Preset laden"):
-                st.session_state["cypher_box"] = presets[preset_name]
-
-        cypher_in = st.text_area("Cypher", value=st.session_state.get("cypher_box", list(presets.values())[0]), height=240, key="cypher_box")
-
-        # Parameter (JSON) anzeigen/änderbar
-        params_text = st.text_area("Parameter (JSON)", value=st.session_state.get("cypher_params_box", json.dumps({"topic": selected_topic}, ensure_ascii=False, indent=2)), height=100, key="cypher_params_box")
-        st.session_state["cypher_ui_params"] = _extract_params_from_textarea(params_text)
-
-        # Visualisierungs-Optionen
-        st.markdown("---")
-        st.markdown("**Visualisierungs-Optionen (Plotly)**")
-        
-        col_viz1, col_viz2, col_viz3 = st.columns([1, 1, 1])
-        
-        with col_viz1:
+        # --- Steuerleiste (eine Zeile) ---
+        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+        with c1:
+            preset_name = st.selectbox("Preset", list(presets.keys()), label_visibility="collapsed")
+        with c2:
             layout_algo = st.selectbox(
-                "Layout-Algorithmus",
-                ["spring", "kamada_kawai", "circular", "hierarchical", "shell"],
-                index=0,
-                help="Spring: Force-directed (Standard)\nKamada-Kawai: Optimiert für Distanzen\nCircular: Kreisförmig\nHierarchical: Hierarchisch (wenn möglich)\nShell: Konzentrische Ringe"
+                "Layout", ["cose", "dagre", "circle", "breadthfirst", "grid"],
+                help="cose: Physik | dagre: Hierarchisch | circle: Kreisförmig",
+                label_visibility="collapsed"
             )
-        
-        with col_viz2:
-            show_edge_labels = st.checkbox("Relationsnamen anzeigen", value=True)
-        
-        with col_viz3:
-            color_by = st.selectbox(
-                "Färbung nach",
-                ["type", "degree", "community"],
-                index=0,
-                help="Type: Nach Node-Typ\nDegree: Nach Anzahl Verbindungen\nCommunity: Nach erkannten Clustern"
+        with c3:
+            show_edge_labels = st.checkbox("Kanten-Labels", value=True)
+        with c4:
+            run_preset = st.button("Ausführen", type="primary", use_container_width=True)
+
+        # --- Eigene Query (optional) ---
+        with st.expander("Eigene Cypher-Query schreiben"):
+            cypher_custom = st.text_area(
+                "Cypher", height=160, key="cypher_box",
+                placeholder="MATCH path = (n)-[r]->(m) RETURN path LIMIT 100",
+                help="Tipp: Verwende 'MATCH path = ... RETURN path' für die Graph-Visualisierung."
             )
-        
-        st.markdown("---")
+            run_custom = st.button("Custom Query ausführen")
 
-        colQ1, colQ2 = st.columns([1,1])
-        with colQ1:
-            if st.button("Query ausführen"):
-                try:
-                    # Für Visualisierung: rohe Neo4j-Objekte holen
-                    recs_graph = run_cypher_with_params(cypher_in, for_graph=True)
-                    # Für Daten-Anzeige: normale Daten
-                    recs_data = run_cypher_with_params(cypher_in, for_graph=False)
-                    
-                    st.success(f"{len(recs_data)} Record(s) erhalten.")
-                    with st.expander("Rohdaten anzeigen"):
-                        st.write(recs_data)
-                    
-                    # Visualisierung mit Plotly
-                    visualize_with_plotly(
-                        recs_graph, 
-                        height=650,
-                        layout=layout_algo,
-                        show_edge_labels=show_edge_labels,
-                        color_by=color_by
-                    )
-                except Exception as e:
-                    st.error(f"Cypher-Fehler: {e}")
-                    st.code(cypher_in, language="cypher")
+        # Bestimme aktive Query — bei Button-Klick Query+Layout in session_state speichern
+        if run_preset:
+            st.session_state["_gq"] = presets[preset_name]
+            st.session_state["_gl"] = layout_algo
+            st.session_state["_ge"] = show_edge_labels
+            st.session_state.pop("_gr", None)   # force re-fetch
+            st.session_state.pop("_gd", None)
+        elif run_custom:
+            q = st.session_state.get("cypher_box", "").strip()
+            if q:
+                st.session_state["_gq"] = q
+                st.session_state["_gl"] = layout_algo
+                st.session_state["_ge"] = show_edge_labels
+                st.session_state.pop("_gr", None)
+                st.session_state.pop("_gd", None)
 
-            # Diagnostic button: check Topic/Concept Counts
-            if st.button("Diagnose: Topic/Concept Counts"):
-                neo = get_neo()
-                topic_name = selected_topic
-                diag = {}
-                # Zeige alle Topic-Namen
-                try:
-                    all_topics = neo.run("MATCH (t:Topic) RETURN t.name AS name", {})
-                    topic_names = [t['name'] for t in all_topics if 'name' in t]
-                    diag['all_topic_names'] = topic_names
-                except Exception as e:
-                    diag['all_topic_names'] = f"Error: {e}"
-                # Zähle Topic, Concept
-                try:
-                    topic_result = neo.run(
-                        "MATCH (t:Topic {name:$topic}) RETURN count(t) AS c",
-                        {'topic': topic_name}
-                    )
-                    diag['topic_count'] = topic_result[0]['c'] if topic_result and 'c' in topic_result[0] else 0
-                except Exception as e:
-                    diag['topic_count'] = f"Error: {e}"
-                try:
-                    direct_concepts = neo.run(
-                        "MATCH (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept) RETURN count(DISTINCT c) AS c",
-                        {'topic': topic_name}
-                    )
-                    diag['concepts_total'] = direct_concepts[0]['c'] if direct_concepts and 'c' in direct_concepts[0] else 0
-                except Exception as e:
-                    diag['concepts_total'] = f"Error: {e}"
-                st.info(f"Diagnose für Topic '{topic_name}':")
-                st.json(diag)
+        # Query ausführen falls noch keine gecachten Records vorhanden
+        if st.session_state.get("_gq") and "_gr" not in st.session_state:
+            try:
+                st.session_state["_gr"] = run_cypher_with_params(st.session_state["_gq"], for_graph=True)
+                st.session_state["_gd"] = run_cypher_with_params(st.session_state["_gq"], for_graph=False)
+            except Exception as e:
+                st.error(f"Fehler: {e}")
+
+        # --- Anzeigen aus Cache (überlebt Node-Klick-Rerun) ---
+        if "_gr" in st.session_state:
+            _rg = st.session_state["_gr"]
+            _rd = st.session_state.get("_gd", [])
+            _lay = st.session_state.get("_gl", layout_algo)
+            _elbl = st.session_state.get("_ge", show_edge_labels)
+            st.caption(f"{len(_rd)} Record(s) · {len(_rg)} Graph-Record(s)")
+            visualize_with_agraph(_rg, height=680, layout=_lay, show_edge_labels=_elbl)
+            with st.expander("Rohdaten"):
+                st.write(_rd)

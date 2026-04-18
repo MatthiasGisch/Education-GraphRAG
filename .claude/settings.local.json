@@ -21,7 +21,11 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/gui_app.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/pdf_ingest.py', encoding='utf-8'\\).read\\(\\)\\); print\\('pdf_ingest.py OK'\\)\")",
       "Bash(python -c ' *)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('src/concept_extract.py', encoding='utf-8'\\).read\\(\\)\\); print\\('concept_extract.py OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/concept_extract.py', encoding='utf-8'\\).read\\(\\)\\); print\\('concept_extract.py OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(.venv/Scripts/pip.exe show *)",
+      "Bash(.venv/Scripts/pip.exe install *)",
+      "Bash(python .venv/Scripts/pip.exe --version)"
     ]
   }
 }

@@ -422,7 +422,7 @@ def read_pdf_text_and_images(path: str):
     """
     doc = fitz.open(path)
     doi, url = extract_doi_and_url(doc)
-    paper_id = str(uuid.uuid4())
+    paper_id = str(uuid.uuid5(uuid.NAMESPACE_URL, file_sha256(path)))
     meta = doc.metadata or {}
     
     # Titel-Extraktion: Stets Dateiname (ohne .pdf Extension) verwenden
@@ -442,6 +442,7 @@ def read_pdf_text_and_images(path: str):
     sections = extract_sections(doc)  # kann leer sein
     paragraphs: list[dict] = []
     figures_meta: list[dict] = []
+    seen_hashes: set = set()  # Duplikat-Tracking über alle Seiten des Dokuments
 
     for page_idx in range(len(doc)):
         page = doc[page_idx]
@@ -492,8 +493,7 @@ def read_pdf_text_and_images(path: str):
         img_list = page.get_images(full=True)
         xref_to_bbox = match_bbox_to_xref(img_blocks, img_list, page)
         
-        # 3) Duplikat-Tracking (via perceptual hash)
-        seen_hashes = set()
+        # 3) Duplikat-Tracking (via perceptual hash) — wird außerhalb der Page-Schleife geführt
         
         # 4) Bilddateien physisch extrahieren
         for img_idx, img in enumerate(img_list):
@@ -520,23 +520,30 @@ def read_pdf_text_and_images(path: str):
                     temp_format = "JPEG"
                     img_path = os.path.join(IMAGES_DIR, f"{paper_id}_{page_num1}_{xref}.jpg")
                 
-                # Speichern
-                pix.save(img_path)
-                
-                # Duplikat-Erkennung via perceptual hash
-                try:
-                    img_pil = Image.open(img_path)
-                    img_hash = str(imagehash.phash(img_pil))
-                    
-                    if img_hash in seen_hashes:
-                        # Duplikat gefunden, Datei löschen
-                        os.remove(img_path)
-                        continue
-                    
-                    seen_hashes.add(img_hash)
-                except Exception:
-                    # Falls Hash-Berechnung fehlschlägt, trotzdem behalten
-                    pass
+                # Datei nur speichern wenn noch nicht vorhanden (Re-Ingest desselben Papers)
+                if os.path.exists(img_path):
+                    # Bild existiert bereits → Hash laden für Duplikat-Tracking
+                    try:
+                        img_hash = str(imagehash.phash(Image.open(img_path)))
+                        seen_hashes.add(img_hash)
+                    except Exception:
+                        pass
+                else:
+                    pix.save(img_path)
+                    # Duplikat-Erkennung via perceptual hash
+                    try:
+                        img_pil = Image.open(img_path)
+                        img_hash = str(imagehash.phash(img_pil))
+
+                        if img_hash in seen_hashes:
+                            # Duplikat gefunden, Datei löschen
+                            os.remove(img_path)
+                            continue
+
+                        seen_hashes.add(img_hash)
+                    except Exception:
+                        # Falls Hash-Berechnung fehlschlägt, trotzdem behalten
+                        pass
                 
                 # BBox via Spatial Matching
                 bbox_idx = xref_to_bbox.get(xref)
