@@ -1128,13 +1128,14 @@ except ValueError:
 # =========================
 # Main Tabs
 # =========================
-tab_ingest, tab_papers, tab_coursegen, tab_gamma, tab_synthesia, tab_cypher = st.tabs([
+tab_ingest, tab_papers, tab_coursegen, tab_gamma, tab_synthesia, tab_cypher, tab_eval = st.tabs([
     "Dokumente aufnehmen",
     "Paperverwaltung",
     "Kursgenerator",
     "Slideexport",
     "Videoexport",
-    "Cypher"
+    "Cypher",
+    "Evaluation"
 ])
 
 # === Prototyp: Kursgenerator ===
@@ -2361,3 +2362,115 @@ RETURN path LIMIT 80
             visualize_with_agraph(_rg, height=680, layout=_lay, show_edge_labels=_elbl)
             with st.expander("Rohdaten"):
                 st.write(_rd)
+
+# =========================
+# Evaluation Tab
+# =========================
+with tab_eval:
+    st.subheader("RAGAS Evaluation")
+    st.caption("Bewertet die GraphRAG-Pipeline mit Faithfulness, Answer Relevancy, Context Precision und Context Recall.")
+
+    import importlib.util as _ilu
+    import sys as _sys
+    _eval_spec = _ilu.spec_from_file_location(
+        "ragas_eval",
+        str(Path(__file__).resolve().parent / "ragas_eval.py"),
+    )
+    _eval_mod = _ilu.module_from_spec(_eval_spec)
+    _eval_mod.__name__ = "ragas_eval"
+    _sys.modules["ragas_eval"] = _eval_mod
+    try:
+        _eval_spec.loader.exec_module(_eval_mod)
+        _ragas_available = True
+    except Exception as _e:
+        _ragas_available = False
+        st.error(f"ragas_eval.py konnte nicht geladen werden: {_e}")
+
+    if _ragas_available:
+        eval_mode = st.radio(
+            "Evaluation auswählen",
+            ["RAGAS (alle 4 Metriken)", "Halluzinationstest", "Cloud vs. Lokal Vergleich"],
+            horizontal=True,
+        )
+
+        st.markdown("---")
+
+        # Testfragen anzeigen und bearbeiten
+        with st.expander("Testfragen anpassen", expanded=False):
+            st.caption(f"{len(_eval_mod.DEFAULT_TEST_QUESTIONS)} vordefinierte Fragen — du kannst einzelne deaktivieren.")
+            active_questions = []
+            for i, tq in enumerate(_eval_mod.DEFAULT_TEST_QUESTIONS):
+                col_cb, col_info = st.columns([1, 10])
+                with col_cb:
+                    checked = st.checkbox("", value=True, key=f"eval_q_{i}", label_visibility="collapsed")
+                with col_info:
+                    st.markdown(f"**[{tq.question_type}]** {tq.question}")
+                if checked:
+                    active_questions.append(tq)
+            st.caption(f"{len(active_questions)} Fragen aktiv")
+
+        if eval_mode == "Cloud vs. Lokal Vergleich":
+            local_model_input = st.text_input(
+                "LM Studio Modellname",
+                value=cfg.LMSTUDIO_CHAT_MODEL,
+                help="Muss mit dem in LM Studio geladenen Modell übereinstimmen.",
+            )
+
+        output_dir = str(Path(__file__).resolve().parents[1] / "data" / "eval")
+        os.makedirs(output_dir, exist_ok=True)
+
+        run_btn = st.button("Evaluation starten", type="primary")
+
+        if run_btn:
+            if not active_questions:
+                st.warning("Keine Testfragen aktiv.")
+            else:
+                neo_eval = Neo4jClient()
+                results: dict = {}
+
+                if eval_mode == "RAGAS (alle 4 Metriken)":
+                    with st.spinner("RAGAS läuft — das dauert einige Minuten…"):
+                        try:
+                            results["ragas_evaluation"] = _eval_mod.run_ragas_evaluation(active_questions, neo_eval)
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
+
+                elif eval_mode == "Halluzinationstest":
+                    with st.spinner("Halluzinationstest läuft…"):
+                        try:
+                            results["halluzinationstest"] = _eval_mod.run_hallucination_test(active_questions, neo_eval)
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
+
+                elif eval_mode == "Cloud vs. Lokal Vergleich":
+                    with st.spinner("Cloud vs. Lokal Vergleich läuft — LM Studio muss gestartet sein…"):
+                        try:
+                            results["llm_vergleich"] = _eval_mod.run_llm_comparison(
+                                active_questions, local_model_input, neo_eval
+                            )
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
+
+                neo_eval.close()
+
+                if results:
+                    # Ergebnisse anzeigen
+                    for section, data in results.items():
+                        st.markdown(f"### {section.replace('_', ' ').title()}")
+                        if isinstance(data, dict):
+                            display = {}
+                            for k, v in data.items():
+                                if isinstance(v, dict):
+                                    for kk, vv in v.items():
+                                        display[f"{k} / {kk}"] = f"{vv:.4f}" if isinstance(vv, float) else str(vv)
+                                else:
+                                    display[k] = f"{v:.4f}" if isinstance(v, float) else str(v)
+                            st.table(display)
+
+                    # JSON Export
+                    out_path = os.path.join(output_dir, "ragas_results.json")
+                    _eval_mod.export_results_to_json(results, out_path)
+                    st.success(f"Ergebnisse gespeichert: `{out_path}`")
+
+                    with st.expander("JSON anzeigen"):
+                        st.json(results)
