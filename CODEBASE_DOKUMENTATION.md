@@ -21,11 +21,12 @@
 13. [Kernmodul: Zitationsvalidierung](#13-kernmodul-zitationsvalidierung-srccitation_validatorpy)
 14. [Kernmodul: Erweiterter Ingest](#14-kernmodul-erweiterter-ingest-srcingest_enhancedpy)
 15. [Skripte](#15-skripte)
-16. [Teststrategie & Testcode](#16-teststrategie--testcode)
-17. [Retrieval-Architektur: Detailbeschreibung](#17-retrieval-architektur-detailbeschreibung)
-18. [Pipeline-Abläufe (Sequenzdiagramme)](#18-pipeline-abläufe-sequenzdiagramme)
-19. [Datenbankabfragen (Cypher)](#19-datenbankabfragen-cypher)
-20. [Evolutionsgeschichte & Designentscheidungen](#20-evolutionsgeschichte--designentscheidungen)
+16. [RAGAS Evaluation Framework](#16-ragas-evaluation-framework)
+17. [Teststrategie & Testcode](#17-teststrategie--testcode)
+18. [Retrieval-Architektur: Detailbeschreibung](#18-retrieval-architektur-detailbeschreibung)
+19. [Pipeline-Abläufe (Sequenzdiagramme)](#19-pipeline-abläufe-sequenzdiagramme)
+20. [Datenbankabfragen (Cypher)](#20-datenbankabfragen-cypher)
+21. [Evolutionsgeschichte & Designentscheidungen](#21-evolutionsgeschichte--designentscheidungen)
 
 ---
 
@@ -163,6 +164,8 @@ spacy>=3.7.0            # NLP / Named Entity Recognition
 scispacy>=0.5.4         # Wissenschaftliches NER
 scikit-learn>=1.3.0     # Machine-Learning-Utilities
 numpy>=1.26.0           # Vektor-Arithmetik (Embedding-Mittelung)
+ragas>=0.4.3            # Evaluation-Metriken für RAG-Systeme
+datasets>=4.8.5         # HuggingFace Dataset-Format (von RAGAS benötigt)
 ```
 
 ### 3.2 spaCy-Modelle (installiert)
@@ -190,6 +193,7 @@ Beide Modelle werden **lazy-geladen** (erst beim ersten NER-Aufruf). `en_core_sc
 | Synthesia API | KI-Videogenerierung | `https://api.synthesia.io/v1` |
 | spaCy | Standardisiertes NER | `en_core_web_sm` |
 | SciSpacy | Wissenschaftliches NER | `en_core_sci_sm` |
+| RAGAS | Evaluation (Faithfulness, Relevanz, Precision, Recall) | `ragas>=0.4.3` + `datasets>=4.8.5` |
 
 ---
 
@@ -912,6 +916,7 @@ Streamlit-GUI mit vollständigem Echtzeit-Fortschritt:
 | Export | PDF, Präsentation (Gamma), Video (Synthesia) |
 | Graph | Graphvisualisierung mit Cypher-Queries |
 | Diagnose | Datenbankstatistiken, Debug-Informationen |
+| Evaluation | RAGAS-Metriken, Halluzinationstest, Cloud-vs.-Lokal-Vergleich |
 
 **Fortschritts-Architektur (ingest_one_pdf_enhanced):**
 
@@ -960,7 +965,96 @@ CLI: python scripts/ask.py "Erkläre den Unterschied zwischen supervised und uns
 
 ---
 
-## 16. Teststrategie & Testcode
+## 16. RAGAS Evaluation Framework
+
+### 16.1 Überblick
+
+`scripts/ragas_eval.py` implementiert die quantitative Qualitätsmessung der GraphRAG-Pipeline mit dem [RAGAS](https://docs.ragas.io)-Framework. Das Skript wird über den **Evaluation-Tab der Streamlit-GUI** ausgeführt und schreibt Ergebnisse nach `data/eval/ragas_results.json`.
+
+**Abhängigkeiten:**
+```
+ragas>=0.4.3
+datasets>=4.8.5
+langchain-openai  (ChatOpenAI + OpenAIEmbeddings als RAGAS-Backend)
+```
+
+### 16.2 Metriken
+
+| Metrik | Was wird gemessen | Wertebereich |
+|--------|------------------|--------------|
+| **Faithfulness** | Sind alle Aussagen in der Antwort durch den Kontext belegt? | 0–1 (höher = besser) |
+| **Answer Relevancy** | Beantwortet die Antwort tatsächlich die gestellte Frage? | 0–1 |
+| **Context Precision** | Wie präzise ist der abgerufene Kontext (wenig Rauschen)? | 0–1 |
+| **Context Recall** | Enthält der abgerufene Kontext alle nötigen Informationen? | 0–1 |
+
+LLM- und Embedding-Backend für RAGAS: `gpt-4o-mini` + `text-embedding-3-large` (identisch mit der Produktiv-Pipeline).
+
+### 16.3 Testdatensatz (DEFAULT_TEST_QUESTIONS)
+
+15 vordefinierte Fragen in vier Kategorien:
+
+| Typ | Anzahl | Zweck |
+|-----|--------|-------|
+| `factual` | 5 | Einzelne Faktenfragen (Transformer, Self-Attention, RAG, Knowledge Graph, NER) |
+| `cross_topic` | 5 | Themenübergreifende Fragen (GraphRAG vs. RAG, Embeddings in Graphen, …) |
+| `visual` | 3 | Fragen zu Abbildungen (Transformer-Architektur, RAG-Pipeline, Attention-Matrix) |
+| `false_context` | 2 | Halluzinationstest-Kandidaten (BERT vs. GPT, GPT-Funktionsweise) |
+
+### 16.4 Drei Evaluationsläufe
+
+#### run_ragas_evaluation()
+Vollständige RAGAS-Evaluation über alle 15 Testfragen mit allen vier Metriken. Retrieval via `concept_based_retrieve()`, Generierung via `grounded_answer()`.
+
+#### run_hallucination_test()
+Vergleicht Faithfulness mit **echtem** vs. **bewusst falschem** Kontext (`_FALSE_FACTS`). Die Differenz ist das Maß der Halluzinationsanfälligkeit:
+
+```python
+"interpretation": (
+    "hoch"   if differenz > 0.3
+    else "mittel" if differenz > 0.1
+    else "niedrig"
+)
+```
+
+#### run_llm_comparison()
+Vergleicht **GPT-4o-mini (Cloud)** mit **LM Studio (Lokal)** auf denselben 5 Fragen:
+- Retrieval läuft immer im Cloud-Modus (OpenAI 3072-D Embeddings)
+- Nur die Generierungsphase (`grounded_answer`) wird per `cfg.LLM_MODE` umgeschaltet
+- Ausgabe je Modus: RAGAS-Scores (Faithfulness + Answer Relevancy), Inferenzzeit, geschätzte Kosten (USD)
+
+```python
+# Kostenschätzung GPT-4o-mini (Stand 2025)
+_GPT4O_MINI_INPUT_PER_1K_USD  = 0.000150
+_GPT4O_MINI_OUTPUT_PER_1K_USD = 0.000600
+_CHARS_PER_TOKEN = 4
+```
+
+### 16.5 Ausgabe
+
+```json
+{
+  "ragas_evaluation": {
+    "faithfulness": 0.87,
+    "answer_relevancy": 0.91,
+    "context_precision": 0.83,
+    "context_recall": 0.79
+  },
+  "halluzinationstest": {
+    "faithfulness_echter_kontext": 0.88,
+    "faithfulness_falscher_kontext": 0.52,
+    "halluzinations_anfaelligkeit": 0.36,
+    "interpretation": "hoch"
+  },
+  "llm_vergleich": {
+    "cloud": { "modell": "gpt-4o-mini", "ragas_scores": {...}, "inferenz_zeit_sek": 42.1, "geschaetzte_kosten_usd": 0.00031 },
+    "local": { "modell": "llama-3-...", "ragas_scores": {...}, "inferenz_zeit_sek": 118.4, "geschaetzte_kosten_usd": "n/a (lokal)" }
+  }
+}
+```
+
+---
+
+## 17. Teststrategie & Testcode
 
 ### 16.1 Testphilosophie
 
@@ -1055,7 +1149,7 @@ def test_parse_json_with_trailing_comma():
 
 ---
 
-## 17. Retrieval-Architektur: Detailbeschreibung
+## 18. Retrieval-Architektur: Detailbeschreibung
 
 ### 17.1 Architekturevolution
 
@@ -1129,7 +1223,7 @@ Query: "Was ist Deep Learning?"
 
 ---
 
-## 18. Pipeline-Abläufe (Sequenzdiagramme)
+## 19. Pipeline-Abläufe (Sequenzdiagramme)
 
 ### 18.1 PDF-Ingest-Pipeline (vollständig)
 
@@ -1198,7 +1292,7 @@ _sub(base, span) → mappt [0,100] → [base, base+span]:
 
 ---
 
-## 19. Datenbankabfragen (Cypher)
+## 20. Datenbankabfragen (Cypher)
 
 ### 19.1 Diagnostik
 
@@ -1260,7 +1354,7 @@ RETURN p1, p2, p3, p4 LIMIT 500;
 
 ---
 
-## 20. Evolutionsgeschichte & Designentscheidungen
+## 21. Evolutionsgeschichte & Designentscheidungen
 
 ### 20.1 Chronologie der Architekturänderungen
 

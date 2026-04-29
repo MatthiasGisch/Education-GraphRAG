@@ -29,7 +29,9 @@
       "Bash(python scripts/ragas_eval.py --help)",
       "Bash(python C:/Users/matth/Desktop/masterthesis_neu/scripts/ragas_eval.py --dry-run)",
       "Bash(python -m py_compile scripts/gui_app.py)",
-      "Bash(python -m py_compile scripts/ragas_eval.py)"
+      "Bash(python -m py_compile scripts/ragas_eval.py)",
+      "Bash(.venv/Scripts/pip show *)",
+      "Bash(.venv/Scripts/pip install *)"
     ]
   }
 }
