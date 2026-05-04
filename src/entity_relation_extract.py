@@ -143,7 +143,11 @@ def extract_entities_ner(text: str, use_scispacy: bool = True) -> Dict[str, List
         nlp = _get_spacy_nlp()
     
     if nlp is None:
-        log.warning("No spaCy model available, skipping NER extraction")
+        log.error(
+            "Kein spaCy-Modell verfügbar – NER-Extraktion wird übersprungen. "
+            "Bitte installieren: python -m spacy download en_core_web_sm "
+            "(oder: python scripts/install_spacy_models.py)"
+        )
         return entities
     
     try:

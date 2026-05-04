@@ -2389,7 +2389,7 @@ with tab_eval:
     if _ragas_available:
         eval_mode = st.radio(
             "Evaluation auswählen",
-            ["RAGAS (alle 4 Metriken)", "Halluzinationstest", "Cloud vs. Lokal Vergleich"],
+            ["RAGAS (alle 4 Metriken)", "Halluzinationstest", "Cloud vs. Lokal Vergleich", "Baseline-Vergleich: Vektor-RAG vs. GraphRAG"],
             horizontal=True,
         )
 
@@ -2447,6 +2447,15 @@ with tab_eval:
                         try:
                             results["llm_vergleich"] = _eval_mod.run_llm_comparison(
                                 active_questions, local_model_input, neo_eval
+                            )
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
+
+                elif eval_mode == "Baseline-Vergleich: Vektor-RAG vs. GraphRAG":
+                    with st.spinner("Baseline-Vergleich läuft — Vektor-RAG und GraphRAG werden verglichen…"):
+                        try:
+                            results["baseline_vergleich"] = _eval_mod.run_baseline_comparison(
+                                active_questions, neo_eval
                             )
                         except Exception as e:
                             st.error(f"Fehler: {e}")

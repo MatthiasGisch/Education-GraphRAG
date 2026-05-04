@@ -114,7 +114,7 @@ class Neo4jClient:
 
     def add_paragraphs(self, paper_id: str, paragraphs: list[dict]) -> None:
         """Fügt Paragraphen in Batches hinzu, um Timeouts zu vermeiden."""
-        batch_size = 25  # Konservative Batch-Größe (jeder Paragraph hat 1536-dim Embedding!)
+        batch_size = 25  # Konservative Batch-Größe (jeder Paragraph hat 3072-D Embedding)
         total_batches = (len(paragraphs) - 1) // batch_size + 1
         
         print(f"  Inserting {len(paragraphs)} paragraphs in {total_batches} batches...")

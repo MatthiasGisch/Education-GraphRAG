@@ -31,7 +31,16 @@
       "Bash(python -m py_compile scripts/gui_app.py)",
       "Bash(python -m py_compile scripts/ragas_eval.py)",
       "Bash(.venv/Scripts/pip show *)",
-      "Bash(.venv/Scripts/pip install *)"
+      "Bash(.venv/Scripts/pip install *)",
+      "Bash(awk '{print $NF}')",
+      "Bash(python -m py_compile src/*.py)",
+      "Bash(awk '{print $9, $5}')",
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(where python *)",
+      "Bash(pip --version)",
+      "Bash(where streamlit *)",
+      "Bash(python -c \"import streamlit\")"
     ]
   }
 }

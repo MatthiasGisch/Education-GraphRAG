@@ -40,7 +40,7 @@ from ragas.metrics.collections import (
 from src import config as cfg
 from src.neo import Neo4jClient
 from src.openai_client import grounded_answer
-from src.retriever import concept_based_retrieve
+from src.retriever import concept_based_retrieve, hybrid_retrieve
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -368,7 +368,92 @@ def run_llm_comparison(
 
 
 # ---------------------------------------------------------------------------
-# 4. Ergebnis-Export
+# 4. Baseline-Vergleich: Vektor-RAG vs. GraphRAG
+# ---------------------------------------------------------------------------
+
+def run_baseline_comparison(
+    test_questions: list[TestQuestion],
+    neo: Neo4jClient | None = None,
+) -> dict:
+    """
+    Direkter Vergleich: reines Vektor-RAG (Baseline) vs. GraphRAG (Konzeptexpansion).
+
+    Baseline  — hybrid_retrieve():
+        Vektorsuche auf Paragraph- und Figure-Index, keine Konzeptknoten,
+        keine semantische Graphexpansion.
+
+    GraphRAG  — concept_based_retrieve():
+        Konzept-Vektorsuche → SEMANTIC_RELATION-Expansion →
+        Paragraph-Retrieval via gemitteltes Konzept-Embedding +
+        direkte Paragraphen-Vektorsuche.
+
+    Beide Modi: gleiche Testfragen, gleiches LLM (gpt-4o-mini), gleicher
+    RAGAS-Judge → direkt vergleichbare Scores ohne Confounder.
+    """
+    if neo is None:
+        neo = _build_neo_client()
+
+    ragas_llm = _make_ragas_llm()
+    ragas_emb = _make_ragas_embeddings()
+    metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+
+    runs = {
+        "baseline_vektor_rag": {
+            "beschreibung": "Reines Vektor-RAG ohne Konzeptgraph (hybrid_retrieve)",
+            "retrieve_fn": lambda q: hybrid_retrieve(neo, q).get("supports", []),
+        },
+        "graphrag": {
+            "beschreibung": "GraphRAG mit Konzeptexpansion (concept_based_retrieve)",
+            "retrieve_fn": lambda q: concept_based_retrieve(neo, q).get("supports", []),
+        },
+    }
+
+    output: dict[str, Any] = {}
+
+    for run_name, run_cfg in runs.items():
+        log.info("Baseline-Vergleich: starte '%s' …", run_name)
+        rows: dict[str, list] = {"question": [], "answer": [], "contexts": [], "ground_truth": []}
+        context_counts: list[int] = []
+        start = time.time()
+
+        for tq in test_questions:
+            try:
+                supports = run_cfg["retrieve_fn"](tq.question)
+                answer = grounded_answer(tq.question, supports)
+                contexts = _supports_to_contexts(supports)
+                rows["question"].append(tq.question)
+                rows["answer"].append(answer)
+                rows["contexts"].append(contexts or [""])
+                rows["ground_truth"].append(tq.ground_truth)
+                context_counts.append(len(contexts))
+            except Exception as e:
+                log.error("[%s] Frage übersprungen '%s': %s", run_name, tq.question, e)
+
+        elapsed = round(time.time() - start, 2)
+        ragas_scores = _run_ragas(rows, ragas_llm, ragas_emb, metrics)
+
+        output[run_name] = {
+            "beschreibung": run_cfg["beschreibung"],
+            "ragas_scores": ragas_scores,
+            "durchschnittliche_kontexte": round(sum(context_counts) / len(context_counts), 1) if context_counts else 0,
+            "inferenz_zeit_sek": elapsed,
+        }
+
+    # Differenz: GraphRAG minus Baseline (positiv = GraphRAG besser)
+    score_keys = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+    diff: dict[str, Any] = {}
+    for k in score_keys:
+        g = output["graphrag"]["ragas_scores"].get(k)
+        b = output["baseline_vektor_rag"]["ragas_scores"].get(k)
+        if g is not None and b is not None:
+            diff[k] = round(g - b, 4)
+    output["differenz_graphrag_minus_baseline"] = diff
+
+    return output
+
+
+# ---------------------------------------------------------------------------
+# 5. Ergebnis-Export
 # ---------------------------------------------------------------------------
 
 def export_results_to_json(results: dict, output_path: str) -> None:
@@ -438,6 +523,13 @@ if __name__ == "__main__":
         log.info("Fertig: %s", all_results["llm_vergleich"])
     except Exception as e:
         log.error("LLM-Vergleich fehlgeschlagen: %s", e)
+
+    log.info("=== 4/4  Baseline-Vergleich: Vektor-RAG vs. GraphRAG ===")
+    try:
+        all_results["baseline_vergleich"] = run_baseline_comparison(DEFAULT_TEST_QUESTIONS, neo)
+        log.info("Fertig: %s", all_results["baseline_vergleich"])
+    except Exception as e:
+        log.error("Baseline-Vergleich fehlgeschlagen: %s", e)
 
     neo.close()
     export_results_to_json(all_results, output_path)

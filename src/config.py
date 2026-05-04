@@ -1,7 +1,10 @@
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
@@ -36,6 +39,21 @@ DEFAULT_CHUNK_OVERLAP = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "150"))
 DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
 os.makedirs(IMAGES_DIR, exist_ok=True)
+
+
+NEO4J_VECTOR_DIM = 3072  # Dimension der Neo4j-Vektorindizes (graph_schema.cypher)
+
+# Frühzeitige Warnung: lokaler Embedding-Dim muss mit Neo4j-Index übereinstimmen
+if LLM_MODE == "local" and LMSTUDIO_EMBED_DIM != NEO4J_VECTOR_DIM:
+    log.error(
+        "KONFIGURATIONSFEHLER: LLM_MODE=local, aber LMSTUDIO_EMBED_DIM=%d "
+        "stimmt nicht mit dem Neo4j-Vektorindex (%d Dimensionen) überein. "
+        "Vektorsuchen werden fehlschlagen. "
+        "Lösung: LMSTUDIO_EMBED_DIM=%d in .env setzen (oder ein Embedding-Modell "
+        "mit %d Dimensionen in LM Studio laden) ODER das Datenbankschema mit dem "
+        "neuen Dim-Wert neu anlegen (scripts/create_schema.py).",
+        LMSTUDIO_EMBED_DIM, NEO4J_VECTOR_DIM, NEO4J_VECTOR_DIM, NEO4J_VECTOR_DIM,
+    )
 
 
 def resolve_image_path(uri: str) -> str:
