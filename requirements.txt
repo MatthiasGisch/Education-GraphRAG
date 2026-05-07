@@ -29,3 +29,6 @@ pyttsx3>=2.90
 # RAGAS Evaluation Framework
 ragas>=0.4.3
 datasets>=4.8.5
+# Framework-Vergleich: MS GraphRAG + LightRAG
+graphrag>=2.0.0
+lightrag-hku>=1.0.0
