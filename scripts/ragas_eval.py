@@ -488,6 +488,133 @@ def print_results_table(results: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5b. Kursspezifische Evaluation
+# ---------------------------------------------------------------------------
+
+def load_course_questions(kurs_id: str) -> list[TestQuestion]:
+    """
+    Lädt kursspezifische Fragen aus data/eval/questions_{kurs_id}.json
+    (erzeugt von scripts/generate_course_questions.py).
+    """
+    import json
+    path = Path(__file__).resolve().parents[1] / "data" / "eval" / f"questions_{kurs_id}.json"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Keine Fragen für '{kurs_id}' gefunden: {path}\n"
+            f"Bitte zuerst ausführen: python scripts/generate_course_questions.py --kurs {kurs_id}"
+        )
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    questions = [
+        TestQuestion(
+            question=q["question"],
+            ground_truth=q.get("ground_truth") or q.get("abschnitt_titel", ""),
+            question_type=q.get("question_type", "factual"),
+        )
+        for q in raw
+        if q.get("question")
+    ]
+    log.info("Geladen: %d Fragen für Kurs '%s'", len(questions), kurs_id)
+    return questions
+
+
+def run_course_evaluation(
+    kurs_id: str,
+    neo: Neo4jClient | None = None,
+) -> dict:
+    """
+    Vollständige RAGAS-Evaluation (alle 4 Metriken) mit kursspezifischen Fragen.
+    Lädt Fragen automatisch aus data/eval/questions_{kurs_id}.json.
+    """
+    questions = load_course_questions(kurs_id)
+    result = run_ragas_evaluation(questions, neo=neo)
+    return {
+        "kurs_id": kurs_id,
+        "n_fragen": len(questions),
+        "ragas_scores": result,
+    }
+
+
+def run_all_courses_evaluation(
+    kurs_ids: list[str] | None = None,
+    neo: Neo4jClient | None = None,
+) -> dict[str, Any]:
+    """
+    Evaluiert alle drei Kurse sequenziell und gibt vergleichbare Ergebnisse zurück.
+    kurs_ids=None → alle drei Kurse.
+    """
+    from scripts.generate_course_questions import KURSE
+    ids = kurs_ids or list(KURSE.keys())
+    _close = neo is None
+    if neo is None:
+        neo = _build_neo_client()
+
+    ragas_llm = _make_ragas_llm()
+    ragas_emb = _make_ragas_embeddings()
+    metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+
+    all_results: dict[str, Any] = {}
+    for kid in ids:
+        log.info("=== Kurs-Evaluation: %s ===", kid)
+        try:
+            questions = load_course_questions(kid)
+            rows: dict[str, list] = {
+                "question": [], "answer": [], "contexts": [], "ground_truth": []
+            }
+            for tq in questions:
+                try:
+                    supports = _retrieve_supports(neo, tq.question)
+                    answer = grounded_answer(tq.question, supports)
+                    rows["question"].append(tq.question)
+                    rows["answer"].append(answer)
+                    rows["contexts"].append(_supports_to_contexts(supports) or [""])
+                    rows["ground_truth"].append(tq.ground_truth)
+                except Exception as e:
+                    log.error("[%s] übersprungen '%s': %s", kid, tq.question[:50], e)
+
+            scores = _run_ragas(rows, ragas_llm, ragas_emb, metrics)
+            all_results[kid] = {
+                "kurs_name": KURSE[kid]["name"],
+                "n_fragen": len(questions),
+                "ragas_scores": scores,
+            }
+            log.info("[%s] Scores: %s", kid, scores)
+        except Exception as e:
+            log.error("[%s] Fehlgeschlagen: %s", kid, e)
+            all_results[kid] = {"fehler": str(e)}
+
+    if _close:
+        neo.close()
+
+    # Vergleichstabelle auf Konsole
+    _print_course_comparison(all_results)
+    return all_results
+
+
+def _print_course_comparison(results: dict) -> None:
+    metric_keys = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+    metric_labels = ["Faithfulness", "Ans. Relevancy", "Ctx. Precision", "Ctx. Recall"]
+    kids = list(results.keys())
+    col = 18
+
+    print("\n" + "=" * (20 + col * len(kids)))
+    print(f"{'KURS-VERGLEICH (RAGAS)':^{20 + col * len(kids)}}")
+    print("=" * (20 + col * len(kids)))
+    header = f"{'Metrik':<20}" + "".join(
+        f"{results[k].get('kurs_name', k)[:col-1]:>{col}}" for k in kids
+    )
+    print(header)
+    print("-" * (20 + col * len(kids)))
+    for mk, ml in zip(metric_keys, metric_labels):
+        row = f"{ml:<20}"
+        for k in kids:
+            v = (results[k].get("ragas_scores") or {}).get(mk)
+            row += f"{(f'{v:.4f}' if isinstance(v, float) else 'N/A'):>{col}}"
+        print(row)
+    print("=" * (20 + col * len(kids)) + "\n")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
