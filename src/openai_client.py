@@ -136,7 +136,7 @@ def describe_image(path: str) -> Dict[str, Any]:
     return data
 
 
-def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
+def grounded_answer(query: str, supports: List[Dict[str, Any]], max_supports: int = 20) -> str:
     sys = (
         "Du bist ein erfahrener Dozent und Lehrer, der Lernmaterial aus wissenschaftlichen Quellen erstellt. "
         "Erkläre die Inhalte didaktisch aufbereitet, strukturiert und verständlich für Studierende. "
@@ -191,7 +191,7 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]]) -> str:
 Frage: {query}
 
 Belege (nicht erfinden, nur daraus arbeiten):
-{chr(10).join(ctx_lines[:20])}
+{chr(10).join(ctx_lines[:max_supports])}
 
 Anweisung als Dozent:
 - Erkläre das Thema didaktisch verständlich auf Deutsch, wie in einer Vorlesung oder einem Lehrbuch.

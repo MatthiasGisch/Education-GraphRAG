@@ -136,6 +136,7 @@ def answer_query(
     k_paragraphs: int = 24,
     k_figures: int = 8,
     use_concept_retrieval: bool = True,
+    max_supports: int = 20,
 ) -> Dict[str, Any]:
     """
     web_mode:
@@ -189,7 +190,7 @@ def answer_query(
         supports = paragraphs[:120] + figures  # Max 120 Paragraphen + alle Figures (erhöht für umfassendere Antworten)
         eff = _effective_supports(supports, min_supports_score)
         debug.update({"graph_supports_total": len(supports), "graph_supports_effective": eff, "decision": "graph_only"})
-        answer = grounded_answer(query, supports)
+        answer = grounded_answer(query, supports, max_supports=max_supports)
         mode = "graph" if eff >= min_supports else "graph_low_coverage"
         return {"mode": mode, "answer": answer, "supports": supports, "debug": debug,
                 "citation_validation": _validate(answer, supports)}
@@ -217,7 +218,7 @@ def answer_query(
 
     if eff >= min_supports:
         debug["decision"] = "graph_ok"
-        answer = grounded_answer(query, supports)
+        answer = grounded_answer(query, supports, max_supports=max_supports)
         return {"mode": "graph", "answer": answer, "supports": supports, "debug": debug,
                 "citation_validation": _validate(answer, supports)}
 

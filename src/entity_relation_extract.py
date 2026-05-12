@@ -60,14 +60,18 @@ def _get_spacy_nlp():
     if _SPACY_NLP is None:
         try:
             import spacy
-            # Try to load model; if not installed, provide helpful error
             try:
                 _SPACY_NLP = spacy.load("en_core_web_sm")
             except OSError:
+                import sys as _sys
                 log.warning(
-                    "spaCy model 'en_core_web_sm' not found. "
-                    "Run: python -m spacy download en_core_web_sm"
+                    "spaCy model 'en_core_web_sm' not found (Python: %s). "
+                    "Run: python -m spacy download en_core_web_sm", _sys.executable
                 )
+                _SPACY_NLP = None
+            except Exception as e:
+                log.warning("spaCy model 'en_core_web_sm' failed to load (%s: %s). "
+                            "Python: %s", type(e).__name__, e, __import__('sys').executable)
                 _SPACY_NLP = None
         except ImportError:
             log.warning("spaCy not installed. Install with: pip install spacy")
@@ -84,10 +88,15 @@ def _get_scispacy_nlp():
             try:
                 _SCISPACY_NLP = spacy.load("en_core_sci_sm")
             except OSError:
+                import sys as _sys
                 log.warning(
-                    "SciSpacy model 'en_core_sci_sm' not found. "
-                    "Run: pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz"
+                    "SciSpacy model 'en_core_sci_sm' not found (Python: %s). "
+                    "Run: pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz", _sys.executable
                 )
+                _SCISPACY_NLP = None
+            except Exception as e:
+                log.warning("SciSpacy model 'en_core_sci_sm' failed to load (%s: %s). "
+                            "Python: %s", type(e).__name__, e, __import__('sys').executable)
                 _SCISPACY_NLP = None
         except ImportError:
             log.warning("SciSpacy not installed. Install with: pip install scispacy")

@@ -141,7 +141,9 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
             # Füge alle Fokus-Hinweise zur Query hinzu
             if all_fokus_hints:
                 query += f" Berücksichtige dabei folgende Aspekte: {', '.join(all_fokus_hints)}."
-        
+
+        query += " Schreibe einen ausführlichen, vollständigen Kursabschnitt mit mindestens 400 Wörtern."
+
         print(f"DEBUG: Fetching content for chapter '{chapter_title}'" + (f", section '{section_title}'" if section_title else ""))
         print(f"DEBUG: Query: {query[:200]}...")
         
@@ -150,13 +152,14 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
         response = answer_query(
             query=query,
             neo=neo,
-            web_mode="off",  # Nur Wissensgraph nutzen
-            k_paragraphs=120,  # Erhöht für maximale Textabdeckung
+            web_mode="off",
+            k_paragraphs=25,
             k_figures=12,
             use_concept_retrieval=True,
-            min_supports=5  # Mindestens 5 Supports für valide Zitationen
+            min_supports=5,
+            max_supports=30,
         )
-        
+
         # Falls zu wenig Supports gefunden wurden, versuche mit geringerer Schwelle
         supports = response.get("supports", [])
         if len(supports) < 3:
@@ -165,10 +168,11 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
                 query=query,
                 neo=neo,
                 web_mode="off",
-                k_paragraphs=100,
+                k_paragraphs=25,
                 k_figures=10,
                 use_concept_retrieval=True,
-                min_supports=1  # Mindestens 1 Support
+                min_supports=1,
+                max_supports=30,
             )
             supports = response.get("supports", [])
             print(f"DEBUG: Retry result - {len(supports)} supports")

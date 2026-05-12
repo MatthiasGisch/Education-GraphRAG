@@ -6,9 +6,12 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import logging
 import re
 import json
 import traceback
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -216,7 +219,7 @@ def clear_graph() -> dict:
         try:
             result = neo.run(
                 f"""
-                CALL {{
+                CALL () {{
                     MATCH (n)
                     WITH n LIMIT {batch_size}
                     DETACH DELETE n
@@ -2389,7 +2392,7 @@ with tab_eval:
     if _ragas_available:
         eval_mode = st.radio(
             "Evaluation auswählen",
-            ["RAGAS (alle 4 Metriken)", "Halluzinationstest", "Cloud vs. Lokal Vergleich", "Baseline-Vergleich: Vektor-RAG vs. GraphRAG"],
+            ["RAGAS (alle 4 Metriken)", "Halluzinationstest", "Cloud vs. Lokal Vergleich", "Baseline-Vergleich: Vektor-RAG vs. GraphRAG", "Kurs-Evaluation (alle 3 Kurse)"],
             horizontal=True,
         )
 
@@ -2416,13 +2419,74 @@ with tab_eval:
                 help="Muss mit dem in LM Studio geladenen Modell übereinstimmen.",
             )
 
+        if eval_mode == "Kurs-Evaluation (alle 3 Kurse)":
+            try:
+                from scripts.generate_course_questions import KURSE as _KURSE
+                _kurs_ids = list(_KURSE.keys())
+                _eval_dir = Path(__file__).resolve().parents[1] / "data" / "eval"
+                _missing = [k for k in _kurs_ids if not (_eval_dir / f"questions_{k}.json").exists()]
+                if _missing:
+                    st.warning(
+                        f"Fragen-Dateien fehlen für: **{', '.join(_missing)}**\n\n"
+                        "Bitte zuerst ausführen:\n"
+                        "```\npython scripts/generate_course_questions.py\n```"
+                    )
+                else:
+                    st.success(f"Fragen-Dateien gefunden für alle {len(_kurs_ids)} Kurse.")
+                _kurs_auswahl = st.multiselect(
+                    "Kurse auswählen",
+                    options=_kurs_ids,
+                    default=[k for k in _kurs_ids if (_eval_dir / f"questions_{k}.json").exists()],
+                    format_func=lambda k: _KURSE[k]["name"],
+                )
+            except Exception as _ke:
+                st.error(f"Kursdefinitionen konnten nicht geladen werden: {_ke}")
+                _kurs_auswahl = []
+
         output_dir = str(Path(__file__).resolve().parents[1] / "data" / "eval")
         os.makedirs(output_dir, exist_ok=True)
 
         run_btn = st.button("Evaluation starten", type="primary")
 
         if run_btn:
-            if not active_questions:
+            if eval_mode == "Kurs-Evaluation (alle 3 Kurse)":
+                if not _kurs_auswahl:
+                    st.warning("Keine Kurse ausgewählt oder Fragen-Dateien fehlen.")
+                else:
+                    neo_eval = Neo4jClient()
+                    results: dict = {}
+                    with st.spinner(f"Kurs-Evaluation läuft für {len(_kurs_auswahl)} Kurs(e) — das dauert mehrere Minuten…"):
+                        try:
+                            kurs_results = _eval_mod.run_all_courses_evaluation(
+                                kurs_ids=_kurs_auswahl, neo=neo_eval
+                            )
+                            results["kurs_evaluation"] = kurs_results
+                        except Exception as e:
+                            st.error(f"Fehler: {e}")
+                    neo_eval.close()
+
+                    if results:
+                        st.markdown("### Kurs-Evaluation Ergebnisse")
+                        metric_keys = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+                        table_data = {}
+                        for kid, kdata in kurs_results.items():
+                            if "fehler" in kdata:
+                                table_data[kid] = {"Fehler": kdata["fehler"]}
+                            else:
+                                row = {"Kurs": kdata.get("kurs_name", kid), "Fragen": kdata.get("n_fragen", "?")}
+                                scores = kdata.get("ragas_scores", {})
+                                for mk in metric_keys:
+                                    row[mk.replace("_", " ").title()] = f"{scores.get(mk, 0):.4f}" if mk in scores else "—"
+                                table_data[kid] = row
+                        st.table(table_data)
+
+                        out_path = os.path.join(str(Path(__file__).resolve().parents[1] / "data" / "eval"), "kurs_eval_results.json")
+                        _eval_mod.export_results_to_json(results, out_path)
+                        st.success(f"Ergebnisse gespeichert: `{out_path}`")
+                        with st.expander("JSON anzeigen"):
+                            st.json(results)
+
+            elif not active_questions:
                 st.warning("Keine Testfragen aktiv.")
             else:
                 neo_eval = Neo4jClient()

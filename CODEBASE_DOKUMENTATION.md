@@ -796,17 +796,53 @@ def _vsearch_concepts(neo, embedding, k=10, min_score=0.6) -> list:
     """min_score=0.6: Konzeptnamen sind kurz → geringere Ähnlichkeitswerte."""
 ```
 
-### 10.2 Konzept-zu-Paragraph Überbrückung
+### 10.2 Graph-Traversal: Concept → MENTIONS → Paragraph
+
+Die Kernfunktion des GraphRAG-Ansatzes. Primärer Pfad: explizites Graph-Traversal über MENTIONS-Kanten. Sekundärer Pfad: Vector-Fallback für Concepts ohne MENTIONS.
 
 ```python
 def _paragraphs_via_concepts(neo, concept_ids, limit=20) -> list:
     """
-    Vektorbasierter Ansatz (keine MENTIONS-Traversierung nötig):
-    1. Concept-Embeddings aus Neo4j abrufen
-    2. numpy.mean(embeddings, axis=0) → semantisches Zentroid
-    3. Vektorsuche auf paragraph_embedding_index mit Durchschnittsvektor
+    Primär: Graph-Traversal über MENTIONS-Kanten
+    Sekundär: Vector-Fallback für Concepts ohne MENTIONS-Kanten
     """
+```
 
+**Cypher-Kern (Graph-Traversal):**
+```cypher
+UNWIND $concept_ids AS cid
+MATCH (c:Concept {concept_id: cid})<-[m:MENTIONS]-(para:Paragraph)
+MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
+WITH para, p,
+     collect(DISTINCT c.name) AS matched_concepts,
+     avg(m.confidence)        AS avg_confidence,
+     count(DISTINCT c)        AS concept_hits
+OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
+WITH para, p, matched_concepts, avg_confidence, concept_hits,
+     head(collect(sec)) AS sec
+RETURN ...,
+       avg_confidence * (1.0 + 0.1 * (concept_hits - 1)) AS score
+```
+
+**Score-Berechnung:**
+
+Der Score belohnt Paragraphen, die mehrere relevante Concepts gleichzeitig erwähnen:
+
+| Concept-Treffer | Formel | Beispiel-Score |
+|-----------------|--------|----------------|
+| 1 Concept | `avg_conf × 1.0` | 0.75 × 1.0 = **0.750** |
+| 2 Concepts | `avg_conf × 1.1` | 0.75 × 1.1 = **0.825** |
+| 3 Concepts | `avg_conf × 1.2` | 0.75 × 1.2 = **0.900** |
+
+`avg_conf` entspricht dem MENTIONS-Confidence-Wert aus dem Ingest (Substring-Matching: 0.75, Embedding-Fallback: variabel 0.50–1.00).
+
+> **Designentscheidung:** Das `OPTIONAL MATCH` für Sections muss zwingend *nach* dem `WITH`-Aggregationsschritt stehen. Steht es davor, wird `sec` Teil der Aggregationsgruppe und erzeugt Duplikate pro Paragraph (ein Paragraph mit zwei zugeordneten Sections → zwei Zeilen, kaputte avg()-Berechnung). `head(collect(sec))` stellt Eindeutigkeit sicher.
+
+**Vector-Fallback (für Concepts ohne MENTIONS):**
+
+Wenn der primäre Graph-Traversal weniger als `limit/2` Ergebnisse liefert, werden Concepts ohne MENTIONS-Kanten identifiziert und ihr Embedding-Durchschnitt als Vektorsuche verwendet. Fallback-Scores werden mit Faktor 0.85 abgewertet, um Priorität des Graph-Pfads zu erhalten.
+
+```python
 def _expand_via_semantic_relations(neo, concept_ids, k=5) -> list:
     """Erweitert Konzeptliste über SEMANTIC_RELATION-Kanten (IS_A, PART_OF, RELATED_TO)."""
 
@@ -814,7 +850,35 @@ def _expand_figure_context_with_paragraphs(neo, supports, limit=200) -> None:
     """
     Hängt zu Figures passende Paragraphen via REFERS_TO|CAPTIONS|NEAR.
     Score: 0.99 (CAPTIONS/REFERS_TO), 0.75 (NEAR). In-place Modifikation.
+    Setzt stitch_figures_to_paragraphs() beim Ingest voraus.
     """
+```
+
+**Concept-Expansion via Semantische Relationen:**
+
+`_expand_via_semantic_relations()` ist Schritt 2 in `concept_based_retrieve()` und realisiert semantisches Concept-Hopping im Knowledge Graph. Nach der initialen Concept-Vektorsuche (Schritt 1) werden über `SEMANTIC_RELATION`-Kanten verwandte Konzepte hinzugefügt, bevor der MENTIONS-basierte Graph-Traversal (Schritt 3) startet.
+
+```cypher
+UNWIND $concept_ids AS cid
+MATCH (c1:Concept {concept_id: cid})-[r:SEMANTIC_RELATION]-(c2:Concept)
+WHERE r.relation_type IN ['IS_A', 'PART_OF', 'RELATED_TO']
+RETURN DISTINCT c2.concept_id AS concept_id
+LIMIT $k
+```
+
+**Beispiel:** Query "Deep Learning" → Concept-Suche findet `Deep Learning (0.91)`, `Neural Networks (0.87)`. Die Expansion findet über `IS_A`-Kante `Machine Learning` und über `PART_OF`-Kante `CNN` hinzu. Anschließend traversiert der Graph-Traversal-Schritt MENTIONS-Kanten von **allen vier** Concepts aus — nicht nur von den zwei direkt gefundenen. Dies erhöht den Recall ohne Precision-Verlust, weil semantisch verwandte Konzepte denselben thematischen Paragraphen-Pool addressieren.
+
+**SEMANTIC_RELATION-Kanten entstehen beim Ingest** aus `add_semantic_relations()` in `src/neo.py`: Das NLP-Extraktormodul (`src/entity_relation_extract.py`) analysiert jeden Abschnitt und extrahiert Subjekt-Prädikat-Objekt-Tripel. Relationstypen IS_A, PART_OF und RELATED_TO werden als `SEMANTIC_RELATION`-Kanten zwischen Concept-Knoten materialisiert; alle anderen Prädikattypen landen ebenfalls als `SEMANTIC_RELATION` mit dem jeweiligen `relation_type`-Attribut.
+
+**Historischer Bug (behoben Mai 2026):** In `add_semantic_relations()` und `add_cooccurrence_relations()` (beide `src/neo.py`) stand `ON CREATE SET` *nach* `SET` — ungültiges Cypher, das bei jeder Relation einen `SyntaxError` produzierte. Die Kanten wurden nie geschrieben. Da `_expand_via_semantic_relations()` bei leerer Ergebnismenge stillschweigend eine leere Liste zurückgibt, lief das Retrieval ohne Fehlermeldung weiter — allerdings ohne Concept-Expansion. Nach dem Fix (`ON CREATE SET` direkt nach `MERGE` verschoben) werden die Kanten korrekt persistiert und die Expansion ist funktional.
+
+```cypher
+-- Korrekte Reihenfolge (nach Fix):
+MERGE (s)-[rel:SEMANTIC_RELATION {relation_type: $predicate}]->(o)
+ON CREATE SET rel.created_at = datetime()   -- ← muss unmittelbar nach MERGE stehen
+SET rel.confidence = $confidence,
+    rel.context = $context,
+    rel.updated_at = datetime()
 ```
 
 ### 10.3 Öffentliche Retrieval-API
@@ -822,24 +886,37 @@ def _expand_figure_context_with_paragraphs(neo, supports, limit=200) -> None:
 ```python
 def hybrid_retrieve(neo, query, *, k_paragraphs=18, k_figures=6,
                     add_figure_context=True) -> dict:
-    """Einfaches Hybrid-Retrieval: Query-Embedding → Paragraphen + Figures."""
+    """Reines Vektor-RAG: Query-Embedding → Paragraphen + Figures. Kein Graph-Traversal."""
 
 def concept_based_retrieve(neo, query, *, k_concepts=10, k_paragraphs_direct=15,
                            k_paragraphs_via_concepts=20, k_figures=6,
                            expand_semantic=True, add_figure_context=True,
                            min_concept_score=0.6) -> dict:
     """
-    Intelligentes Concept-basiertes Retrieval:
+    GraphRAG Concept-basiertes Retrieval:
     1. Concept-Vektorsuche (k=10, min_score=0.6)
     2. Expansion via SEMANTIC_RELATION (IS_A, PART_OF, RELATED_TO)
-    3. Paragraphen via gemitteltes Concept-Embedding
+    3. Graph-Traversal: Concept -[MENTIONS]-> Paragraph  ← primärer GraphRAG-Pfad
+       Fallback: Vector-Similarity für Concepts ohne MENTIONS
     4. Direkte Paragraphen-Vektorsuche (Ergänzung)
     5. Figure-Vektorsuche
-    6. Deduplizierung (Concept-basiert hat Priorität)
+    6. Deduplizierung (Graph-Traversal hat Priorität)
     7. Figure-Kontext ergänzen
     Returns: {supports, matched_concepts, debug}
     """
 ```
+
+**Empirisch gemessener GraphRAG-Mehrwert** (Query: "knowledge graph retrieval augmented generation", Mai 2026):
+
+| Metrik | Wert |
+|--------|------|
+| Graph-RAG Paragraphen gesamt | 19 |
+| Vektor-RAG Paragraphen gesamt | 20 |
+| Überschneidung | 5 |
+| **Nur im Graph gefunden** | **14 (74 %)** |
+| Nur im Vektor gefunden | 15 |
+
+74 % der über Graph-Traversal gefundenen Paragraphen wären bei reinem Vektor-RAG verloren gegangen. Diese Paragraphen sind semantisch nicht nahe genug an der Query-Formulierung, erwähnen jedoch explizit relevante Concepts (MENTIONS-Kanten). Umgekehrt ergänzt die direkte Vektorsuche 15 Paragraphen, die keine MENTIONS-Kanten besitzen — dies begründet den Hybrid-Ansatz.
 
 **Return-Format (supports-Einträge):**
 ```python
@@ -1545,11 +1622,19 @@ def test_parse_json_with_trailing_comma():
 | Phase | Beschreibung | Problem | Lösung |
 |-------|-------------|---------|--------|
 | v1 | Reines Vektor-RAG | Keine strukturelle Wissensrepräsentation | Graph-Integration |
-| v2 | MENTIONS-basiertes GraphRAG | Ingest-Timeouts, 82% Paragraphen ohne Links | Vektorbasiertes Retrieval |
-| v3 | Vektorbasiert, kein Linking | Leerer Graph, keine MENTIONS/Relationen | Hybrid-Extraktion reaktiviert |
-| v4 (aktuell) | Vollständiges GraphRAG: Vektor + aktives Linking | — | NER+LLM+Relationen beim Ingest |
+| v2 | MENTIONS-basiertes GraphRAG | Ingest-Timeouts, 82 % Paragraphen ohne Links | Vektorbasiertes Retrieval |
+| v3 | Vektorbasiert, kein Linking | Leerer Graph, keine MENTIONS-Relationen | Hybrid-Extraktion reaktiviert |
+| v4 | Vollständiges GraphRAG: Vektor + aktives Linking; Retrieval weiterhin vektorbasiert | MENTIONS existieren, aber Retrieval nutzte sie nicht (Cypher-Bug) | Graph-Traversal reaktiviert, Cypher-Aggregation gefixt |
+| v5 | Echtes GraphRAG: Graph-Traversal primär, Vector-Fallback sekundär | SEMANTIC_RELATION-Kanten fehlten → Concept-Expansion war silent no-op | OPTIONAL MATCH nach WITH-Aggregation verschoben; head(collect(sec)) |
+| v5.1 (aktuell) | Concept-Expansion via SEMANTIC_RELATION funktional; vollständige Multi-Hop-Retrieval-Kette | — | ON CREATE SET-Bug in add_semantic_relations() und add_cooccurrence_relations() behoben |
 
-### 23.2 Vollständiger Retrieval-Pfad
+**Details zum v4→v5 Übergang (Mai 2026):**
+
+In v4 war `_paragraphs_via_concepts` trotz vorhandener MENTIONS-Kanten auf Vector-Similarity umgestellt worden (Commit `9fc67cc2`, Begründung: *"no longer create MENTIONS relations during ingest"*). Dies war ein historischer Irrtum — zu diesem Zeitpunkt existierten tatsächlich keine MENTIONS-Kanten, weil `link_paragraphs_to_concepts()` noch nicht im Ingest-Pipeline aufrief. Nach Reaktivierung des MENTIONS-Linkings in v4 war der Retriever jedoch nicht angepasst worden.
+
+Zusätzlich enthielt die reaktivierte Cypher-Query einen strukturellen Fehler: Das `OPTIONAL MATCH` für Section-Knoten stand vor dem `WITH`-Aggregationsschritt. Dadurch wurde `sec` Teil der Gruppierungsschlüssel, was bei Paragraphen mit mehreren zugeordneten Sections zu Duplikaten und falscher Confidence-Aggregation führte — und damit zu 0 verwertbaren Ergebnissen aus dem Graph-Traversal.
+
+### 23.2 Vollständiger Retrieval-Pfad (v5, aktuell)
 
 ```
 Query: "Was ist Deep Learning?"
@@ -1562,14 +1647,16 @@ Query: "Was ist Deep Learning?"
     ├─ 3. _expand_via_semantic_relations()
     │      → "Machine Learning" (IS_A), "CNN" (PART_OF)
     │
-    ├─ 4. avg(concept_embeddings) → semantisches Zentroid
-    │      → paragraph_embedding_index, limit=20
+    ├─ 4. Graph-Traversal: Concept -[MENTIONS]-> Paragraph   ← GraphRAG-Kern
+    │      Score = avg_confidence × (1.0 + 0.1 × (concept_hits − 1))
+    │      Fallback für Concepts ohne MENTIONS: avg(concept_embeddings)
+    │      → paragraph_embedding_index, Score × 0.85
     │
-    ├─ 5. paragraph_embedding_index, query_embedding, k=15  (direkt)
+    ├─ 5. paragraph_embedding_index, query_embedding, k=15  (direkte Ergänzung)
     │
     ├─ 6. figure_embedding_index, k=6
     │
-    ├─ 7. Deduplizierung (Concept-basierte Ergebnisse priorisiert)
+    ├─ 7. Deduplizierung (Graph-Traversal-Ergebnisse priorisiert)
     │
     ├─ 8. _expand_figure_context_with_paragraphs()
     │      → REFERS_TO|CAPTIONS|NEAR Traversierung
@@ -1716,12 +1803,7 @@ RETURN p1, p2, p3, p4 LIMIT 500;
 
 ### 26.1 Chronologie der Architekturänderungen
 
-| Phase | Beschreibung | Problem | Lösung |
-|-------|-------------|---------|--------|
-| v1 | Reines Vektor-RAG | Keine strukturelle Wissensrepräsentation | Graph-Integration |
-| v2 | MENTIONS-basiertes GraphRAG | Ingest-Timeouts, 82% Paragraphen ohne Links | Vektorbasiertes Retrieval |
-| v3 | Vektorbasiertes GraphRAG (kein Linking beim Ingest) | Leerer Graph, keine MENTIONS/Relationen | Hybrid-Extraktion reaktiviert |
-| v4 (aktuell) | Vollständiges GraphRAG: Vektor + aktives Linking | — | NER+LLM+Relationen beim Ingest |
+Identisch zu Abschnitt 23.1 — siehe dort für die vollständige Evolutionstabelle inkl. v5.
 
 ### 26.2 Zentrale Designentscheidungen
 
@@ -1749,6 +1831,21 @@ RETURN p1, p2, p3, p4 LIMIT 500;
 **6. Drei Vektorindizes (3072-D)**
 - Separate Indizes für Paragraphen, Figures, Konzepte
 - Concept-Embedding-Mittelung = semantisches Zentroid
+
+**9. Graph-Traversal vor Vector-Fallback (v5)**
+- `_paragraphs_via_concepts()` traversiert primär über MENTIONS-Kanten
+- Aggregation zwingend in zwei Stufen: erst `WITH para, p, collect/avg/count`, dann `OPTIONAL MATCH sec`
+- Grund: Section-Knoten dürfen nicht Teil des Gruppierungsschlüssels sein (Duplikate, falsche Scores)
+- Fallback-Score × 0.85 sichert Priorität des Graph-Pfads gegenüber Vector-Fallback
+- Empirischer Mehrwert: 74 % der Graph-Traversal-Treffer nicht durch reines Vektor-RAG auffindbar
+
+**10. Concept-Expansion via Semantische Relationen**
+- Schritt 2 in `concept_based_retrieve()`: initiale Concept-Menge wird über IS_A / PART_OF / RELATED_TO-Kanten erweitert, bevor der MENTIONS-Graph-Traversal startet
+- Semantisches Hopping: ein direkt gefundenes Konzept zieht verwandte Konzepte nach, die ggf. mit denselben Paragraphen über MENTIONS verbunden sind
+- `k=5` begrenzt die Expansion auf die nächsten 5 Nachbarknoten (pro Concept-Hop), um Rauschkontaminierung zu vermeiden
+- **Bug bis Mai 2026**: `ON CREATE SET` stand in `add_semantic_relations()` nach `SET` → `SyntaxError` bei Ingest → keine SEMANTIC_RELATION-Kanten im Graph → Expansion lieferte stets leere Liste (silent fail, kein RuntimeError)
+- Erst nach Bugfix werden `SEMANTIC_RELATION`-Kanten beim Ingest korrekt persistiert und die Expansion ist produktiv nutzbar
+- Wissenschaftliche Einordnung: entspricht dem Ansatz des *Concept Graph Expansion* in Knowledge-Graph-gestützten RAG-Systemen (vgl. Graph-of-Thoughts, HippoRAG)
 
 **7. LM Studio Integration (feature/local-lmstudio-support)**
 - `LLM_MODE=local` leitet alle LLM-Calls an lokalen Server um
@@ -1809,4 +1906,6 @@ Diese Module sind **nicht in die Hauptpipeline integriert** und laufen unabhäng
 *Ende der Codebase-Dokumentation*  
 *Generiert für: Masterthesis-Ausarbeitung*  
 *Stand: Mai 2026 (aktualisiert) | Umfang: ~19 Quelldateien in src/, ~18 Skripte, ~6.900+ Zeilen produktiver Code*  
-*Neu (Mai 2026): scripts/framework_comparison.py — Vergleich mit MS GraphRAG und LightRAG via RAGAS (Abschnitt 21)*
+*Neu (Mai 2026): scripts/framework_comparison.py — Vergleich mit MS GraphRAG und LightRAG via RAGAS (Abschnitt 21)*  
+*Neu (Mai 2026): Retrieval-Architektur v5 — echtes Graph-Traversal über MENTIONS reaktiviert, Cypher-Aggregationsbug behoben, Score-Formel und empirischer GraphRAG-Mehrwert dokumentiert (Abschnitt 10.2, 23)*
+*Neu (Mai 2026): Retrieval-Architektur v5.1 — Concept-Expansion via SEMANTIC_RELATION funktional; ON CREATE SET-Bug in add_semantic_relations() behoben, vollständige Multi-Hop-Retrieval-Kette aktiv (Abschnitt 10.2, 26.2)*

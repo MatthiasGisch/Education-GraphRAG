@@ -56,7 +56,7 @@ def _vsearch_paragraphs(neo: Neo4jClient, embedding: List[float], k: int = 24) -
           p.doi                    AS doi,
           p.url                    AS url,
           COALESCE(p.author, p.creator, '') AS authors,
-          COALESCE(p.publication_year, p.year, p.creationDate, '') AS year,
+          COALESCE(p.publication_year, p.creationDate, '') AS year,
           COALESCE(p.source, p.subject, '') AS source,
           sec.section_id           AS section_id,
           sec.title                AS section_title,
@@ -98,7 +98,7 @@ def _vsearch_figures(neo: Neo4jClient, embedding: List[float], k: int = 8) -> Li
           p.doi                             AS doi,
           p.url                             AS url,
           COALESCE(p.author, p.creator, '') AS authors,
-          COALESCE(p.publication_year, p.year, p.creationDate, '') AS year,
+          COALESCE(p.publication_year, p.creationDate, '') AS year,
           COALESCE(p.source, p.subject, '') AS source,
           sec.section_id                    AS section_id,
           sec.title                         AS section_title,
@@ -124,7 +124,10 @@ def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict
     rows = neo.run(
         """
         UNWIND $ids AS fid
-        MATCH (f:Figure {figure_id: fid})<-[rel:REFERS_TO|CAPTIONS|NEAR]-(para:Paragraph)
+        MATCH (f:Figure {figure_id: fid})
+        OPTIONAL MATCH (f)<-[rel:REFERS_TO|CAPTIONS|NEAR]-(para:Paragraph)
+        WITH f, rel, para
+        WHERE para IS NOT NULL
         MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
         OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
         RETURN
@@ -137,13 +140,13 @@ def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict
           p.doi              AS doi,
           p.url              AS url,
           COALESCE(p.author, p.creator, '') AS authors,
-          COALESCE(p.publication_year, p.year, p.creationDate, '') AS year,
+          COALESCE(p.publication_year, p.creationDate, '') AS year,
           COALESCE(p.source, p.subject, '') AS source,
           sec.section_id     AS section_id,
           sec.title          AS section_title,
           CASE type(rel) WHEN 'NEAR' THEN 0.75 ELSE 0.99 END AS score
         LIMIT $limit
-        """,
+""",
         {"ids": fig_ids, "limit": limit},
     ) or []
 
@@ -180,52 +183,29 @@ def _vsearch_concepts(neo: Neo4jClient, embedding: List[float], k: int = 10, min
 
 def _paragraphs_via_concepts(neo: Neo4jClient, concept_ids: List[str], limit: int = 20) -> List[Dict[str, Any]]:
     """
-    UPDATED: Vector-based similarity instead of MENTIONS relations.
-    
-    Since we no longer create MENTIONS relations during ingest,
-    we find paragraphs by:
-    1. Get concept embeddings
-    2. Search paragraphs using combined concept embedding vector
-    
-    This is actually BETTER than graph traversal because it finds
-    semantically similar content even without exact matches.
+    Graph-Traversal: Concept -[MENTIONS]-> Paragraph.
+
+    Paragraphen die mehrere relevante Concepts erwähnen, erhalten einen
+    höheren Score (concept_hits-Boost). Concepts ohne MENTIONS-Kanten
+    werden über einen Vector-Fallback abgedeckt.
     """
     if not concept_ids:
         return []
-    
-    # Get concept embeddings and combine them
-    concept_rows = neo.run(
-        """
-        UNWIND $concept_ids AS cid
-        MATCH (c:Concept {concept_id: cid})
-        RETURN c.name AS name, c.embedding AS embedding
-        """,
-        {"concept_ids": concept_ids}
-    )
-    
-    if not concept_rows:
-        log.warning(f"No concepts found for IDs: {concept_ids[:5]}...")
-        return []
-    
-    # Average concept embeddings to create combined query vector
-    embeddings = [row["embedding"] for row in concept_rows if row.get("embedding")]
-    if not embeddings:
-        log.warning("No embeddings found for concepts")
-        return []
-    
-    # Calculate average embedding
-    import numpy as np
-    avg_embedding = np.mean(embeddings, axis=0).tolist()
-    
-    # Vector search using combined concept embedding
+
+    # --- Primär: Graph-Traversal über MENTIONS ---
+    # Aggregation über alle Concept-Treffer pro Paragraph verhindert Duplikate
     rows = neo.run(
         """
-        CALL db.index.vector.queryNodes('paragraph_embedding_index', $limit, $embedding)
-        YIELD node, score
-        WITH node, score
-        MATCH (para:Paragraph) WHERE para = node
+        UNWIND $concept_ids AS cid
+        MATCH (c:Concept {concept_id: cid})<-[m:MENTIONS]-(para:Paragraph)
         MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
+        WITH para, p,
+             collect(DISTINCT c.name) AS matched_concepts,
+             avg(m.confidence)        AS avg_confidence,
+             count(DISTINCT c)        AS concept_hits
         OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
+        WITH para, p, matched_concepts, avg_confidence, concept_hits,
+             head(collect(sec)) AS sec
         RETURN
           'paragraph'              AS type,
           para.paragraph_id        AS paragraph_id,
@@ -235,20 +215,84 @@ def _paragraphs_via_concepts(neo: Neo4jClient, concept_ids: List[str], limit: in
           p.title                  AS paper_title,
           p.doi                    AS doi,
           p.url                    AS url,
-          COALESCE(p.author, p.creator, '') AS authors,
-          COALESCE(p.publication_year, p.year, p.creationDate, '') AS year,
-          COALESCE(p.source, p.subject, '') AS source,
+          COALESCE(p.author, p.creator, '')             AS authors,
+          COALESCE(p.publication_year, p.creationDate, '') AS year,
+          COALESCE(p.source, p.subject, '')             AS source,
           sec.section_id           AS section_id,
           sec.title                AS section_title,
-          toFloat(score)           AS score,
-          'vector_similarity'      AS matched_concept
+          avg_confidence * (1.0 + 0.1 * (concept_hits - 1)) AS score,
+          matched_concepts[0]      AS matched_concept
         ORDER BY score DESC
         LIMIT $limit
         """,
-        {"embedding": avg_embedding, "limit": limit}
-    )
-    
-    return rows or []
+        {"concept_ids": concept_ids, "limit": limit},
+    ) or []
+
+    # --- Fallback: Vector-Similarity für Concepts ohne MENTIONS-Kanten ---
+    if len(rows) < limit // 2:
+        matched_cids = {r["cid"] for r in neo.run(
+            """
+            UNWIND $concept_ids AS cid
+            MATCH (:Concept {concept_id: cid})<-[:MENTIONS]-(:Paragraph)
+            RETURN DISTINCT cid
+            """,
+            {"concept_ids": concept_ids},
+        ) or []}
+        orphan_cids = [cid for cid in concept_ids if cid not in matched_cids]
+
+        if orphan_cids:
+            emb_rows = neo.run(
+                """
+                UNWIND $cids AS cid
+                MATCH (c:Concept {concept_id: cid})
+                WHERE c.embedding IS NOT NULL
+                RETURN c.embedding AS embedding
+                """,
+                {"cids": orphan_cids},
+            ) or []
+            embeddings = [r["embedding"] for r in emb_rows if r.get("embedding")]
+
+            if embeddings:
+                import numpy as np
+                avg_emb = np.mean(embeddings, axis=0).tolist()
+                fallback_limit = limit - len(rows)
+                existing_ids = {r["paragraph_id"] for r in rows}
+
+                fallback = neo.run(
+                    """
+                    CALL db.index.vector.queryNodes('paragraph_embedding_index', $limit, $embedding)
+                    YIELD node, score
+                    MATCH (para:Paragraph) WHERE para = node
+                    MATCH (p:Paper)-[:HAS_PARAGRAPH]->(para)
+                    OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
+                    RETURN
+                      'paragraph'              AS type,
+                      para.paragraph_id        AS paragraph_id,
+                      para.text                AS text,
+                      para.page                AS page,
+                      p.paper_id               AS paper_id,
+                      p.title                  AS paper_title,
+                      p.doi                    AS doi,
+                      p.url                    AS url,
+                      COALESCE(p.author, p.creator, '')                         AS authors,
+                      COALESCE(p.publication_year, p.year, p.creationDate, '')  AS year,
+                      COALESCE(p.source, p.subject, '')                         AS source,
+                      sec.section_id           AS section_id,
+                      sec.title                AS section_title,
+                      toFloat(score) * 0.85    AS score,
+                      'vector_fallback'        AS matched_concept
+                    ORDER BY score DESC
+                    LIMIT $limit
+                    """,
+                    {"embedding": avg_emb, "limit": fallback_limit},
+                ) or []
+
+                for r in fallback:
+                    if r.get("paragraph_id") not in existing_ids:
+                        rows.append(r)
+                        existing_ids.add(r["paragraph_id"])
+
+    return rows
 
 
 def _expand_via_semantic_relations(neo: Neo4jClient, concept_ids: List[str], k: int = 5) -> List[str]:
@@ -327,15 +371,16 @@ def concept_based_retrieve(
     min_concept_score: float = 0.6,
 ) -> Dict[str, Any]:
     """
-    Intelligentes Concept-basiertes Retrieval (VECTOR-BASED, no MENTIONS relations):
+    GraphRAG Concept-basiertes Retrieval:
       1) Embed Query
       2) Vector-Suche auf Concepts → findet relevante Konzepte
-      3) Vector-Similarity: Use concept embeddings to find similar paragraphs
+      3) Graph-Traversal: Concept -[MENTIONS]-> Paragraph (primärer GraphRAG-Pfad)
+         Fallback: Vector-Similarity für Concepts ohne MENTIONS-Kanten
       4) (optional) Semantic Relations: erweitere Concepts über IS_A/PART_OF/RELATED_TO
-      5) Vector-Suche Paragraphs (direkter Match als Fallback)
+      5) Direkte Paragraph-Vektorsuche als Ergänzung
       6) Vector-Suche Figures
       7) Deduplizierung & Merge
-      
+
     Rückgabe:
       {"supports": [...], "matched_concepts": [...], "debug": {...}}
     """

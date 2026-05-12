@@ -10,13 +10,14 @@ class Neo4jClient:
         if not (NEO4J_URI and NEO4J_USERNAME and NEO4J_PASSWORD):
             raise RuntimeError("Neo4j credentials missing. Check .env")
         self.driver = GraphDatabase.driver(
-            NEO4J_URI, 
+            NEO4J_URI,
             auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
-            max_connection_lifetime=3600,  # 1 Stunde
+            max_connection_lifetime=3600,
             max_connection_pool_size=50,
-            connection_acquisition_timeout=120,  # 2 Minuten
-            connection_timeout=30,  # 30 Sekunden für initiale Verbindung
-            keep_alive=True
+            connection_acquisition_timeout=120,
+            connection_timeout=30,
+            keep_alive=True,
+            notifications_disabled_categories=["UNRECOGNIZED"],
         )
 
     def close(self) -> None:
@@ -1075,7 +1076,9 @@ class Neo4jClient:
                     ON CREATE SET s.name = $subject
                     MERGE (o:Concept {concept_id: $object_id})
                     ON CREATE SET o.name = $object
-                    
+
+                    WITH s, o
+
                     // Check if relation exists
                     OPTIONAL MATCH (s)-[r:SEMANTIC_RELATION {relation_type: $predicate}]->(o)
                     
@@ -1083,12 +1086,12 @@ class Neo4jClient:
                     WITH s, o, r,
                          CASE WHEN r IS NULL THEN 'created' ELSE 'updated' END AS operation
                     MERGE (s)-[rel:SEMANTIC_RELATION {relation_type: $predicate}]->(o)
+                    ON CREATE SET rel.created_at = datetime()
                     SET rel.confidence = $confidence,
                         rel.context = $context,
                         rel.source = $source,
                         rel.paper_id = $paper_id,
                         rel.updated_at = datetime()
-                    ON CREATE SET rel.created_at = datetime()
                     
                     RETURN operation
                     """,
@@ -1161,18 +1164,20 @@ class Neo4jClient:
                     ON CREATE SET c1.name = $c1
                     MERGE (c2:Concept {concept_id: $c2_id})
                     ON CREATE SET c2.name = $c2
-                    
+
+                    WITH c1, c2
+
                     // Create bidirectional co-occurrence (undirected)
                     OPTIONAL MATCH (c1)-[r:CO_OCCURS_WITH]-(c2)
                     
                     WITH c1, c2, r,
                          CASE WHEN r IS NULL THEN 'created' ELSE 'updated' END AS operation
                     MERGE (c1)-[rel:CO_OCCURS_WITH]-(c2)
+                    ON CREATE SET rel.created_at = datetime()
                     SET rel.count = coalesce(rel.count, 0) + $count,
                         rel.strength = $strength,
                         rel.paper_id = $paper_id,
                         rel.updated_at = datetime()
-                    ON CREATE SET rel.created_at = datetime()
                     
                     RETURN operation
                     """,
