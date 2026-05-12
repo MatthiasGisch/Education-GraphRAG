@@ -1,7 +1,7 @@
 from __future__ import annotations
-import base64, json, re
+import base64, json, re, time
 from typing import List, Dict, Any
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 from . import config as cfg
 
 
@@ -12,7 +12,7 @@ from . import config as cfg
 def _make_openai_client() -> OpenAI:
     if not cfg.OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY fehlt. Bitte in der Sidebar oder .env eintragen.")
-    return OpenAI(api_key=cfg.OPENAI_API_KEY)
+    return OpenAI(api_key=cfg.OPENAI_API_KEY, max_retries=6)
 
 
 def _make_lmstudio_client() -> OpenAI:
@@ -48,8 +48,34 @@ def client() -> OpenAI:
 # ---- Embeddings ----
 def embed_text(text: str, model: str | None = None) -> List[float]:
     m = model or _embed_model()
-    resp = _embed_client().embeddings.create(model=m, input=text)
-    return resp.data[0].embedding  # type: ignore
+    for attempt in range(6):
+        try:
+            resp = _embed_client().embeddings.create(model=m, input=text)
+            return resp.data[0].embedding  # type: ignore
+        except RateLimitError:
+            if attempt == 5:
+                raise
+            time.sleep(min(0.5 * 2 ** attempt, 16))
+    raise RuntimeError("embed_text: unreachable")
+
+
+def embed_texts_batch(texts: List[str], model: str | None = None, batch_size: int = 50) -> List[List[float]]:
+    """Sendet Embeddings in Batches und wiederholt bei Rate-Limit-Fehlern."""
+    m = model or _embed_model()
+    results: List[List[float]] = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        for attempt in range(6):
+            try:
+                resp = _embed_client().embeddings.create(model=m, input=batch)
+                ordered = sorted(resp.data, key=lambda d: d.index)
+                results.extend(d.embedding for d in ordered)
+                break
+            except RateLimitError:
+                if attempt == 5:
+                    raise
+                time.sleep(min(0.5 * 2 ** attempt, 16))
+    return results
 
 
 # ---- Vision: Bild beschreiben ----

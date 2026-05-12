@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from tqdm import tqdm
 from PIL import Image
 from .config import IMAGES_DIR, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
-from .openai_client import embed_text, describe_image
+from .openai_client import embed_text, embed_texts_batch, describe_image
 import hashlib
 import imagehash
 
@@ -604,23 +604,38 @@ def chunk_text(text: str, size: int, overlap: int) -> List[str]:
 def embed_paragraphs(
     paragraphs: List[Dict[str, Any]],
     progress_fn=None,
+    batch_size: int = 50,
 ) -> List[Dict[str, Any]]:
     """
-    Bettet jeden Paragraphen ein.
-    progress_fn(label: str, pct: int) wird bei jedem Schritt aufgerufen (0-100).
+    Bettet alle Paragraphen in Batches ein (reduziert API-Calls drastisch).
+    Bei Rate-Limit-Fehler (429) wird automatisch mit exponentiellem Backoff wiederholt.
+    progress_fn(label: str, pct: int) wird pro Batch aufgerufen (0-100).
     Wenn progress_fn None ist, wird tqdm verwendet.
     """
-    out = []
     n = len(paragraphs)
-    iterable = paragraphs if progress_fn else tqdm(paragraphs, desc="Embedding paragraphs")
-    for i, p in enumerate(iterable):
-        if progress_fn and n > 0:
-            progress_fn(f"Paragraph einbetten {i + 1}/{n}", int(100 * i / n))
-        emb = embed_text(p["text"])
-        out.append({**p, "embedding": emb})
+    if n == 0:
+        return []
+
+    texts = [p["text"] for p in paragraphs]
+    embeddings: List[List[float]] = []
+
+    batches = range(0, n, batch_size)
+    iterable = batches if progress_fn else tqdm(batches, desc="Embedding paragraphs")
+
+    for batch_start in iterable:
+        batch_end = min(batch_start + batch_size, n)
+        if progress_fn:
+            progress_fn(
+                f"Paragraph einbetten {batch_start + 1}–{batch_end}/{n}",
+                int(100 * batch_start / n),
+            )
+        batch_embeddings = embed_texts_batch(texts[batch_start:batch_end])
+        embeddings.extend(batch_embeddings)
+
     if progress_fn:
         progress_fn(f"Paragraph-Embeddings fertig ({n})", 100)
-    return out
+
+    return [{**p, "embedding": emb} for p, emb in zip(paragraphs, embeddings)]
 
 def analyze_and_embed_figures(
     figures: List[Dict[str, Any]],
