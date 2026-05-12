@@ -1,3 +1,4 @@
+import html
 import streamlit as st
 from src.neo import Neo4jClient
 from src.agent import answer_query
@@ -11,6 +12,38 @@ from pathlib import Path
 import datetime
 from io import BytesIO
 import re
+
+
+def _safe_para(text: str) -> str:
+    """Escapes text for ReportLab Paragraph XML while preserving <super>…</super> citation tags."""
+    parts = re.split(r'(</?super>)', text)
+    return ''.join(
+        p if p in ('<super>', '</super>') else html.escape(p)
+        for p in parts
+    )
+
+
+def _remap_inline_citations(text: str, local_titles: list, global_mapping: dict) -> str:
+    """
+    Remaps section-local <super>[n]</super> numbers to global bibliography numbers.
+    local_titles: sorted list of paper titles used in this section (defines local 1-based order)
+    global_mapping: {paper_title: global_citation_number}
+    """
+    if not text or not local_titles or not global_mapping:
+        return text
+    local_to_global = {}
+    for local_idx, title in enumerate(local_titles, 1):
+        if title in global_mapping:
+            local_to_global[local_idx] = global_mapping[title]
+    # Replace in reverse order so [10] is handled before [1]
+    for local_num in sorted(local_to_global.keys(), reverse=True):
+        global_num = local_to_global[local_num]
+        if local_num != global_num:
+            text = text.replace(
+                f"<super>[{local_num}]</super>",
+                f"<super>[{global_num}]</super>",
+            )
+    return text
 
 
 def clean_llm_metadata(text: str) -> str:
@@ -971,7 +1004,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         # Konzeptbeschreibung (falls vorhanden)
         if content.get("concept_description"):
             story.append(Paragraph("Überblick:", section_style))
-            story.append(Paragraph(content["concept_description"], content_style))
+            story.append(Paragraph(html.escape(content["concept_description"]), content_style))
             story.append(Spacer(1, 0.3*cm))
         
         # Lernziele
@@ -979,7 +1012,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             story.append(Paragraph("Lernziele:", section_style))
             for ziel in kapitel.get("Lernziele", []):
                 if ziel.strip():
-                    story.append(Paragraph(f"• {ziel}", objective_style))
+                    story.append(Paragraph(f"• {html.escape(ziel)}", objective_style))
             story.append(Spacer(1, 0.5*cm))
         
         # Initialisiere chapter_refs für Zitationen
@@ -1018,7 +1051,15 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                     )
                     
                     section_text = section_content.get("answer_text", "")
-                    section_text_raw = section_content.get("answer_text_raw", section_text)  # Raw Text für Validierung
+                    section_text_raw = section_content.get("answer_text_raw", section_text)
+
+                    # Remap section-local citation numbers to global bibliography numbers
+                    local_titles = sorted([
+                        s.get("title", "").strip()
+                        for s in section_content.get("sources", [])
+                        if s.get("title", "").strip()
+                    ])
+                    section_text = _remap_inline_citations(section_text, local_titles, source_to_citation_number)
                     
                     # Sammle Supports und Text für Citation Validation
                     if section_content.get('paragraphs'):
@@ -1067,8 +1108,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
                         print(f"DEBUG: chapter_refs before adding citations: {chapter_refs}")
                         
                         for para_idx, para_text in enumerate(paragraphs_text):
-                            # Zitationen sind bereits inline im Text, direkt hinzufügen
-                            story.append(Paragraph(para_text, content_style))
+                            story.append(Paragraph(_safe_para(para_text), content_style))
                     else:
                         story.append(Paragraph("(Keine Inhalte für diesen Abschnitt gefunden)", content_style))
                     
@@ -1087,20 +1127,22 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
             print(f"DEBUG: No sections, fetching content for entire chapter")
             full_content = fetch_content_for_chapter(neo, chapter_title, retrieval_hints=retrieval_hints, learner_role=learner_role)
             answer_text = full_content.get("answer_text", "")
-            
+
+            # Remap local citation numbers to global bibliography numbers
+            full_local_titles = sorted([
+                s.get("title", "").strip()
+                for s in full_content.get("sources", [])
+                if s.get("title", "").strip()
+            ])
+            answer_text = _remap_inline_citations(answer_text, full_local_titles, source_to_citation_number)
+
             if answer_text:
                 # Inhalt ohne Abschnitte - als Ganzes einfügen
                 story.append(Paragraph("Inhalt:", section_style))
                 paragraphs_text = answer_text.split('\n\n')
                 for para_idx, para_text in enumerate(paragraphs_text):
                     if para_text.strip():
-                        # Füge Zitationen am Ende des letzten Absatzes ein
-                        if chapter_refs and para_idx == len(paragraphs_text) - 1:
-                            refs_str = ','.join(map(str, sorted(chapter_refs)))
-                            para_with_citation = f"{para_text.strip()} [{refs_str}]"
-                            story.append(Paragraph(para_with_citation, content_style))
-                        else:
-                            story.append(Paragraph(para_text.strip(), content_style))
+                        story.append(Paragraph(_safe_para(para_text.strip()), content_style))
                 story.append(Spacer(1, 0.5*cm))
                 
                 # Sammle Quellen
@@ -1152,74 +1194,58 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
         for idx, (title, source_info) in enumerate(sorted_sources, 1):
             # APA Format: Autor(en). (Jahr). Titel. Quelle. DOI/URL
             citation_parts = []
-            
+
             # Zitatnummer in eckigen Klammern - Nutze die globale Nummer
             citation_num = source_to_citation_number.get(title, idx)
             citation_parts.append(f"[{citation_num}]")
-            
+
             # Autoren (APA: Nachname, Initialen.)
             authors = (source_info.get("authors") or "").strip()
             if authors:
-                # Entferne doppelte Punkte und extra Spaces
                 authors = re.sub(r'\s*\.+\s*', '.', authors).strip()
-                # Wenn mehrere Autoren durch Semikolon getrennt
                 if ";" in authors:
                     author_list = [a.strip().rstrip('.') for a in authors.split(";")]
                     authors = ", ".join(author_list)
-                # Stelle sicher dass Punkt am Ende
-                if not authors.endswith('.'):
-                    citation_parts.append(f"{authors}.")
-                else:
-                    citation_parts.append(f"{authors}")
-            else:
-                # Kein Autor: Nutze Titel als Ersatz (APA-Konvention)
-                pass
-            
+                suffix = "" if authors.endswith('.') else "."
+                citation_parts.append(f"{html.escape(authors)}{suffix}")
+
             # Jahr in Klammern (APA)
             year = (source_info.get("year") or "").strip()
             if year:
-                citation_parts.append(f"({year}).")
-            # Nur Jahr hinzufügen wenn vorhanden - nicht mit "(o. J.)"
-            
-            # Titel (APA: kursiv bei Büchern/Reports, normal bei Artikeln - wir nutzen fett für Lesbarkeit)
-            citation_parts.append(f"<i>{title}</i>.")
-            
+                citation_parts.append(f"({html.escape(year)}).")
+
+            # Titel kursiv
+            citation_parts.append(f"<i>{html.escape(title)}</i>.")
+
             # Quelle/Publikation (z.B. Journal, Konferenz)
             source_pub = (source_info.get("source") or "").strip()
             if source_pub:
-                citation_parts.append(f"{source_pub}.")
-            
+                citation_parts.append(f"{html.escape(source_pub)}.")
+
             # Seitenzahlen (falls vorhanden)
             pages = source_info.get("pages", set())
-            if pages and len(pages) > 0:
+            if pages:
                 sorted_pages = sorted(pages)
                 if len(sorted_pages) == 1:
                     citation_parts.append(f"S. {sorted_pages[0]}.")
                 elif len(sorted_pages) <= 5:
                     citation_parts.append(f"S. {', '.join(map(str, sorted_pages))}.")
                 else:
-                    # Viele Seiten: Zeige Bereich
                     citation_parts.append(f"S. {sorted_pages[0]}–{sorted_pages[-1]}.")
-            
+
             # DOI (APA: https://doi.org/...)
             doi = (source_info.get("doi") or "").strip()
             if doi:
-                # Entferne "https://doi.org/" falls schon vorhanden
                 doi_clean = doi.replace("https://doi.org/", "").replace("http://doi.org/", "")
-                citation_parts.append(f"https://doi.org/{doi_clean}")
-            
-            # URL (falls kein DOI vorhanden)
+                citation_parts.append(f"https://doi.org/{html.escape(doi_clean)}")
             elif (source_info.get("url") or "").strip():
                 url = (source_info.get("url") or "").strip()
-                citation_parts.append(f"Abgerufen von {url}")
-            
-            # Zusammensetzen
+                citation_parts.append(f"Abgerufen von {html.escape(url)}")
+
             citation_text = " ".join(citation_parts)
-            
-            # Fallback falls gar nichts da ist
-            if len(citation_parts) <= 3:  # Nur [idx], Jahr und Titel
-                citation_text = f"[{idx}] {title}. (Details nicht verfügbar)"
-            
+            if len(citation_parts) <= 2:  # Nur [n] und Titel
+                citation_text = f"[{citation_num}] {html.escape(title)}. (Details nicht verfügbar)"
+
             story.append(Paragraph(citation_text, reference_style))
     else:
         print("DEBUG: No sources to display in bibliography!")
