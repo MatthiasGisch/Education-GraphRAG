@@ -1825,9 +1825,16 @@ with tab_ingest:
                 st.warning(f"⚠️ Relations-Fehler (non-fatal): {e}")
         
         # Auto-attach to umbrella
-        report_progress("Finalisierung", 95)
-        # Umbrella-Struktur nicht mehr verwendet
-        
+        report_progress("Graph stitching", 95)
+        try:
+            neo.stitch_document_hierarchy()
+        except Exception as e:
+            st.warning(f"⚠️ Stitch document hierarchy fehlgeschlagen: {e}")
+        try:
+            neo.stitch_figures_to_paragraphs(prefix_length=60, page_tolerance=1)
+        except Exception as e:
+            st.warning(f"⚠️ Stitch figures to paragraphs fehlgeschlagen: {e}")
+
         report_progress("Abschließen", 100)
         report = {
             "status": "success",
@@ -1841,7 +1848,7 @@ with tab_ingest:
             "n_links": len(links),
             "file_name": path.name
         }
-        
+
         return report
 
     # --- Metadata helper for post-ingest curation ---

@@ -539,6 +539,16 @@ def stitch_figures_to_paragraphs(self, prefix_length=60, page_tolerance=1) -> di
     """
 ```
 
+**Auswirkung auf das Retrieval:**
+
+Beide Funktionen sind Voraussetzung für ein vollständiges Retrieval-Ergebnis. Ohne Stitching ist der Graph strukturell unvollständig:
+
+- `stitch_document_hierarchy()` erstellt `(Section)-[:HAS_PARAGRAPH]->` und `(Section)-[:HAS_FIGURE]->` Kanten. Der Retriever liest `sec.title` über `OPTIONAL MATCH ... HAS_SECTION ... HAS_PARAGRAPH` — ohne diese Kanten fehlt der Section-Titel in jedem Retrieval-Ergebnis (Quellenangabe im Kurs, z.B. "aus Abschnitt 3.2 — Related Work").
+
+- `stitch_figures_to_paragraphs()` erstellt `CAPTIONS`, `REFERS_TO` und `NEAR` Kanten zwischen Figures und Paragraphen. Die Funktion `_expand_figure_context_with_paragraphs()` im Retriever traversiert genau diese Kanten, um zu gefundenen Figures den erklärenden Paragraph-Text nachzuladen. Ohne Stitching liefert das Retrieval zu Figures nur Caption und Bild — keinen Fließtext, was für die LLM-basierte Kursgenerierung kaum nutzbar ist.
+
+**Triggering:** Beide Funktionen werden automatisch am Ende jedes Ingest-Vorgangs ausgeführt — sowohl in `scripts/ingest.py` (CLI) als auch in `scripts/gui_app.py` (GUI, `ingest_one_pdf_enhanced`). Die Operationen sind idempotent (MERGE-Semantik) und können ohne Datenverlust mehrfach ausgeführt werden.
+
 ### 7.5 Konzept-Management
 
 ```python
