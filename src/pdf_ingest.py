@@ -1,5 +1,5 @@
 from __future__ import annotations
-import fitz, os, uuid, json, re
+import fitz, os, uuid, json, re, time
 from typing import List, Dict, Any, Tuple, Optional
 from tqdm import tqdm
 from PIL import Image
@@ -648,10 +648,14 @@ def analyze_and_embed_figures(
     """
     out = []
     n = len(figures)
+    # Throttle zwischen Vision-Calls bei vielen Figures um TPM-Limit zu vermeiden
+    _throttle = 0.5 if n > 10 else 0.0
     iterable = figures if progress_fn else tqdm(figures, desc="Analyzing figures")
     for i, f in enumerate(iterable):
         if progress_fn and n > 0:
             progress_fn(f"Abbildung analysieren {i + 1}/{n}", int(100 * i / n))
+        if i > 0 and _throttle:
+            time.sleep(_throttle)
         analysis = describe_image(f["image_path"])
         caption = analysis.get("caption", "") or ""
         figure_type = analysis.get("figure_type", "other") or "other"

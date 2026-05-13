@@ -104,14 +104,21 @@ def describe_image(path: str) -> Dict[str, Any]:
         )},
         {"type": "image_url", "image_url": {"url": data_url}},
     ]
-    resp = _chat_client().chat.completions.create(
-        model=_vision_model(),
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_parts},
-        ],
-        temperature=0.2,
-    )
+    for attempt in range(6):
+        try:
+            resp = _chat_client().chat.completions.create(
+                model=_vision_model(),
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_parts},
+                ],
+                temperature=0.2,
+            )
+            break
+        except RateLimitError:
+            if attempt == 5:
+                raise
+            time.sleep(min(2 * 2 ** attempt, 60))
     text = resp.choices[0].message.content or "{}"
     try:
         data = json.loads(text)

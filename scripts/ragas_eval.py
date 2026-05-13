@@ -25,17 +25,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from openai import OpenAI as _OpenAI
 from datasets import Dataset
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from ragas import evaluate
-from ragas.embeddings import LangchainEmbeddingsWrapper
-from ragas.llms import LangchainLLMWrapper
-from ragas.metrics.collections import (
-    answer_relevancy,
-    context_precision,
-    context_recall,
-    faithfulness,
-)
+from ragas.llms import llm_factory
+from ragas.embeddings import OpenAIEmbeddings as RagasOpenAIEmbeddings
+from ragas.metrics.collections.faithfulness import Faithfulness
+from ragas.metrics.collections.answer_relevancy import AnswerRelevancy
+from ragas.metrics.collections.context_precision import ContextPrecision
+from ragas.metrics.collections.context_recall import ContextRecall
 
 from src import config as cfg
 from src.neo import Neo4jClient
@@ -167,24 +165,32 @@ def _supports_to_contexts(supports: list[dict]) -> list[str]:
     return [s["text"] for s in supports if s.get("type") == "paragraph" and s.get("text")]
 
 
-def _make_ragas_llm() -> LangchainLLMWrapper:
-    return LangchainLLMWrapper(
-        ChatOpenAI(model="gpt-4o-mini", api_key=cfg.OPENAI_API_KEY)
+def _make_ragas_llm():
+    return llm_factory("gpt-4o-mini", client=_OpenAI(api_key=cfg.OPENAI_API_KEY))
+
+
+def _make_ragas_embeddings():
+    return RagasOpenAIEmbeddings(
+        client=_OpenAI(api_key=cfg.OPENAI_API_KEY),
+        model="text-embedding-3-large",
     )
 
 
-def _make_ragas_embeddings() -> LangchainEmbeddingsWrapper:
-    return LangchainEmbeddingsWrapper(
-        OpenAIEmbeddings(model="text-embedding-3-large", api_key=cfg.OPENAI_API_KEY)
-    )
+def _make_metrics(llm, emb) -> list:
+    return [
+        Faithfulness(llm=llm),
+        AnswerRelevancy(llm=llm, embeddings=emb),
+        ContextPrecision(llm=llm),
+        ContextRecall(llm=llm),
+    ]
 
 
-def _run_ragas(rows: dict, llm: LangchainLLMWrapper, emb: LangchainEmbeddingsWrapper, metrics: list) -> dict:
+def _run_ragas(rows: dict, llm, emb, metrics: list) -> dict:
     if not rows.get("question"):
         return {}
     ds = Dataset.from_dict(rows)
-    result = evaluate(ds, metrics=metrics, llm=llm, embeddings=emb)
-    return dict(result)
+    result = evaluate(ds, metrics=metrics)
+    return {k: float(v) for k, v in result.items() if v is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +207,7 @@ def run_ragas_evaluation(
 
     ragas_llm = _make_ragas_llm()
     ragas_emb = _make_ragas_embeddings()
-    metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+    metrics = _make_metrics(ragas_llm, ragas_emb)
 
     rows: dict[str, list] = {"question": [], "answer": [], "contexts": [], "ground_truth": []}
 
@@ -263,8 +269,8 @@ def run_hallucination_test(
         except Exception as e:
             log.error("Halluzinationstest übersprungen '%s': %s", tq.question, e)
 
-    result_normal = _run_ragas(normal_rows, ragas_llm, ragas_emb, [faithfulness])
-    result_false = _run_ragas(false_rows, ragas_llm, ragas_emb, [faithfulness])
+    result_normal = _run_ragas(normal_rows, ragas_llm, ragas_emb, [Faithfulness(llm=ragas_llm)])
+    result_false = _run_ragas(false_rows, ragas_llm, ragas_emb, [Faithfulness(llm=ragas_llm)])
 
     faith_normal = result_normal.get("faithfulness") or 0.0
     faith_false = result_false.get("faithfulness") or 0.0
@@ -315,7 +321,7 @@ def run_llm_comparison(
     local_model = local_model_name or cfg.LMSTUDIO_CHAT_MODEL
     ragas_llm = _make_ragas_llm()
     ragas_emb = _make_ragas_embeddings()
-    metrics = [faithfulness, answer_relevancy]
+    metrics = [Faithfulness(llm=ragas_llm), AnswerRelevancy(llm=ragas_llm, embeddings=ragas_emb)]
 
     # Retrieval immer mit Cloud-Embeddings
     original_mode = cfg.LLM_MODE
@@ -395,7 +401,7 @@ def run_baseline_comparison(
 
     ragas_llm = _make_ragas_llm()
     ragas_emb = _make_ragas_embeddings()
-    metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+    metrics = _make_metrics(ragas_llm, ragas_emb)
 
     runs = {
         "baseline_vektor_rag": {
@@ -551,7 +557,7 @@ def run_all_courses_evaluation(
 
     ragas_llm = _make_ragas_llm()
     ragas_emb = _make_ragas_embeddings()
-    metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+    metrics = _make_metrics(ragas_llm, ragas_emb)
 
     all_results: dict[str, Any] = {}
     for kid in ids:
