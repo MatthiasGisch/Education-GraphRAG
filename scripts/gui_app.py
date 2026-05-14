@@ -2405,19 +2405,22 @@ with tab_eval:
 
         st.markdown("---")
 
-        # Testfragen anzeigen und bearbeiten
-        with st.expander("Testfragen anpassen", expanded=False):
-            st.caption(f"{len(_eval_mod.DEFAULT_TEST_QUESTIONS)} vordefinierte Fragen — du kannst einzelne deaktivieren.")
-            active_questions = []
-            for i, tq in enumerate(_eval_mod.DEFAULT_TEST_QUESTIONS):
-                col_cb, col_info = st.columns([1, 10])
-                with col_cb:
-                    checked = st.checkbox("", value=True, key=f"eval_q_{i}", label_visibility="collapsed")
-                with col_info:
-                    st.markdown(f"**[{tq.question_type}]** {tq.question}")
-                if checked:
-                    active_questions.append(tq)
-            st.caption(f"{len(active_questions)} Fragen aktiv")
+        # Testfragen anzeigen und bearbeiten — nur für Modi mit DEFAULT_TEST_QUESTIONS
+        if eval_mode != "Kurs-Evaluation (alle 3 Kurse)":
+            with st.expander("Testfragen anpassen", expanded=False):
+                st.caption(f"{len(_eval_mod.DEFAULT_TEST_QUESTIONS)} vordefinierte Fragen — du kannst einzelne deaktivieren.")
+                active_questions = []
+                for i, tq in enumerate(_eval_mod.DEFAULT_TEST_QUESTIONS):
+                    col_cb, col_info = st.columns([1, 10])
+                    with col_cb:
+                        checked = st.checkbox("", value=True, key=f"eval_q_{i}", label_visibility="collapsed")
+                    with col_info:
+                        st.markdown(f"**[{tq.question_type}]** {tq.question}")
+                    if checked:
+                        active_questions.append(tq)
+                st.caption(f"{len(active_questions)} Fragen aktiv")
+        else:
+            active_questions = list(_eval_mod.DEFAULT_TEST_QUESTIONS)
 
         if eval_mode == "Cloud vs. Lokal Vergleich":
             local_model_input = st.text_input(

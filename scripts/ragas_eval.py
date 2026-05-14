@@ -30,10 +30,10 @@ from datasets import Dataset
 from ragas import evaluate
 from ragas.llms import llm_factory
 from ragas.embeddings import OpenAIEmbeddings as RagasOpenAIEmbeddings
-from ragas.metrics.collections.faithfulness import Faithfulness
-from ragas.metrics.collections.answer_relevancy import AnswerRelevancy
-from ragas.metrics.collections.context_precision import ContextPrecision
-from ragas.metrics.collections.context_recall import ContextRecall
+from ragas.metrics._faithfulness import Faithfulness
+from ragas.metrics._answer_relevance import AnswerRelevancy
+from ragas.metrics._context_precision import ContextPrecision
+from ragas.metrics._context_recall import ContextRecall
 
 from src import config as cfg
 from src.neo import Neo4jClient
@@ -185,12 +185,31 @@ def _make_metrics(llm, emb) -> list:
     ]
 
 
+_NON_METRIC_COLS = {
+    "question", "answer", "contexts", "ground_truth",
+    "user_input", "response", "retrieved_contexts", "reference",
+}
+
+
 def _run_ragas(rows: dict, llm, emb, metrics: list) -> dict:
     if not rows.get("question"):
         return {}
     ds = Dataset.from_dict(rows)
     result = evaluate(ds, metrics=metrics)
-    return {k: float(v) for k, v in result.items() if v is not None}
+    # RAGAS 0.4.x gibt EvaluationResult zurück (kein dict), Scores via to_pandas()
+    df = result.to_pandas()
+    out = {}
+    for col in df.columns:
+        if col in _NON_METRIC_COLS:
+            continue
+        series = df[col].dropna()
+        if series.empty:
+            continue
+        try:
+            out[col] = float(series.mean())
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -497,10 +516,23 @@ def print_results_table(results: dict) -> None:
 # 5b. Kursspezifische Evaluation
 # ---------------------------------------------------------------------------
 
+QUESTIONS_PER_KURS = 5  # Thesis-Vorgabe: 5 Fragen je Kurs
+
+
+def _sample_evenly(questions: list, n: int) -> list:
+    """Wählt n Fragen gleichmäßig verteilt über die gesamte Liste."""
+    if len(questions) <= n:
+        return questions
+    step = len(questions) / n
+    return [questions[int(i * step)] for i in range(n)]
+
+
 def load_course_questions(kurs_id: str) -> list[TestQuestion]:
     """
     Lädt kursspezifische Fragen aus data/eval/questions_{kurs_id}.json
     (erzeugt von scripts/generate_course_questions.py).
+    Gibt genau QUESTIONS_PER_KURS Fragen zurück, gleichmäßig über alle
+    Abschnitte verteilt (nicht nur die ersten N).
     """
     import json
     path = Path(__file__).resolve().parents[1] / "data" / "eval" / f"questions_{kurs_id}.json"
@@ -511,7 +543,7 @@ def load_course_questions(kurs_id: str) -> list[TestQuestion]:
         )
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
-    questions = [
+    all_questions = [
         TestQuestion(
             question=q["question"],
             ground_truth=q.get("ground_truth") or q.get("abschnitt_titel", ""),
@@ -520,7 +552,11 @@ def load_course_questions(kurs_id: str) -> list[TestQuestion]:
         for q in raw
         if q.get("question")
     ]
-    log.info("Geladen: %d Fragen für Kurs '%s'", len(questions), kurs_id)
+    questions = _sample_evenly(all_questions, QUESTIONS_PER_KURS)
+    log.info(
+        "Geladen: %d/%d Fragen für Kurs '%s' (gleichmäßiges Sampling)",
+        len(questions), len(all_questions), kurs_id,
+    )
     return questions
 
 
@@ -548,6 +584,7 @@ def run_all_courses_evaluation(
     """
     Evaluiert alle drei Kurse sequenziell und gibt vergleichbare Ergebnisse zurück.
     kurs_ids=None → alle drei Kurse.
+    Retrieval läuft immer im Cloud-Modus, da der Neo4j-Index mit OpenAI-Embeddings gebaut wurde.
     """
     from scripts.generate_course_questions import KURSE
     ids = kurs_ids or list(KURSE.keys())
@@ -558,6 +595,10 @@ def run_all_courses_evaluation(
     ragas_llm = _make_ragas_llm()
     ragas_emb = _make_ragas_embeddings()
     metrics = _make_metrics(ragas_llm, ragas_emb)
+
+    original_mode = cfg.LLM_MODE
+    cfg.LLM_MODE = "cloud"
+    log.info("Kurs-Evaluation: LLM_MODE auf 'cloud' gesetzt (war: '%s')", original_mode)
 
     all_results: dict[str, Any] = {}
     for kid in ids:
@@ -588,6 +629,8 @@ def run_all_courses_evaluation(
         except Exception as e:
             log.error("[%s] Fehlgeschlagen: %s", kid, e)
             all_results[kid] = {"fehler": str(e)}
+
+    cfg.LLM_MODE = original_mode
 
     if _close:
         neo.close()

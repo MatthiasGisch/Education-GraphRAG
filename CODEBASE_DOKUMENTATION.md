@@ -132,12 +132,13 @@ masterthesis_neu/
 │   ├── video_from_pptx.py        # PPTX → Video-Konvertierung
 │   └── presentation_api.py       # FastAPI REST-Endpunkte
 ├── scripts/                       # Utility-Skripte & Einstiegspunkte
-│   ├── gui_app.py                # Streamlit GUI (Haupteinstieg, ~2.475 Zeilen)
+│   ├── gui_app.py                # Streamlit GUI (Haupteinstieg, ~2.556 Zeilen)
 │   ├── ingest.py                 # CLI-Batch-Ingest
 │   ├── ask.py                    # CLI Q&A
 │   ├── ask_to_pdf.py             # Q&A → PDF-Export
 │   ├── course_generator.py       # Kursgenerierungs-Modul (GUI-Tab-Plugin)
 │   ├── ragas_eval.py             # RAGAS-Evaluation (intern)
+│   ├── generate_course_questions.py  # Kursspezifische RAGAS-Testfragen generieren (3 Kurse × 5 Fragen)
 │   ├── framework_comparison.py   # Framework-Vergleich: Mein GraphRAG vs. MS GraphRAG vs. LightRAG
 │   ├── reingest_all.py           # Bulk Re-Ingest aller Papiere
 │   ├── clear_all.py              # Gesamten Graphen löschen
@@ -1263,17 +1264,17 @@ Vollständige Pipeline je PDF:
 
 ### 19.2 scripts/gui_app.py — Streamlit GUI
 
-Streamlit-GUI (~2.475 Zeilen) mit 7 Tabs:
+Streamlit-GUI (~2.556 Zeilen) mit 7 Tabs:
 
 | Tab | Titel | Funktion |
 |-----|-------|---------|
-| 1 | **Dokumente aufnehmen** | PDF-Upload, Enhanced Ingest mit Echtzeit-Fortschrittsbalken, Duplikaterkennung |
+| 1 | **Dokumente aufnehmen** | PDF-Upload, Enhanced Ingest mit Echtzeit-Fortschrittsbalken, Duplikaterkennung, automatisches Graph-Stitching |
 | 2 | **Paperverwaltung** | Liste aller ingestierten Paper, Metadaten-Bearbeitung, Paper löschen |
 | 3 | **Kursgenerator** | Kursstruktur generieren (Plugin: `scripts/course_generator.py`) |
 | 4 | **Slideexport** | Gamma API oder lokaler PPTX-Export, Theme-Auswahl |
 | 5 | **Videoexport** | Synthesia API oder lokaler TTS+moviepy-Export |
 | 6 | **Cypher** | Direkte Cypher-Queries, Graph-Visualisierung via agraph/plotly |
-| 7 | **Evaluation** | RAGAS-Metriken, Halluzinationstest, Cloud-vs.-Lokal-Vergleich |
+| 7 | **Evaluation** | RAGAS-Metriken, Halluzinationstest, Cloud-vs.-Lokal-Vergleich, Baseline-Vergleich, Kurs-Evaluation |
 
 **Fortschritts-Architektur (Tab 1, `ingest_one_pdf_enhanced`):**
 
@@ -1291,6 +1292,8 @@ def _sub(base: int, span: int):
 embed_paragraphs(...,           progress_fn=_sub(40, 10))  # 40–50%
 analyze_and_embed_figures(...,  progress_fn=_sub(60, 10))  # 60–70%
 extract_and_embed_concepts_hybrid(..., progress_fn=_sub(70, 20))  # 70–90%
+# 95%: Graph stitching (stitch_document_hierarchy + stitch_figures_to_paragraphs)
+# 100%: Abschließen
 ```
 
 **Paperverwaltung (Tab 2):** Listet alle ingestierten Paper mit Metadaten (Titel, Autoren, Jahr, DOI, Seitenanzahl, Paragraphen, Figures, Konzepte). Bietet Inline-Bearbeitung der Metadaten und eine gesicherte Löschfunktion (Bestätigungs-Dialog).
@@ -1331,6 +1334,7 @@ Wie `ask.py`, schreibt Antwort zusätzlich als PDF via `write_answer_pdf()`.
 | `install_spacy_models.py` | spaCy und SciSpacy-Modelle installieren |
 | `test_plotly_viz.py` | Plotly-Graphvisualisierung isoliert testen |
 | `framework_comparison.py` | Framework-Vergleich: Mein GraphRAG vs. MS GraphRAG vs. LightRAG (RAGAS) |
+| `generate_course_questions.py` | Kursspezifische RAGAS-Testfragen für alle 3 Kurse generieren + Ground Truths anreichern |
 
 ### 19.7 scripts/framework_comparison.py — Framework-Vergleich
 
@@ -1386,10 +1390,10 @@ langchain-openai  (ChatOpenAI + OpenAIEmbeddings als RAGAS-Backend)
 | `visual` | 3 | Fragen zu Abbildungen |
 | `false_context` | 2 | Halluzinationstest-Kandidaten |
 
-### 20.4 Vier interne Evaluationsläufe
+### 20.4 Sechs interne Evaluationsläufe
 
 #### run_ragas_evaluation()
-Vollständige RAGAS-Evaluation über alle 15 Fragen mit allen vier Metriken. Retrieval via `concept_based_retrieve()`, Generierung via `grounded_answer()`.
+Vollständige RAGAS-Evaluation über alle 15 DEFAULT_TEST_QUESTIONS mit allen vier Metriken. Retrieval via `concept_based_retrieve()`, Generierung via `grounded_answer()`.
 
 #### run_hallucination_test()
 Vergleicht Faithfulness mit echtem vs. bewusst falschem Kontext (`_FALSE_FACTS`):
@@ -1414,7 +1418,40 @@ Direkter interner Vergleich: **reines Vektor-RAG** (`hybrid_retrieve`) vs. **Gra
 - Ausgabe: alle 4 Metriken pro Modus + Differenz (GraphRAG minus Baseline)
 - Positiver Differenzwert = GraphRAG besser als Vektor-RAG-Baseline
 
-### 20.5 Ausgabeformat
+#### run_all_courses_evaluation()
+Evaluiert alle drei Kurse sequenziell mit kursspezifischen Fragen (aus `data/eval/questions_{kurs_id}.json`, erzeugt von `generate_course_questions.py`):
+- Lädt je Kurs genau **`QUESTIONS_PER_KURS = 5` Fragen** (Thesis-Vorgabe; Konstante in `ragas_eval.py`)
+- Alle vier RAGAS-Metriken; gemeinsamer LLM/Embedding-Client für effizienten Betrieb
+- Ausgabe: pro Kurs `kurs_name`, `n_fragen`, `ragas_scores`; zusätzlich Vergleichstabelle auf Konsole
+- Ergebnisse werden in `data/eval/kurs_eval_results.json` exportiert
+
+#### run_course_evaluation()
+Einzelkurs-Variante von `run_all_courses_evaluation()`: evaluiert einen Kurs per `kurs_id`.
+
+### 20.5 scripts/generate_course_questions.py
+
+Generiert kursspezifische Testfragen für die RAGAS-Evaluation der drei Zielkurse:
+
+| Kurs-ID | Name | Abschnitte | Fragen gesamt |
+|---------|------|-----------|--------------|
+| `kurs1_ai_literacy_kmu` | AI Literacy für KMU – Level 0 | 16 | 32 (2 je Abschnitt) |
+| `kurs2_ki_strategie_governance` | AI-Strategie & Governance für Führungskräfte | 13 | 26 |
+| `kurs3_ki_recht_eu_ai_act` | KI & Recht – EU AI Act in der Unternehmenspraxis | 16 | 32 |
+
+Für die Evaluation werden je Kurs nur **5 Fragen** (Thesis-Vorgabe) via `QUESTIONS_PER_KURS`-Konstante geladen.
+
+**Phase 1 – Fragengenerierung** (GPT, ~2 min): 2 Fragen je Abschnitt, direkt aus Lernzielen ableitbar.  
+**Phase 2 – Ground-Truth-Anreicherung** (GPT + Neo4j, ~10–20 min): `concept_based_retrieve()` → GPT synthetisiert Antwort; Fallback: Allgemeinwissen (markiert mit `[Allgemeinwissen]`).
+
+```bash
+python scripts/generate_course_questions.py               # alle 3 Kurse
+python scripts/generate_course_questions.py --kurs kurs1  # nur Kurs 1
+python scripts/generate_course_questions.py --nur-fragen  # ohne Ground Truths (kein Neo4j)
+```
+
+Ausgabe: `data/eval/questions_{kurs_id}.json`
+
+### 20.6 Ausgabeformat
 
 ```json
 {
