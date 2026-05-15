@@ -180,6 +180,32 @@ def save_user_config(conf: dict) -> None:
 def get_neo() -> Neo4jClient:
     return Neo4jClient()
 
+
+def _cached_list_papers() -> list:
+    """Papers-Liste aus Session-State-Cache — wird nur bei explizitem clear neu abgefragt."""
+    if "papers_list_cache" not in st.session_state:
+        st.session_state["papers_list_cache"] = get_neo().list_papers()
+    return st.session_state["papers_list_cache"]
+
+def _invalidate_papers_cache() -> None:
+    st.session_state.pop("papers_list_cache", None)
+
+
+@st.cache_resource(show_spinner=False)
+def _load_eval_module():
+    """Lädt ragas_eval.py einmalig – schwere Imports (ragas, datasets, langchain) nur 1x."""
+    import importlib.util as _ilu
+    import sys as _sys
+    _spec = _ilu.spec_from_file_location(
+        "ragas_eval",
+        str(Path(__file__).resolve().parent / "ragas_eval.py"),
+    )
+    _mod = _ilu.module_from_spec(_spec)
+    _mod.__name__ = "ragas_eval"
+    _sys.modules["ragas_eval"] = _mod
+    _spec.loader.exec_module(_mod)
+    return _mod
+
 def get_single_value(neo: Neo4jClient, cypher: str) -> int:
     res = neo.run(cypher)
     return int(res[0]["c"]) if res and "c" in res[0] else 0
@@ -1957,6 +1983,7 @@ with tab_ingest:
             
             # Final summary
             st.markdown("---")
+            _invalidate_papers_cache()
             st.success(f"Fertig! {len(reports)} erfolgreich, {len(duplicates)} Duplikate, {len(errors)} Fehler")
             
             if reports:
@@ -2062,6 +2089,7 @@ with tab_ingest:
             if st.button("Ja, löschen", type="primary", use_container_width=True):
                 with st.spinner("Lösche alle Knoten & Kanten …"):
                     stats = clear_graph()
+                _invalidate_papers_cache()
                 st.success("Graph erfolgreich geleert!")
                 st.json(stats)
         with col2:
@@ -2077,7 +2105,7 @@ with tab_ingest:
         st.markdown("Übersicht, Bearbeitung und Verwaltung aller aufgenommenen Papers im Wissensgraph.")
 
         neo_pm = get_neo()
-        papers_list = neo_pm.list_papers()
+        papers_list = _cached_list_papers()
 
         if not papers_list:
             st.info("Noch keine Papers im System. Nutze den Tab **'Dokumente aufnehmen'**, um PDFs hochzuladen.")
@@ -2241,6 +2269,7 @@ with tab_ingest:
                                         "MATCH (p:Paper {paper_id:$pid}) SET " + ", ".join(set_parts),
                                         params,
                                     )
+                                    _invalidate_papers_cache()
                                     st.success("✅ Metadaten erfolgreich aktualisiert!")
                                 else:
                                     st.info("Keine Änderungen vorgenommen.")
@@ -2265,6 +2294,7 @@ with tab_ingest:
                                      type="primary", use_container_width=True):
                             with st.spinner(f"Lösche '{title}' …"):
                                 del_result = neo_pm.delete_paper(pid)
+                            _invalidate_papers_cache()
                             d = del_result.get("deleted", {})
                             st.success(
                                 f"Paper gelöscht — "
@@ -2380,17 +2410,8 @@ with tab_eval:
     st.subheader("RAGAS Evaluation")
     st.caption("Bewertet die GraphRAG-Pipeline mit Faithfulness, Answer Relevancy, Context Precision und Context Recall.")
 
-    import importlib.util as _ilu
-    import sys as _sys
-    _eval_spec = _ilu.spec_from_file_location(
-        "ragas_eval",
-        str(Path(__file__).resolve().parent / "ragas_eval.py"),
-    )
-    _eval_mod = _ilu.module_from_spec(_eval_spec)
-    _eval_mod.__name__ = "ragas_eval"
-    _sys.modules["ragas_eval"] = _eval_mod
     try:
-        _eval_spec.loader.exec_module(_eval_mod)
+        _eval_mod = _load_eval_module()
         _ragas_available = True
     except Exception as _e:
         _ragas_available = False
@@ -2405,12 +2426,33 @@ with tab_eval:
 
         st.markdown("---")
 
-        # Testfragen anzeigen und bearbeiten — nur für Modi mit DEFAULT_TEST_QUESTIONS
+        # Testfragen laden — Kursfragen bevorzugen, Fallback auf DEFAULT_TEST_QUESTIONS
         if eval_mode != "Kurs-Evaluation (alle 3 Kurse)":
+            _eval_dir = Path(__file__).resolve().parents[1] / "data" / "eval"
+            try:
+                from scripts.generate_course_questions import KURSE as _KURSE_ALL
+                _available_ids = [k for k in _KURSE_ALL if (_eval_dir / f"questions_{k}.json").exists()]
+            except Exception:
+                _available_ids = []
+
+            if _available_ids:
+                _all_course_qs = []
+                for _kid in _available_ids:
+                    try:
+                        _all_course_qs.extend(_eval_mod.load_course_questions(_kid))
+                    except Exception:
+                        pass
+                _question_pool = _eval_mod._sample_evenly(_all_course_qs, 15)
+                _pool_label = f"{len(_question_pool)} Kursfragen ({', '.join(_available_ids)})"
+            else:
+                _question_pool = list(_eval_mod.DEFAULT_TEST_QUESTIONS)
+                _pool_label = f"{len(_question_pool)} vordefinierte Fragen (keine Kursfragen-Dateien gefunden)"
+                st.warning("⚠️ Keine Kursfragen-Dateien gefunden — es werden generische Default-Fragen verwendet, die möglicherweise nicht zum Graphinhalt passen.")
+
             with st.expander("Testfragen anpassen", expanded=False):
-                st.caption(f"{len(_eval_mod.DEFAULT_TEST_QUESTIONS)} vordefinierte Fragen — du kannst einzelne deaktivieren.")
+                st.caption(_pool_label + " — einzelne deaktivieren möglich.")
                 active_questions = []
-                for i, tq in enumerate(_eval_mod.DEFAULT_TEST_QUESTIONS):
+                for i, tq in enumerate(_question_pool):
                     col_cb, col_info = st.columns([1, 10])
                     with col_cb:
                         checked = st.checkbox("", value=True, key=f"eval_q_{i}", label_visibility="collapsed")
@@ -2483,7 +2525,7 @@ with tab_eval:
                             if "fehler" in kdata:
                                 table_data[kid] = {"Fehler": kdata["fehler"]}
                             else:
-                                row = {"Kurs": kdata.get("kurs_name", kid), "Fragen": kdata.get("n_fragen", "?")}
+                                row = {"Kurs": kdata.get("kurs_name", kid), "Fragen": str(kdata.get("n_fragen", "?"))}
                                 scores = kdata.get("ragas_scores", {})
                                 for mk in metric_keys:
                                     row[mk.replace("_", " ").title()] = f"{scores.get(mk, 0):.4f}" if mk in scores else "—"

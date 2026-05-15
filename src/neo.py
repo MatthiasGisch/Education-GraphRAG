@@ -1,5 +1,6 @@
 # src/neo.py
 from __future__ import annotations
+import time
 from typing import Any, Dict, List
 from neo4j import GraphDatabase
 from .config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
@@ -12,10 +13,10 @@ class Neo4jClient:
         self.driver = GraphDatabase.driver(
             NEO4J_URI,
             auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
-            max_connection_lifetime=3600,
+            max_connection_lifetime=1800,        # 30 min: AuraDB bricht Verbindungen früher ab als 1h
             max_connection_pool_size=50,
             connection_acquisition_timeout=120,
-            connection_timeout=30,
+            connection_timeout=60,               # 60 s: mehr Zeit für TLS-Handshake nach Reconnect
             keep_alive=True,
             notifications_disabled_categories=["UNRECOGNIZED"],
         )
@@ -31,26 +32,23 @@ class Neo4jClient:
         except Exception:
             return False
 
+    _RETRYABLE = ('defunct', 'connection', 'ssl', 'eof', 'protocol', 'broken pipe')
+
     def run(self, cypher: str, params: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
         """Führt Cypher Query aus mit Retry-Logik bei Connection Fehlern."""
-        max_retries = 2
+        max_retries = 3
         for attempt in range(max_retries):
             try:
                 with self.driver.session() as session:
-                    # Setze Transaction Timeout auf 5 Minuten
                     result = session.run(cypher, params or {}, timeout=300)
                     return [r.data() for r in result]
             except Exception as e:
                 error_msg = str(e).lower()
-                # Bei Connection-Problemen: Retry
-                if attempt < max_retries - 1 and ('defunct' in error_msg or 'connection' in error_msg):
-                    print(f"⚠️  Neo4j connection issue, retrying ({attempt + 1}/{max_retries})...")
-                    try:
-                        self.driver.verify_connectivity()
-                    except:
-                        pass  # Verbindung ist tot, aber Driver wird bei nächstem Versuch neue Session erstellen
+                if attempt < max_retries - 1 and any(p in error_msg for p in self._RETRYABLE):
+                    wait = 2 ** attempt  # 1s, 2s
+                    print(f"⚠️  Neo4j connection issue, retrying ({attempt + 1}/{max_retries - 1}) in {wait}s…")
+                    time.sleep(wait)
                     continue
-                # Andernfalls: Exception durchreichen
                 raise
     
     def run_graph(self, cypher: str, params: Dict[str, Any] | None = None) -> List[Any]:
@@ -58,17 +56,24 @@ class Neo4jClient:
         Führt Cypher-Query aus und gibt die rohen Neo4j-Records zurück (inkl. Nodes, Paths, Relationships).
         Wichtig für Graph-Visualisierung!
         """
-        with self.driver.session() as session:
-            result = session.run(cypher, params or {})
-            records = []
-            for r in result:
-                # Jeder Record kann mehrere Felder haben (z.B. p1, p2, p3)
-                # Wir wollen alle Felder behalten
-                record_dict = {}
-                for key in r.keys():
-                    record_dict[key] = r[key]
-                records.append(record_dict)
-            return records
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.driver.session() as session:
+                    result = session.run(cypher, params or {})
+                    records = []
+                    for r in result:
+                        record_dict = {key: r[key] for key in r.keys()}
+                        records.append(record_dict)
+                    return records
+            except Exception as e:
+                error_msg = str(e).lower()
+                if attempt < max_retries - 1 and any(p in error_msg for p in self._RETRYABLE):
+                    wait = 2 ** attempt
+                    print(f"⚠️  Neo4j connection issue (graph), retrying ({attempt + 1}/{max_retries - 1}) in {wait}s…")
+                    time.sleep(wait)
+                    continue
+                raise
 
     # --- WICHTIG: robuste Schema-Anlage (Kommentare rausfiltern, Semikolons splitten)
     def ensure_schema(self, schema_cypher: str) -> None:

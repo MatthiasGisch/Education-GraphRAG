@@ -166,7 +166,7 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]], max_supports: in
                 "page": s.get("page"),
                 "section": s.get("section_title"),
             }
-            ctx_lines.append(f"[{ref_id}] {s['paper_title']} • S.{s.get('page')} • {s.get('section_title') or '—'} :: {s['text'][:800]}")
+            ctx_lines.append(f"[{ref_id}] {s.get('paper_title', '?')} • S.{s.get('page')} • {s.get('section_title') or '—'} :: {s['text'][:800]}")
         else:
             ref_id = f"F{s['figure_id']}"
             bib[ref_id] = {
@@ -188,7 +188,7 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]], max_supports: in
                 meta_parts.append(f"Erkennbarer Text: {', '.join(ocr_hints[:3])}")
             meta_str = (" [" + " | ".join(meta_parts) + "]") if meta_parts else ""
             ctx_lines.append(
-                f"[{ref_id}] {s['paper_title']} • Abb. • S.{s.get('page')} :: "
+                f"[{ref_id}] {s.get('paper_title', '?')} • Abb. • S.{s.get('page')} :: "
                 f"{s.get('caption','')[:300]}{meta_str}"
             )
 

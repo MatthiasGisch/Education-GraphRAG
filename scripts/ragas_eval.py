@@ -27,9 +27,9 @@ if str(ROOT) not in sys.path:
 
 from openai import OpenAI as _OpenAI
 from datasets import Dataset
+from langchain_openai import OpenAIEmbeddings as _LCOpenAIEmbeddings
 from ragas import evaluate
 from ragas.llms import llm_factory
-from ragas.embeddings import OpenAIEmbeddings as RagasOpenAIEmbeddings
 from ragas.metrics._faithfulness import Faithfulness
 from ragas.metrics._answer_relevance import AnswerRelevancy
 from ragas.metrics._context_precision import ContextPrecision
@@ -53,6 +53,7 @@ class TestQuestion:
     question: str
     ground_truth: str
     question_type: str  # "factual" | "cross_topic" | "visual" | "false_context"
+    kurs_id: str | None = None  # gesetzt bei Kursfragen, None bei DEFAULT_TEST_QUESTIONS
 
 
 DEFAULT_TEST_QUESTIONS: list[TestQuestion] = [
@@ -137,14 +138,23 @@ DEFAULT_TEST_QUESTIONS: list[TestQuestion] = [
     ),
 ]
 
-# Falschinformationen für den Halluzinationstest
-_FALSE_FACTS = [
-    "Transformer-Modelle wurden 1990 von Geoffrey Hinton entwickelt und basieren ausschließlich auf rekurrenten Verbindungen ohne Attention-Mechanismus.",
-    "BERT steht für Bidirectional Encoder Representations from Trees und nutzt Entscheidungsbäume statt neuronale Netzwerke.",
-    "GraphRAG ist ein Ansatz, der Bilder und Videos direkt als Graphknoten kodiert und CNN-basiertes Retrieval ohne Textkomponente verwendet.",
-    "Self-Attention berechnet für jedes Token eine gleichmäßige Gewichtung aller anderen Token ohne trainierbare Parameter.",
-    "Knowledge Graphs speichern Daten ausschließlich in relationalen Tabellen ohne Kanten- oder Graphstruktur.",
-]
+# Falschinformationen für den Halluzinationstest — pro Kurs thematisch passend
+_FALSE_FACTS_BY_KURS: dict[str, list[str]] = {
+    "kurs1_ai_literacy_kmu": [
+        "Generative KI-Systeme wie ChatGPT sind vollständig zuverlässig, da sie ausschließlich aus verifizierten Quellen lernen und keine falschen Informationen produzieren können.",
+        "Machine-Learning-Modelle lernen kontinuierlich aus jeder Nutzereingabe weiter, weshalb Unternehmen nach der Einführung keine weiteren Trainingsmaßnahmen oder Kontrollen benötigen.",
+    ],
+    "kurs2_ki_strategie_governance": [
+        "Laut EU AI Act sind ausschließlich die Hersteller (Anbieter) von KI-Systemen rechtlich verantwortlich; Unternehmen, die KI einsetzen (Nutzer/Deployer), tragen keinerlei Compliance-Pflichten.",
+        "KI-Governance bedeutet, dass Unternehmen sämtliche KI-Entscheidungen vollständig automatisieren und auf menschliche Kontrolle verzichten können, sofern das System zertifiziert ist.",
+    ],
+    "kurs3_ki_recht_eu_ai_act": [
+        "Der EU AI Act teilt KI-Systeme in zwei Risikoklassen ein: 'sicher' und 'gefährlich', wobei alle KI-Systeme im unternehmerischen Einsatz automatisch als hochriskant eingestuft werden.",
+        "Kleine und mittlere Unternehmen (KMU) sind vollständig vom EU AI Act ausgenommen, da das Gesetz ausschließlich für Konzerne und Großunternehmen mit mehr als 500 Mitarbeitenden gilt.",
+    ],
+}
+# Fallback für DEFAULT_TEST_QUESTIONS (kein kurs_id)
+_FALSE_FACTS = [f for facts in _FALSE_FACTS_BY_KURS.values() for f in facts]
 
 
 # ---------------------------------------------------------------------------
@@ -166,20 +176,22 @@ def _supports_to_contexts(supports: list[dict]) -> list[str]:
 
 
 def _make_ragas_llm():
-    return llm_factory("gpt-4o-mini", client=_OpenAI(api_key=cfg.OPENAI_API_KEY))
+    # max_tokens=8192: Faithfulness NLI gibt pro Aussage statement+reason+verdict aus.
+    # Lange Kursantworten erzeugen 20+ Aussagen (~4000+ Output-Tokens). gpt-4o-mini
+    # unterstützt bis zu 16 384 Output-Tokens, 8192 ist ein sicherer Mittelwert.
+    return llm_factory("gpt-4o-mini", client=_OpenAI(api_key=cfg.OPENAI_API_KEY), max_tokens=8192)
 
 
 def _make_ragas_embeddings():
-    return RagasOpenAIEmbeddings(
-        client=_OpenAI(api_key=cfg.OPENAI_API_KEY),
-        model="text-embedding-3-large",
-    )
+    # LangChain embeddings required: RAGAS AnswerRelevancy calls embed_query()/embed_documents()
+    # which RAGAS's own OpenAIEmbeddings (0.4.x) does not implement.
+    return _LCOpenAIEmbeddings(api_key=cfg.OPENAI_API_KEY, model="text-embedding-3-large")
 
 
 def _make_metrics(llm, emb) -> list:
     return [
         Faithfulness(llm=llm),
-        AnswerRelevancy(llm=llm, embeddings=emb),
+        AnswerRelevancy(llm=llm, embeddings=emb, strictness=1),
         ContextPrecision(llm=llm),
         ContextRecall(llm=llm),
     ]
@@ -190,10 +202,23 @@ _NON_METRIC_COLS = {
     "user_input", "response", "retrieved_contexts", "reference",
 }
 
+# Lange Kursantworten auf ~400 Wörter kappen, damit Faithfulness-NLI nicht
+# mit 30+ Aussagen überflutet wird und der max_tokens-Limit sicher eingehalten wird.
+_ANSWER_MAX_CHARS = 2000
+
+
+def _truncate_answer(text: str) -> str:
+    if len(text) <= _ANSWER_MAX_CHARS:
+        return text
+    cut = text[:_ANSWER_MAX_CHARS]
+    last_period = max(cut.rfind(". "), cut.rfind(".\n"))
+    return cut[: last_period + 1] if last_period > _ANSWER_MAX_CHARS // 2 else cut
+
 
 def _run_ragas(rows: dict, llm, emb, metrics: list) -> dict:
     if not rows.get("question"):
         return {}
+    rows = {**rows, "answer": [_truncate_answer(a) for a in rows["answer"]]}
     ds = Dataset.from_dict(rows)
     result = evaluate(ds, metrics=metrics)
     # RAGAS 0.4.x gibt EvaluationResult zurück (kein dict), Scores via to_pandas()
@@ -271,7 +296,8 @@ def run_hallucination_test(
             supports = _retrieve_supports(neo, tq.question)
             answer_normal = grounded_answer(tq.question, supports)
 
-            fake_text = _FALSE_FACTS[i % len(_FALSE_FACTS)]
+            course_facts = _FALSE_FACTS_BY_KURS.get(tq.kurs_id or "", _FALSE_FACTS)
+            fake_text = course_facts[i % len(course_facts)]
             fake_supports = [{"type": "paragraph", "paragraph_id": f"FAKE_{i}", "text": fake_text, "paper_id": "fake"}]
             answer_false = grounded_answer(tq.question, fake_supports)
 
@@ -340,7 +366,7 @@ def run_llm_comparison(
     local_model = local_model_name or cfg.LMSTUDIO_CHAT_MODEL
     ragas_llm = _make_ragas_llm()
     ragas_emb = _make_ragas_embeddings()
-    metrics = [Faithfulness(llm=ragas_llm), AnswerRelevancy(llm=ragas_llm, embeddings=ragas_emb)]
+    metrics = [Faithfulness(llm=ragas_llm), AnswerRelevancy(llm=ragas_llm, embeddings=ragas_emb, strictness=1)]
 
     # Retrieval immer mit Cloud-Embeddings
     original_mode = cfg.LLM_MODE
@@ -548,6 +574,7 @@ def load_course_questions(kurs_id: str) -> list[TestQuestion]:
             question=q["question"],
             ground_truth=q.get("ground_truth") or q.get("abschnitt_titel", ""),
             question_type=q.get("question_type", "factual"),
+            kurs_id=kurs_id,
         )
         for q in raw
         if q.get("question")

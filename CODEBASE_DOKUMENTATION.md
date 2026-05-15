@@ -481,16 +481,24 @@ class Neo4jClient:
         self.driver = GraphDatabase.driver(
             NEO4J_URI,
             auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
-            max_connection_lifetime=3600,       # 1 Stunde
+            max_connection_lifetime=1800,        # 30 min (AuraDB bricht Verbindungen früher als 1h ab)
             max_connection_pool_size=50,
             connection_acquisition_timeout=120,
-            connection_timeout=30,
+            connection_timeout=60,               # 60 s für TLS-Handshake nach Reconnect
             keep_alive=True
         )
 
+    _RETRYABLE = ('defunct', 'connection', 'ssl', 'eof', 'protocol', 'broken pipe')
+
     def run(self, cypher: str, params=None) -> List[Dict[str, Any]]:
-        """Retry-Logik (max. 2 Versuche). Timeout: 300 s. Retry bei connection-Fehlern."""
+        """Retry-Logik (max. 3 Versuche, Exponential Backoff 1s/2s).
+        Retry bei: defunct, connection, ssl, eof, protocol, broken pipe."""
+
+    def run_graph(self, cypher: str, params=None) -> List[Any]:
+        """Identische Retry-Logik wie run(). Gibt rohe Neo4j-Records zurück (für Graph-Visualisierung)."""
 ```
+
+**Retry-Verhalten:** Beide Methoden (`run` und `run_graph`) verwenden 3 Versuche mit Exponential Backoff (1 s vor Versuch 2, 2 s vor Versuch 3). Das Fehlermuster wurde erweitert, um `SSLEOFError` zu erfassen, der bei langen RAGAS-Evaluationsläufen auf Neo4j AuraDB (Cloud) auftritt.
 
 ### 7.2 Batch-Upsert-Methoden
 
@@ -1361,97 +1369,127 @@ Ergebnisse: `data/framework_workspaces/comparison_results.json` + LaTeX-Tabelle 
 
 ### 20.1 Überblick
 
-`scripts/ragas_eval.py` implementiert die quantitative Qualitätsmessung der GraphRAG-Pipeline mit dem [RAGAS](https://docs.ragas.io)-Framework. Wird über den **Evaluation-Tab der Streamlit-GUI** ausgeführt. Ergebnisse: `data/eval/ragas_results.json`.
+`scripts/ragas_eval.py` implementiert die quantitative Qualitätsmessung der GraphRAG-Pipeline mit dem [RAGAS](https://docs.ragas.io)-Framework (v0.4.3). Wird über den **Evaluation-Tab der Streamlit-GUI** ausgeführt. Ergebnisse: `data/eval/ragas_results.json` bzw. `data/eval/kurs_eval_results.json`.
 
 **Abhängigkeiten:**
 ```
-ragas>=0.4.3
+ragas==0.4.3
 datasets>=4.8.5
-langchain-openai  (ChatOpenAI + OpenAIEmbeddings als RAGAS-Backend)
+langchain-openai   (OpenAIEmbeddings als Embedding-Backend — RAGAS 0.4.x OpenAIEmbeddings fehlt embed_query/embed_documents)
 ```
+
+**LLM-Konfiguration:**
+- Judge-LLM: `gpt-4o-mini` via `llm_factory()` mit `max_tokens=8192`  
+  (Standard 1024 reichte nicht für Faithfulness-NLI-Output bei langen Kursantworten)
+- Embeddings: `langchain_openai.OpenAIEmbeddings` (`text-embedding-3-large`)  
+  (RAGAS 0.4.x eigene Embeddings implementieren `embed_query()`/`embed_documents()` nicht)
+- Antwort-Truncation: Eingaben an RAGAS werden auf max. 2000 Zeichen gekürzt (`_truncate_answer()`), um 30+ Aussagen im NLI-Step zu vermeiden
 
 ### 20.2 Metriken
 
 | Metrik | Was wird gemessen | Wertebereich |
 |--------|------------------|--------------|
 | **Faithfulness** | Sind alle Aussagen durch den Kontext belegt? | 0–1 (höher = besser) |
-| **Answer Relevancy** | Beantwortet die Antwort die Frage? | 0–1 |
+| **Answer Relevancy** | Beantwortet die Antwort die Frage? (`strictness=1`) | 0–1 |
 | **Context Precision** | Wie präzise ist der abgerufene Kontext? | 0–1 |
 | **Context Recall** | Enthält der Kontext alle nötigen Infos? | 0–1 |
 
-### 20.3 Testdatensatz (DEFAULT_TEST_QUESTIONS)
+> `AnswerRelevancy` verwendet `strictness=1` (statt Default 3), da `InstructorLLM` in RAGAS 0.4.x `n=3` nicht unterstützt und sonst nur 1 Generation zurückliefert.
 
-15 vordefinierte Fragen in vier Kategorien:
+### 20.3 Datenstruktur: TestQuestion
 
-| Typ | Anzahl | Zweck |
-|-----|--------|-------|
-| `factual` | 5 | Einzelne Faktenfragen (Transformer, Self-Attention, RAG, Knowledge Graph, NER) |
-| `cross_topic` | 5 | Themenübergreifende Fragen (GraphRAG vs. RAG, Embeddings in Graphen, …) |
-| `visual` | 3 | Fragen zu Abbildungen |
-| `false_context` | 2 | Halluzinationstest-Kandidaten |
-
-### 20.4 Sechs interne Evaluationsläufe
-
-#### run_ragas_evaluation()
-Vollständige RAGAS-Evaluation über alle 15 DEFAULT_TEST_QUESTIONS mit allen vier Metriken. Retrieval via `concept_based_retrieve()`, Generierung via `grounded_answer()`.
-
-#### run_hallucination_test()
-Vergleicht Faithfulness mit echtem vs. bewusst falschem Kontext (`_FALSE_FACTS`):
 ```python
-"interpretation": (
-    "hoch"   if differenz > 0.3
-    else "mittel" if differenz > 0.1
-    else "niedrig"
-)
+@dataclass
+class TestQuestion:
+    question: str
+    ground_truth: str
+    question_type: str   # "factual" | "cross_topic" | "visual" | "false_context"
+    kurs_id: str | None  # gesetzt bei Kursfragen (z.B. "kurs1_ai_literacy_kmu"), None bei DEFAULT_TEST_QUESTIONS
 ```
 
+`kurs_id` wird von `load_course_questions(kurs_id)` automatisch befüllt und vom Halluzinationstest genutzt, um kurs-spezifische falsche Fakten zuzuweisen.
+
+### 20.4 Fragenquellen
+
+**DEFAULT_TEST_QUESTIONS** (15 generische NLP/RAG-Fragen, nur als Fallback):
+
+| Typ | Anzahl | Inhalt |
+|-----|--------|--------|
+| `factual` | 5 | Transformer, Self-Attention, RAG, Knowledge Graph, NER |
+| `cross_topic` | 5 | GraphRAG vs. RAG, Embeddings in Graphen, … |
+| `visual` | 3 | Architekturfragen mit Abbildungsbezug |
+| `false_context` | 2 | Halluzinationstest-Kandidaten |
+
+**Kursfragen** (bevorzugt, sofern JSON-Dateien vorhanden):  
+Die GUI lädt für alle Evaluationsmodi außer "Kurs-Evaluation" automatisch die Kursfragen aus `data/eval/questions_{kurs_id}.json` und wählt daraus gleichmäßig **15 Fragen** (`_sample_evenly(..., 15)`) über alle drei Kurse. DEFAULT_TEST_QUESTIONS werden nur als Fallback verwendet, wenn keine JSON-Dateien existieren.
+
+### 20.5 Evaluationsläufe
+
+#### run_ragas_evaluation()
+Vollständige RAGAS-Evaluation (alle 4 Metriken) über den aktiven Fragenpool. Retrieval via `concept_based_retrieve()`, Generierung via `grounded_answer()`.
+
+#### run_hallucination_test()
+Vergleicht Faithfulness mit echtem vs. bewusst falschem Kontext. Falsche Fakten werden **kurs-spezifisch** aus `_FALSE_FACTS_BY_KURS` ausgewählt (basierend auf `tq.kurs_id`):
+
+| Kurs | Falsche Fakten (Beispiele) |
+|------|---------------------------|
+| `kurs1_ai_literacy_kmu` | ChatGPT ist vollständig zuverlässig; ML-Modelle lernen kontinuierlich weiter |
+| `kurs2_ki_strategie_governance` | Nur Anbieter haben AI-Act-Pflichten; vollständige KI-Automatisierung ist zertifizierbar |
+| `kurs3_ki_recht_eu_ai_act` | EU AI Act hat nur 2 Risikoklassen; KMU vollständig ausgenommen |
+
+```python
+"interpretation": "hoch" if differenz > 0.3 else "mittel" if differenz > 0.1 else "niedrig"
+```
+
+> Hohe Halluzinationsanfälligkeit bedeutet: das System ist faithful mit echtem Kontext, aber NICHT faithful wenn der Kontext falsch ist — d. h. es übernimmt Falschinformationen nicht blind.
+
 #### run_llm_comparison()
-Vergleicht **GPT-4o-mini (Cloud)** mit **LM Studio (Lokal)** auf 5 Fragen:
+Vergleicht **GPT-4o-mini (Cloud)** mit **LM Studio (Lokal)** auf dem aktiven Fragenpool:
 - Retrieval läuft immer im Cloud-Modus (OpenAI 3072-D Embeddings)
 - Nur Generierungsphase wird per `cfg.LLM_MODE` umgeschaltet
-- Ausgabe: RAGAS-Scores, Inferenzzeit, geschätzte Kosten (USD)
+- Ausgabe: RAGAS-Scores (Faithfulness + AnswerRelevancy), Inferenzzeit, geschätzte Kosten (USD)
 
 #### run_baseline_comparison()
 Direkter interner Vergleich: **reines Vektor-RAG** (`hybrid_retrieve`) vs. **GraphRAG** (`concept_based_retrieve`):
-- Gleiche Testfragen, gleicher LLM-Judge → direkt vergleichbare Scores
-- Gleicher RAGAS-Judge eliminiert Confoundervariablen
+- Gleiche Fragen, gleicher Judge-LLM → direkt vergleichbare Scores ohne Confounder
 - Ausgabe: alle 4 Metriken pro Modus + Differenz (GraphRAG minus Baseline)
 - Positiver Differenzwert = GraphRAG besser als Vektor-RAG-Baseline
+- Verwendet Kursfragen (sofern vorhanden), nicht DEFAULT_TEST_QUESTIONS
 
 #### run_all_courses_evaluation()
-Evaluiert alle drei Kurse sequenziell mit kursspezifischen Fragen (aus `data/eval/questions_{kurs_id}.json`, erzeugt von `generate_course_questions.py`):
-- Lädt je Kurs genau **`QUESTIONS_PER_KURS = 5` Fragen** (Thesis-Vorgabe; Konstante in `ragas_eval.py`)
-- Alle vier RAGAS-Metriken; gemeinsamer LLM/Embedding-Client für effizienten Betrieb
-- Ausgabe: pro Kurs `kurs_name`, `n_fragen`, `ragas_scores`; zusätzlich Vergleichstabelle auf Konsole
-- Ergebnisse werden in `data/eval/kurs_eval_results.json` exportiert
+Evaluiert alle drei Kurse sequenziell mit kursspezifischen Fragen:
+- Je Kurs genau **5 Fragen** (`QUESTIONS_PER_KURS = 5`), gleichmäßig gesampelt
+- Alle vier RAGAS-Metriken; gemeinsamer LLM/Embedding-Client
+- Ausgabe: `data/eval/kurs_eval_results.json` + Vergleichstabelle auf Konsole
 
 #### run_course_evaluation()
-Einzelkurs-Variante von `run_all_courses_evaluation()`: evaluiert einen Kurs per `kurs_id`.
+Einzelkurs-Variante: evaluiert einen Kurs per `kurs_id`.
 
-### 20.5 scripts/generate_course_questions.py
+### 20.6 scripts/generate_course_questions.py
 
-Generiert kursspezifische Testfragen für die RAGAS-Evaluation der drei Zielkurse:
+Generiert kursspezifische Testfragen für die RAGAS-Evaluation:
 
 | Kurs-ID | Name | Abschnitte | Fragen gesamt |
 |---------|------|-----------|--------------|
-| `kurs1_ai_literacy_kmu` | AI Literacy für KMU – Level 0 | 16 | 32 (2 je Abschnitt) |
+| `kurs1_ai_literacy_kmu` | AI Literacy für KMU – Level 0 | 16 | 32 |
 | `kurs2_ki_strategie_governance` | AI-Strategie & Governance für Führungskräfte | 13 | 26 |
 | `kurs3_ki_recht_eu_ai_act` | KI & Recht – EU AI Act in der Unternehmenspraxis | 16 | 32 |
 
-Für die Evaluation werden je Kurs nur **5 Fragen** (Thesis-Vorgabe) via `QUESTIONS_PER_KURS`-Konstante geladen.
-
-**Phase 1 – Fragengenerierung** (GPT, ~2 min): 2 Fragen je Abschnitt, direkt aus Lernzielen ableitbar.  
-**Phase 2 – Ground-Truth-Anreicherung** (GPT + Neo4j, ~10–20 min): `concept_based_retrieve()` → GPT synthetisiert Antwort; Fallback: Allgemeinwissen (markiert mit `[Allgemeinwissen]`).
+**Phase 1** (GPT, ~2 min): 2 Fragen je Abschnitt aus Lernzielen.  
+**Phase 2** (GPT + Neo4j, ~10–20 min): Ground-Truth via `concept_based_retrieve()` + GPT; Fallback: `[Allgemeinwissen]`.
 
 ```bash
 python scripts/generate_course_questions.py               # alle 3 Kurse
 python scripts/generate_course_questions.py --kurs kurs1  # nur Kurs 1
-python scripts/generate_course_questions.py --nur-fragen  # ohne Ground Truths (kein Neo4j)
+python scripts/generate_course_questions.py --nur-fragen  # ohne Ground Truths
 ```
 
-Ausgabe: `data/eval/questions_{kurs_id}.json`
+### 20.7 GUI-Performance (Streamlit)
 
-### 20.6 Ausgabeformat
+- **Eval-Modul-Loading**: `_load_eval_module()` mit `@st.cache_resource` — lädt `ragas_eval.py` (RAGAS + langchain-Imports) einmalig pro Server-Prozess, nicht bei jedem Rerender
+- **Paper-Liste**: `_cached_list_papers()` via `st.session_state` — `list_papers()`-Query (3× OPTIONAL MATCH + COUNT) läuft nur einmal; `_invalidate_papers_cache()` nach Ingest/Delete/Edit
+
+### 20.8 Ausgabeformat
 
 ```json
 {
@@ -1470,9 +1508,13 @@ Ausgabe: `data/eval/questions_{kurs_id}.json`
   "llm_vergleich": {
     "cloud": {"modell": "gpt-4o-mini", "ragas_scores": {...}, "inferenz_zeit_sek": 42.1},
     "local": {"modell": "llama-3-...", "ragas_scores": {...}, "inferenz_zeit_sek": 118.4}
+  },
+  "kurs_evaluation": {
+    "kurs1_ai_literacy_kmu": {"kurs_name": "AI Literacy für KMU", "n_fragen": 5, "ragas_scores": {...}},
+    "kurs2_ki_strategie_governance": {"kurs_name": "AI-Strategie & KI-Governance", "n_fragen": 5, "ragas_scores": {...}},
+    "kurs3_ki_recht_eu_ai_act": {"kurs_name": "KI & Recht – Der EU AI Act", "n_fragen": 5, "ragas_scores": {...}}
   }
 }
-```
 
 ---
 
