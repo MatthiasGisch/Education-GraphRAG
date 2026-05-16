@@ -143,14 +143,23 @@ _FALSE_FACTS_BY_KURS: dict[str, list[str]] = {
     "kurs1_ai_literacy_kmu": [
         "Generative KI-Systeme wie ChatGPT sind vollständig zuverlässig, da sie ausschließlich aus verifizierten Quellen lernen und keine falschen Informationen produzieren können.",
         "Machine-Learning-Modelle lernen kontinuierlich aus jeder Nutzereingabe weiter, weshalb Unternehmen nach der Einführung keine weiteren Trainingsmaßnahmen oder Kontrollen benötigen.",
+        "KI-Systeme treffen Entscheidungen nach denselben logischen Prinzipien wie menschliche Experten und sind daher in allen Unternehmensbereichen ohne menschliche Aufsicht einsetzbar.",
+        "Für den Einsatz von KI-Anwendungen in KMU ist kein gesondertes Datenschutzkonzept erforderlich, da trainierte Sprachmodelle keine personenbezogenen Daten speichern oder verarbeiten.",
+        "Große Sprachmodelle wie GPT-4 verstehen Sprache im selben Sinne wie Menschen — sie besitzen echtes semantisches Verständnis und handeln auf Basis von Intentionen und Bedeutungen.",
     ],
     "kurs2_ki_strategie_governance": [
         "Laut EU AI Act sind ausschließlich die Hersteller (Anbieter) von KI-Systemen rechtlich verantwortlich; Unternehmen, die KI einsetzen (Nutzer/Deployer), tragen keinerlei Compliance-Pflichten.",
         "KI-Governance bedeutet, dass Unternehmen sämtliche KI-Entscheidungen vollständig automatisieren und auf menschliche Kontrolle verzichten können, sofern das System zertifiziert ist.",
+        "Die Entwicklung einer KI-Strategie ist ausschließlich Aufgabe der IT-Abteilung; Unternehmensführung und Vorstand müssen keine strategischen KI-Entscheidungen treffen, da es sich um ein rein technisches Thema handelt.",
+        "Ethische KI-Leitlinien sind für privatwirtschaftliche Unternehmen freiwillig und haben nachweislich keinen Einfluss auf Unternehmensreputation, Kundenbindung oder wirtschaftlichen Erfolg.",
+        "Transparenzpflichten für KI-Algorithmen gelten im Rahmen der KI-Governance ausschließlich für öffentliche Behörden und staatliche Institutionen; privatwirtschaftliche Unternehmen sind vollständig davon ausgenommen.",
     ],
     "kurs3_ki_recht_eu_ai_act": [
         "Der EU AI Act teilt KI-Systeme in zwei Risikoklassen ein: 'sicher' und 'gefährlich', wobei alle KI-Systeme im unternehmerischen Einsatz automatisch als hochriskant eingestuft werden.",
         "Kleine und mittlere Unternehmen (KMU) sind vollständig vom EU AI Act ausgenommen, da das Gesetz ausschließlich für Konzerne und Großunternehmen mit mehr als 500 Mitarbeitenden gilt.",
+        "Der EU AI Act ist seit Januar 2024 vollständig in Kraft getreten; alle Unternehmen müssen sämtliche Anforderungen aller Risikoklassen ab sofort ohne Übergangsfrist erfüllen.",
+        "Hochrisiko-KI-Systeme dürfen nach einmaliger Konformitätsbewertung dauerhaft ohne weitere Überprüfung betrieben werden, da die Zertifizierung unbefristet und ohne Rezertifizierungspflicht gilt.",
+        "Natürliche Personen haben unter dem EU AI Act kein Recht, automatisierte KI-Entscheidungen anzufechten oder eine menschliche Überprüfung zu verlangen — das Gesetz sieht ausschließlich Pflichten für Unternehmen vor.",
     ],
 }
 # Fallback für DEFAULT_TEST_QUESTIONS (kein kurs_id)
@@ -281,12 +290,21 @@ def run_hallucination_test(
     """
     Vergleicht Faithfulness mit echtem vs. bewusst falschem Kontext.
     Höhere Differenz = anfälliger für Halluzinationen.
+
+    Falscher Kontext: alle Falsch-Fakten des Kurses werden übergeben (nicht nur
+    einer), damit die Kontextgröße vergleichbar mit dem echten Retrieval ist und
+    die Faithfulness-Differenz tatsächlich Halluzinationsanfälligkeit misst.
     """
     if neo is None:
         neo = _build_neo_client()
 
     ragas_llm = _make_ragas_llm()
     ragas_emb = _make_ragas_embeddings()
+
+    # Retrieval + Generierung immer im Cloud-Modus (wie alle anderen Eval-Funktionen)
+    original_mode = cfg.LLM_MODE
+    cfg.LLM_MODE = "cloud"
+    log.info("Halluzinationstest: LLM_MODE auf 'cloud' gesetzt (war: '%s')", original_mode)
 
     normal_rows: dict[str, list] = {"question": [], "answer": [], "contexts": [], "ground_truth": []}
     false_rows: dict[str, list] = {"question": [], "answer": [], "contexts": [], "ground_truth": []}
@@ -296,9 +314,13 @@ def run_hallucination_test(
             supports = _retrieve_supports(neo, tq.question)
             answer_normal = grounded_answer(tq.question, supports)
 
+            # Alle Falsch-Fakten des Kurses als Kontext übergeben (nicht nur einen),
+            # damit die Kontextgröße vergleichbar mit dem echten Retrieval ist.
             course_facts = _FALSE_FACTS_BY_KURS.get(tq.kurs_id or "", _FALSE_FACTS)
-            fake_text = course_facts[i % len(course_facts)]
-            fake_supports = [{"type": "paragraph", "paragraph_id": f"FAKE_{i}", "text": fake_text, "paper_id": "fake"}]
+            fake_supports = [
+                {"type": "paragraph", "paragraph_id": f"FAKE_{i}_{j}", "text": fact, "paper_id": "fake"}
+                for j, fact in enumerate(course_facts)
+            ]
             answer_false = grounded_answer(tq.question, fake_supports)
 
             normal_rows["question"].append(tq.question)
@@ -308,11 +330,13 @@ def run_hallucination_test(
 
             false_rows["question"].append(tq.question)
             false_rows["answer"].append(answer_false)
-            false_rows["contexts"].append([fake_text])
+            false_rows["contexts"].append(course_facts)
             false_rows["ground_truth"].append(tq.ground_truth)
 
         except Exception as e:
             log.error("Halluzinationstest übersprungen '%s': %s", tq.question, e)
+
+    cfg.LLM_MODE = original_mode
 
     result_normal = _run_ragas(normal_rows, ragas_llm, ragas_emb, [Faithfulness(llm=ragas_llm)])
     result_false = _run_ragas(false_rows, ragas_llm, ragas_emb, [Faithfulness(llm=ragas_llm)])
@@ -702,24 +726,46 @@ if __name__ == "__main__":
     neo = _build_neo_client()
     all_results: dict[str, Any] = {}
 
-    log.info("=== 1/3  RAGAS Evaluation (alle 4 Metriken) ===")
+    log.info("=== 1/4  RAGAS Evaluation (alle 4 Metriken) ===")
     try:
         all_results["ragas_evaluation"] = run_ragas_evaluation(DEFAULT_TEST_QUESTIONS, neo)
         log.info("Fertig: %s", all_results["ragas_evaluation"])
     except Exception as e:
         log.error("RAGAS Evaluation fehlgeschlagen: %s", e)
 
-    log.info("=== 2/3  Halluzinationstest ===")
+    log.info("=== 2/4  Halluzinationstest ===")
     try:
-        # Nur false_context-Fragen + erste faktische Fragen für den Test
-        hall_questions = [q for q in DEFAULT_TEST_QUESTIONS if q.question_type == "false_context"]
-        hall_questions += [q for q in DEFAULT_TEST_QUESTIONS if q.question_type == "factual"][:3]
+        # Kursfragen bevorzugen (gleiche Logik wie GUI) — Fallback nur wenn keine Dateien vorhanden
+        _hall_questions: list[TestQuestion] = []
+        try:
+            from scripts.generate_course_questions import KURSE as _KURSE_HALL
+            _eval_dir = Path(__file__).resolve().parents[1] / "data" / "eval"
+            for _kid in _KURSE_HALL:
+                if (_eval_dir / f"questions_{_kid}.json").exists():
+                    try:
+                        _hall_questions.extend(load_course_questions(_kid))
+                    except Exception as _e:
+                        log.warning("Kursfragen für '%s' nicht ladbar: %s", _kid, _e)
+        except Exception:
+            pass
+
+        if _hall_questions:
+            hall_questions = _sample_evenly(_hall_questions, 15)
+            log.info("Halluzinationstest: %d Kursfragen geladen", len(hall_questions))
+        else:
+            log.warning(
+                "Keine Kursfragen-Dateien gefunden — Fallback auf DEFAULT_TEST_QUESTIONS. "
+                "Themen-Mismatch möglich (generische NLP-Fragen vs. Graphinhalt)!"
+            )
+            hall_questions = [q for q in DEFAULT_TEST_QUESTIONS if q.question_type == "false_context"]
+            hall_questions += [q for q in DEFAULT_TEST_QUESTIONS if q.question_type == "factual"][:3]
+
         all_results["halluzinationstest"] = run_hallucination_test(hall_questions, neo)
         log.info("Fertig: %s", all_results["halluzinationstest"])
     except Exception as e:
         log.error("Halluzinationstest fehlgeschlagen: %s", e)
 
-    log.info("=== 3/3  Cloud vs. Lokal Vergleich (LM Studio) ===")
+    log.info("=== 3/4  Cloud vs. Lokal Vergleich (LM Studio) ===")
     try:
         sample = DEFAULT_TEST_QUESTIONS[:5]
         all_results["llm_vergleich"] = run_llm_comparison(sample, neo=neo)
