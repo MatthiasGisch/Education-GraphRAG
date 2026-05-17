@@ -144,6 +144,12 @@ def describe_image(path: str) -> Dict[str, Any]:
 
 
 def grounded_answer(query: str, supports: List[Dict[str, Any]], max_supports: int = 20) -> str:
+    # Lokales Modell: Kontextfenster schonen (typisch 4096 Tokens)
+    _local = cfg.LLM_MODE == "local"
+    if _local:
+        max_supports = min(max_supports, 6)
+    _snippet_chars = 400 if _local else 800
+
     sys = (
         "Du bist ein erfahrener Dozent und Lehrer, der Lernmaterial aus wissenschaftlichen Quellen erstellt. "
         "Erkläre die Inhalte didaktisch aufbereitet, strukturiert und verständlich für Studierende. "
@@ -166,7 +172,7 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]], max_supports: in
                 "page": s.get("page"),
                 "section": s.get("section_title"),
             }
-            ctx_lines.append(f"[{ref_id}] {s.get('paper_title', '?')} • S.{s.get('page')} • {s.get('section_title') or '—'} :: {s['text'][:800]}")
+            ctx_lines.append(f"[{ref_id}] {s.get('paper_title', '?')} • S.{s.get('page')} • {s.get('section_title') or '—'} :: {s['text'][:_snippet_chars]}")
         else:
             ref_id = f"F{s['figure_id']}"
             bib[ref_id] = {
@@ -189,7 +195,7 @@ def grounded_answer(query: str, supports: List[Dict[str, Any]], max_supports: in
             meta_str = (" [" + " | ".join(meta_parts) + "]") if meta_parts else ""
             ctx_lines.append(
                 f"[{ref_id}] {s.get('paper_title', '?')} • Abb. • S.{s.get('page')} :: "
-                f"{s.get('caption','')[:300]}{meta_str}"
+                f"{s.get('caption','')[:min(300, _snippet_chars)]}{meta_str}"
             )
 
     bib_json = json.dumps(bib, ensure_ascii=False)
