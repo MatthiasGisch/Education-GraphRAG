@@ -141,6 +141,8 @@ class MSGraphRAGAdapter(SystemAdapter):
 
     def __init__(self, root_dir: Path = MSRAPHRAG_ROOT):
         self._root = root_dir
+        self._config = None
+        self._dfs: dict | None = None  # einmalig geladene Index-DataFrames
 
     def is_available(self) -> bool:
         output_dir = self._root / "output"
@@ -148,9 +150,62 @@ class MSGraphRAGAdapter(SystemAdapter):
             return False
         return len(list(output_dir.rglob("*.parquet"))) > 0
 
+    def _load(self):
+        """Lädt alle Index-Parquet-Dateien einmalig in DataFrames."""
+        if self._dfs is not None:
+            return
+        try:
+            from graphrag.config.load_config import load_config
+            from graphrag.cli.query import _resolve_output_files
+        except ImportError:
+            raise ImportError("graphrag nicht installiert — pip install graphrag")
+
+        self._config = load_config(root_dir=self._root)
+        self._dfs = _resolve_output_files(
+            config=self._config,
+            output_list=[
+                "communities", "community_reports",
+                "text_units", "relationships", "entities",
+            ],
+            optional_list=["covariates"],
+        )
+
     def query(self, question: str) -> tuple[str, list[str]]:
-        # Versuche zuerst: python -m graphrag query (neuere Versionen)
-        # Fallback:        graphrag query (ältere CLI-Installation)
+        try:
+            self._load()
+            import graphrag.api as api
+
+            response, context_data = asyncio.run(api.local_search(
+                config=self._config,
+                entities=self._dfs["entities"],
+                communities=self._dfs["communities"],
+                community_reports=self._dfs["community_reports"],
+                text_units=self._dfs["text_units"],
+                relationships=self._dfs["relationships"],
+                covariates=self._dfs.get("covariates"),
+                community_level=2,
+                response_type="Multiple Paragraphs",
+                query=question,
+            ))
+
+            # Texte aus den Retrieval-DataFrames extrahieren (text_units haben "text"-Spalte)
+            contexts: list[str] = []
+            if isinstance(context_data, dict):
+                for df in context_data.values():
+                    if hasattr(df, "columns") and "text" in df.columns:
+                        contexts.extend(
+                            str(t) for t in df["text"].dropna().tolist() if t
+                        )
+
+            log.info("[MS GraphRAG] Antwort (%d Z.), %d Kontexte", len(str(response)), len(contexts))
+            return str(response), contexts
+
+        except Exception as e:
+            log.warning("MS GraphRAG Python-API fehlgeschlagen (%s) — Fallback auf CLI", e)
+            return self._query_cli(question)
+
+    def _query_cli(self, question: str) -> tuple[str, list[str]]:
+        """CLI-Fallback (kein Kontext, aber korrekte Positionsargument-Syntax für graphrag ≥ 2.x)."""
         for cmd_prefix in (
             [sys.executable, "-m", "graphrag", "query"],
             ["graphrag", "query"],
@@ -158,27 +213,27 @@ class MSGraphRAGAdapter(SystemAdapter):
             cmd = cmd_prefix + [
                 "--root", str(self._root),
                 "--method", "local",
-                "--query", question,
+                question,
             ]
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True,
                     timeout=120, cwd=str(ROOT),
                 )
-                if proc.returncode == 0:
+                if proc.returncode == 0 and proc.stdout.strip():
                     answer = self._parse_output(proc.stdout)
-                    return answer, []   # Kontexte via CLI nicht exponiert
-                log.debug("MS GraphRAG cmd fehlgeschlagen (%s): %s", cmd_prefix[0], proc.stderr[:200])
+                    log.info("[MS GraphRAG CLI] Antwort (%d Zeichen)", len(answer))
+                    return answer, []
+                log.debug("MS GraphRAG CLI fehlgeschlagen: rc=%d stderr=%s",
+                          proc.returncode, proc.stderr[:200])
             except FileNotFoundError:
                 continue
             except subprocess.TimeoutExpired:
                 return "[MS GraphRAG: Timeout nach 120s]", []
-
-        return "[MS GraphRAG: graphrag-CLI nicht gefunden — pip install graphrag]", []
+        return "[MS GraphRAG: nicht verfügbar]", []
 
     @staticmethod
     def _parse_output(raw: str) -> str:
-        """Entfernt CLI-Header aus der Ausgabe."""
         for marker in (
             "SUCCESS: Local Search Response:\n",
             "Local Search Response:\n",
@@ -192,6 +247,13 @@ class MSGraphRAGAdapter(SystemAdapter):
 # ---------------------------------------------------------------------------
 # Adapter 3: LightRAG
 # ---------------------------------------------------------------------------
+
+_LIGHTRAG_SYSTEM_PROMPT_DE = (
+    "Du bist ein wissenschaftlicher Assistent. "
+    "Beantworte Fragen ausschließlich auf Deutsch, präzise und faktenbasiert, "
+    "nur auf Basis der gegebenen Informationen."
+)
+
 
 class LightRAGAdapter(SystemAdapter):
     name = "LightRAG"
@@ -263,12 +325,21 @@ class LightRAGAdapter(SystemAdapter):
         try:
             async def _run():
                 await self._rag.initialize_storages()
-                result = await self._rag.aquery(
-                    question, param=self._QueryParam(mode="hybrid")
+                answer_text = await self._rag.aquery(
+                    question,
+                    param=self._QueryParam(mode="hybrid"),
+                    system_prompt=_LIGHTRAG_SYSTEM_PROMPT_DE,
                 )
+                # Retrieval-Kontexte aus dem Chunk-Vektorindex extrahieren
+                contexts: list[str] = []
+                try:
+                    chunks = await self._rag.chunks_vdb.query(question, top_k=5)
+                    contexts = [c.get("content", "") for c in chunks if c.get("content")]
+                except Exception as ce:
+                    log.warning("LightRAG chunk retrieval fehlgeschlagen: %s", ce)
                 await self._rag.finalize_storages()
-                return result
-            return str(asyncio.run(_run())), []
+                return str(answer_text), contexts
+            return asyncio.run(_run())
         except Exception as e:
             log.error("LightRAG query fehlgeschlagen: %s", e)
             return f"[LightRAG Fehler: {e}]", []
