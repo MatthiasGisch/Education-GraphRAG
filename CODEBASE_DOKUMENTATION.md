@@ -140,6 +140,7 @@ masterthesis_neu/
 │   ├── ragas_eval.py             # RAGAS-Evaluation (intern)
 │   ├── generate_course_questions.py  # Kursspezifische RAGAS-Testfragen generieren (3 Kurse × 5 Fragen)
 │   ├── framework_comparison.py   # Framework-Vergleich: Mein GraphRAG vs. MS GraphRAG vs. LightRAG
+│   ├── system_comparison.py     # Systemvergleich v2: Adapter-basiert, CLI-gesteuert (--system, --index-*)
 │   ├── reingest_all.py           # Bulk Re-Ingest aller Papiere
 │   ├── clear_all.py              # Gesamten Graphen löschen
 │   ├── clear_concepts.py         # Nur Konzepte löschen
@@ -1020,11 +1021,15 @@ def describe_image(path: str) -> dict:
     System Prompt: Wissenschaftliche Bild-Analyse, Deutsch, no emojis.
     """
 
-def grounded_answer(query: str, supports: List[dict]) -> str:
+def grounded_answer(query: str, supports: List[dict], max_supports: int = 20) -> str:
     """
     Didaktische Antwort mit Quellenbelegen. Rolle: "Erfahrener Dozent".
     Struktur: Definition → Erklärung → Beispiele → Zusammenfassung.
     Zitationsformat: [Pxxx] / [Fxxx] direkt im Fließtext.
+
+    Lokaler Modus (LLM_MODE=local): max_supports auf 6 begrenzt,
+    Snippet-Länge auf 400 Zeichen (statt 800) reduziert, um das
+    typische 4096-Token-Kontextfenster lokaler Modelle zu schonen.
     """
 ```
 
@@ -1341,7 +1346,8 @@ Wie `ask.py`, schreibt Antwort zusätzlich als PDF via `write_answer_pdf()`.
 | `update_paper_metadata.py` | Metadaten aller Paper aktualisieren |
 | `install_spacy_models.py` | spaCy und SciSpacy-Modelle installieren |
 | `test_plotly_viz.py` | Plotly-Graphvisualisierung isoliert testen |
-| `framework_comparison.py` | Framework-Vergleich: Mein GraphRAG vs. MS GraphRAG vs. LightRAG (RAGAS) |
+| `framework_comparison.py` | Framework-Vergleich v1: Mein GraphRAG vs. MS GraphRAG vs. LightRAG (RAGAS, monolithisch) |
+| `system_comparison.py` | Framework-Vergleich v2: Adapter-basiert, CLI-gesteuert, Indexierung integriert |
 | `generate_course_questions.py` | Kursspezifische RAGAS-Testfragen für alle 3 Kurse generieren + Ground Truths anreichern |
 
 ### 19.7 scripts/framework_comparison.py — Framework-Vergleich
@@ -1362,6 +1368,55 @@ python scripts/framework_comparison.py --skip-indexing
 Voraussetzung: `pip install graphrag>=2.0.0 lightrag-hku>=1.0.0`
 
 Ergebnisse: `data/framework_workspaces/comparison_results.json` + LaTeX-Tabelle auf stdout.
+
+### 19.8 scripts/system_comparison.py — Systemvergleich v2 (Adapter-Architektur)
+
+Neufassung des Framework-Vergleichs mit abstrakter **Adapter-Klasse** und vollständiger CLI-Steuerung. Löst `framework_comparison.py` als primäres Evaluationsskript ab.
+
+**Architektur:**
+```
+SystemAdapter (ABC)
+  ├── OwnSystemAdapter       → Neo4j + concept_based_retrieve + grounded_answer
+  ├── MSGraphRAGAdapter      → graphrag Python-API (Local Search, community_level=2)
+  │       └── _query_cli()   → CLI-Fallback (graphrag>=2.x Positionsargument-Syntax)
+  └── LightRAGAdapter        → LightRAG Hybrid-Modus (v1.4.x-API, GPT-4o-mini + text-embedding-3-large)
+```
+
+**Metriken:** Alle 3 Systeme → Answer Relevancy. Nur eigenes System → Faithfulness, Context Precision, Context Recall (da externe Systeme Retrieval-Kontexte nicht über Standard-API exponieren).
+
+**CLI-Befehle:**
+```bash
+# Alle 3 Systeme vergleichen:
+python scripts/system_comparison.py
+
+# Nur ein System evaluieren:
+python scripts/system_comparison.py --system own
+python scripts/system_comparison.py --system msraphrag
+python scripts/system_comparison.py --system lightrag
+
+# Fragen anzeigen ohne API-Calls:
+python scripts/system_comparison.py --dry-run
+
+# LightRAG-Index aufbauen (PDFs aus data/uploads/):
+python scripts/system_comparison.py --index-lightrag
+
+# MS GraphRAG Input vorbereiten (.txt-Export + Setup-Anleitung):
+python scripts/system_comparison.py --index-msraphrag
+```
+
+**Voraussetzungen:**
+```bash
+pip install graphrag pdfplumber   # für MS GraphRAG
+pip install lightrag-hku pdfplumber  # für LightRAG
+# Danach: graphrag init + graphrag index (manuell für MS GraphRAG)
+```
+
+**Pfade:**
+- LightRAG-Index: `data/lightrag_index/`
+- MS GraphRAG-Index: `data/graphrag_index/` (Parquet-Dateien nach `graphrag index`)
+- Ergebnisse: `data/eval/system_comparison_results.json`
+
+**Unterschied zu `framework_comparison.py`:** v2 verwendet Adapter-Pattern statt monolithischer Funktionen, integriert die Indexierung direkt, unterstützt selektive Evaluierung einzelner Systeme und hat einen CLI-Fallback für MS GraphRAG ≥ 2.x.
 
 ---
 
@@ -1994,7 +2049,9 @@ Diese Module sind **nicht in die Hauptpipeline integriert** und laufen unabhäng
 
 *Ende der Codebase-Dokumentation*  
 *Generiert für: Masterthesis-Ausarbeitung*  
-*Stand: Mai 2026 (aktualisiert) | Umfang: ~19 Quelldateien in src/, ~18 Skripte, ~6.900+ Zeilen produktiver Code*  
+*Stand: Mai 2026 (aktualisiert 19.05.2026) | Umfang: ~19 Quelldateien in src/, ~19 Skripte, ~7.000+ Zeilen produktiver Code*  
+*Neu (19.05.2026): scripts/system_comparison.py — Adapter-basierter Systemvergleich v2 mit CLI-Steuerung und integrierter Indexierung (Abschnitt 19.8)*  
+*Neu (18.05.2026): grounded_answer() — Lokaler-Modus-Optimierung: max_supports=6, snippet_chars=400 für LM Studio (Abschnitt 12)*  
 *Neu (Mai 2026): scripts/framework_comparison.py — Vergleich mit MS GraphRAG und LightRAG via RAGAS (Abschnitt 21)*  
 *Neu (Mai 2026): Retrieval-Architektur v5 — echtes Graph-Traversal über MENTIONS reaktiviert, Cypher-Aggregationsbug behoben, Score-Formel und empirischer GraphRAG-Mehrwert dokumentiert (Abschnitt 10.2, 23)*
 *Neu (Mai 2026): Retrieval-Architektur v5.1 — Concept-Expansion via SEMANTIC_RELATION funktional; ON CREATE SET-Bug in add_semantic_relations() behoben, vollständige Multi-Hop-Retrieval-Kette aktiv (Abschnitt 10.2, 26.2)*
