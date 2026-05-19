@@ -1,6 +1,6 @@
 # GraphRAG-System zur automatisierten Kursgenerierung
 
-Masterthesis-Projekt: Ein hybrides GraphRAG-System, das wissenschaftliche PDFs in einen Neo4j-Wissensgraphen aufnimmt und daraus strukturierte Lernkurse generiert.
+Masterthesis: Ein hybrides GraphRAG-System, das wissenschaftliche PDFs in einen Neo4j-Wissensgraphen aufnimmt und daraus strukturierte Lernkurse generiert.
 
 ---
 
@@ -27,6 +27,8 @@ Masterthesis-Projekt: Ein hybrides GraphRAG-System, das wissenschaftliche PDFs i
 - Neo4j AuraDB-Instanz (kostenloser Tier reicht für Tests)
 - OpenAI API-Key
 - Optional: LM Studio (für lokalen Betrieb ohne OpenAI)
+- Optional: Gamma API Zugang
+- Optional: Synthesia API Zugang
 
 ---
 
@@ -35,7 +37,7 @@ Masterthesis-Projekt: Ein hybrides GraphRAG-System, das wissenschaftliche PDFs i
 ```bash
 # 1. Repository klonen
 git clone <repo-url>
-cd masterthesis_neu
+cd graphrag education pipeline
 
 # 2. Virtuelle Umgebung erstellen und aktivieren
 python -m venv .venv
@@ -76,7 +78,7 @@ Alle weiteren Variablen (Gamma, Synthesia, LM Studio, Websuche) sind optional un
 
 ## 4. Datenbank vorbereiten
 
-Einmalig das Neo4j-Schema anlegen (Constraints und Vektorindizes):
+Einmalig das Neo4j-Schema, entweder in der GUI oder durch folgenden Befehl, anlegen (Constraints und Vektorindizes):
 
 ```bash
 python scripts/create_schema.py
