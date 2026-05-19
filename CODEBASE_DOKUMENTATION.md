@@ -252,9 +252,11 @@ edge-tts>=6.1.9         # TTS (neural, Microsoft Edge, kostenlos)
 pyttsx3>=2.90           # TTS (offline, kein Internet nötig)
 ragas>=0.4.3            # Evaluation-Metriken für RAG-Systeme
 datasets>=4.8.5         # HuggingFace Dataset-Format (von RAGAS benötigt)
-# Framework-Vergleich (nur für scripts/framework_comparison.py)
+langchain-openai>=0.1.0 # OpenAIEmbeddings als RAGAS-Embedding-Backend (ragas_eval.py, system_comparison.py)
+# Framework-Vergleich (optional, nur für scripts/framework_comparison.py + system_comparison.py)
 graphrag>=2.0.0         # MS GraphRAG (microsoft/graphrag)
 lightrag-hku>=1.0.0     # LightRAG (HKUDS/LightRAG)
+pdfplumber>=0.10.0      # PDF-Text-Extraktion für Indexierung (--index-lightrag / --index-msraphrag)
 ```
 
 ### 3.2 spaCy-Modelle (manuell zu installieren)

@@ -29,6 +29,8 @@ pyttsx3>=2.90
 # RAGAS Evaluation Framework
 ragas>=0.4.3
 datasets>=4.8.5
-# Framework-Vergleich: MS GraphRAG + LightRAG
+langchain-openai>=0.1.0
+# Framework-Vergleich: MS GraphRAG + LightRAG (optional, nur für system_comparison.py / framework_comparison.py)
 graphrag>=2.0.0
 lightrag-hku>=1.0.0
+pdfplumber>=0.10.0
