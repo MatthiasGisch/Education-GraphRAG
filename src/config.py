@@ -1,3 +1,4 @@
+"""Zentrale Konfiguration: lädt Umgebungsvariablen und stellt Pfad-Hilfsfunktionen bereit."""
 import os
 import logging
 from dotenv import load_dotenv
@@ -57,18 +58,7 @@ if LLM_MODE == "local" and LMSTUDIO_EMBED_DIM != NEO4J_VECTOR_DIM:
 
 
 def resolve_image_path(uri: str) -> str:
-    """
-    Gibt den absoluten Pfad zu einer Bilddatei zurück.
-
-    Strategie (in dieser Reihenfolge):
-    1. Falls ``uri`` bereits ein existierender absoluter Pfad ist → direkt zurückgeben.
-    2. Falls ``uri`` nur ein Dateiname ist → mit IMAGES_DIR kombinieren.
-    3. Sonst → ``uri`` unverändert zurückgeben (Caller muss Fehler behandeln).
-
-    Damit ist der Code portierbar: Wenn das Projekt umgezogen wird, reicht es,
-    IMAGES_DIR in der .env anzupassen; bestehende absolute Pfade bleiben als
-    Fallback erhalten.
-    """
+    """Gibt den absoluten Pfad zu einer Bilddatei zurück; sucht zuerst absolut, dann in IMAGES_DIR."""
     if os.path.isabs(uri) and os.path.exists(uri):
         return uri
     candidate = os.path.join(IMAGES_DIR, os.path.basename(uri))

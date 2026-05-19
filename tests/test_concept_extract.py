@@ -1,8 +1,4 @@
-"""Unit-Tests für src/concept_extract.py
-
-Alle Tests sind vollständig isoliert von externen APIs (OpenAI, Neo4j).
-Der Aufbau folgt dem Arrange–Act–Assert-Muster (AAA).
-"""
+"""Unit-Tests für src/concept_extract.py: vollständig isoliert von externen APIs, AAA-Muster."""
 import pytest
 from src import concept_extract as ce
 
@@ -12,11 +8,7 @@ from src import concept_extract as ce
 # ===========================================================================
 
 class FakeNeo:
-    """Minimalstub für Neo4jClient mit deterministischem Verhalten.
-
-    Gibt für das Embedding ``[1.0]`` einen Treffer mit score=0.95 auf
-    ``existing-1`` zurück; für alle anderen Embeddings keine Treffer.
-    """
+    """Minimalstub für Neo4jClient: gibt für Embedding [1.0] einen Treffer auf existing-1 zurück, sonst nichts."""
 
     def vector_search_concepts(self, embedding, k=1):
         if embedding == [1.0]:
@@ -57,15 +49,7 @@ def sample_paragraphs():
 
 @pytest.fixture(autouse=True)
 def mock_embed(monkeypatch):
-    """Ersetzt ``_embed`` durch eine deterministische Stub-Funktion.
-
-    Regel:
-    - Text enthält ``'existing'`` (case-insensitive) → Embedding ``[1.0]``
-      (trifft auf den FakeNeo-Match mit score=0.95)
-    - Andernfalls → Embedding ``[0.0]``
-
-    Kein OpenAI-API-Aufruf findet statt; Tests sind vollständig isoliert.
-    """
+    """Ersetzt _embed durch einen deterministischen Stub: 'existing' → [1.0], sonst → [0.0], kein API-Call."""
     def fake_embed(texts):
         return [[1.0] if "existing" in t.lower() else [0.0] for t in texts]
 
@@ -77,11 +61,7 @@ def mock_embed(monkeypatch):
 # ===========================================================================
 
 def test_dedupe_maps_to_existing(monkeypatch, fake_neo, sample_paragraphs):
-    """Arrange: LLM schlägt 'Existing Concept' vor; FakeNeo liefert score 0.95 ≥ Schwelle 0.9.
-    Act:     extract_and_embed_concepts mit aktivierter Deduplizierung.
-    Assert:  Kein Duplikat erzeugt; Link p1 zeigt auf concept_id 'existing-1';
-             'New Interesting' wird als neues Konzept angelegt.
-    """
+    """Prüft dass 'Existing Concept' auf existing-1 gemappt und 'New Interesting' als neues Konzept angelegt wird."""
     monkeypatch.setattr(ce, '_ask_llm_for_concepts', _llm_stub(
         concepts=[
             {"name": "Existing Concept", "alt_labels": [], "description": "desc"},
@@ -120,9 +100,7 @@ def test_dedupe_maps_to_existing(monkeypatch, fake_neo, sample_paragraphs):
 
 
 def test_dedupe_no_duplicate_created(monkeypatch, fake_neo, sample_paragraphs):
-    """Wenn ein Konzept auf ein bestehendes gemappt wird, darf es nicht
-    zusätzlich als neues Konzept im Ergebnis erscheinen (kein Duplikat).
-    """
+    """Prüft dass ein auf ein bestehendes Konzept gemapptes Konzept nicht zusätzlich als Duplikat erscheint."""
     monkeypatch.setattr(ce, '_ask_llm_for_concepts', _llm_stub(
         concepts=[{"name": "Existing Concept", "alt_labels": [], "description": "desc"}],
         links=[{"paragraph_id": "p1", "concept_name": "Existing Concept", "confidence": 0.9}],
@@ -148,12 +126,7 @@ def test_dedupe_no_duplicate_created(monkeypatch, fake_neo, sample_paragraphs):
 ])
 def test_dedupe_threshold_boundary(monkeypatch, fake_neo, sample_paragraphs,
                                    threshold, expect_mapped):
-    """Parametrisierter Grenzwerttest: Die Deduplizierungsschwelle (dedupe_threshold)
-    entscheidet, ob ein Konzept auf ein bestehendes gemappt oder neu angelegt wird.
-
-    Dieser Test stellt sicher, dass Grenzwertänderungen am Schwellenparameter
-    das erwartete Systemverhalten reproduzierbar auslösen.
-    """
+    """Prüft dass dedupe_threshold korrekt entscheidet, ob ein Konzept gemappt (≥ Schwelle) oder neu angelegt wird."""
     monkeypatch.setattr(ce, '_ask_llm_for_concepts', _llm_stub(
         concepts=[{"name": "Existing Concept", "alt_labels": [], "description": "d"}],
         links=[{"paragraph_id": "p1", "concept_name": "Existing Concept", "confidence": 0.9}],
@@ -180,9 +153,7 @@ def test_dedupe_threshold_boundary(monkeypatch, fake_neo, sample_paragraphs,
 # ===========================================================================
 
 def test_allow_new_false_no_extra_concepts(monkeypatch, sample_paragraphs):
-    """Wenn allow_new=False gesetzt ist, dürfen ausschließlich Seed-Konzepte
-    im Ergebnis erscheinen. Vom LLM vorgeschlagene Zusatzkonzepte werden verworfen.
-    """
+    """Prüft dass bei allow_new=False nur Seed-Konzepte im Ergebnis erscheinen und LLM-Extrakonzepte verworfen werden."""
     monkeypatch.setattr(ce, '_ask_llm_for_concepts', _llm_stub(
         concepts=[
             {"name": "AI Basics",      "alt_labels": [], "description": "seed"},
@@ -216,9 +187,7 @@ def test_allow_new_false_no_extra_concepts(monkeypatch, sample_paragraphs):
 # ===========================================================================
 
 def test_min_confidence_filters_concepts(monkeypatch, sample_paragraphs):
-    """Konzepte, deren durchschnittliche Konfidenz unter min_confidence liegt,
-    dürfen nicht in die Ergebnisliste aufgenommen werden.
-    """
+    """Prüft dass Konzepte mit durchschnittlicher Konfidenz unter min_confidence aus dem Ergebnis gefiltert werden."""
     monkeypatch.setattr(ce, '_ask_llm_for_concepts', _llm_stub(
         concepts=[
             {"name": "High Conf", "alt_labels": [], "description": "d"},
@@ -259,9 +228,7 @@ def test_parse_valid_json():
 
 
 def test_parse_json_with_trailing_comma():
-    """JSON mit trailing commas (typischer LLM-Ausgabefehler) wird repariert
-    und korrekt deserialisiert.
-    """
+    """Prüft dass JSON mit trailing commas (typischer LLM-Fehler) repariert und korrekt deserialisiert wird."""
     raw = '{"concepts": [{"name": "KI",}], "links": [],}'
     result = ce._try_parse_llm_response(raw)
     assert isinstance(result, dict)
@@ -275,19 +242,14 @@ def test_parse_empty_string():
 
 
 def test_parse_json_in_code_fence():
-    """JSON, das in einem Markdown-Codeblock eingebettet ist, wird korrekt
-    extrahiert. LLMs liefern häufig solche Ausgaben.
-    """
+    """Prüft dass in Markdown-Codeblöcken eingebettetes JSON korrekt extrahiert wird."""
     raw = '```json\n{"concepts": [], "links": [{"paragraph_id": "p1"}]}\n```'
     result = ce._try_parse_llm_response(raw)
     assert result["links"] == [{"paragraph_id": "p1"}]
 
 
 def test_parse_missing_keys_filled_with_defaults():
-    """Fehlt 'links' oder 'concepts' im JSON, werden Default-Werte
-    (leere Listen) gesetzt, sodass der Aufrufer keine KeyError-Behandlung
-    benötigt.
-    """
+    """Prüft dass fehlende 'links'- oder 'concepts'-Schlüssel durch leere Default-Listen ersetzt werden."""
     raw = '{"concepts": [{"name": "Test"}]}'
     result = ce._try_parse_llm_response(raw)
     assert "links" in result

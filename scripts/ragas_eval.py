@@ -1,15 +1,4 @@
-"""
-RAGAS Evaluation für GraphRAG-Pipeline.
-
-Metriken:
-  - Faithfulness        : Sind alle Aussagen durch den Kontext belegt?
-  - Answer Relevancy    : Beantwortet die Antwort die Frage?
-  - Context Precision   : Ist der abgerufene Kontext präzise?
-  - Context Recall      : Enthält der Kontext alle nötigen Informationen?
-
-Abhängigkeiten:
-  pip install ragas datasets langchain-openai
-"""
+"""RAGAS-Evaluation der GraphRAG-Pipeline: Faithfulness, Answer Relevancy, Context Precision und Context Recall."""
 from __future__ import annotations
 
 import json
@@ -171,6 +160,7 @@ _FALSE_FACTS = [f for facts in _FALSE_FACTS_BY_KURS.values() for f in facts]
 # ---------------------------------------------------------------------------
 
 def _build_neo_client() -> Neo4jClient:
+    """Erstellt einen Neo4jClient mit den Standard-Umgebungsvariablen."""
     return Neo4jClient()
 
 
@@ -181,23 +171,23 @@ def _retrieve_supports(neo: Neo4jClient, question: str) -> list[dict]:
 
 
 def _supports_to_contexts(supports: list[dict]) -> list[str]:
+    """Extrahiert die Texte aller Paragraph-Supports als Kontextliste für RAGAS."""
     return [s["text"] for s in supports if s.get("type") == "paragraph" and s.get("text")]
 
 
 def _make_ragas_llm():
-    # max_tokens=8192: Faithfulness NLI gibt pro Aussage statement+reason+verdict aus.
-    # Lange Kursantworten erzeugen 20+ Aussagen (~4000+ Output-Tokens). gpt-4o-mini
-    # unterstützt bis zu 16 384 Output-Tokens, 8192 ist ein sicherer Mittelwert.
+    """Erstellt den RAGAS-LLM-Judge (gpt-4o-mini) mit ausreichendem max_tokens-Limit für Faithfulness-NLI."""
+    # 8192 tokens: Faithfulness-NLI erzeugt ~200 Output-Tokens pro Aussage; sichere Obergrenze für lange Antworten
     return llm_factory("gpt-4o-mini", client=_OpenAI(api_key=cfg.OPENAI_API_KEY), max_tokens=8192)
 
 
 def _make_ragas_embeddings():
-    # LangChain embeddings required: RAGAS AnswerRelevancy calls embed_query()/embed_documents()
-    # which RAGAS's own OpenAIEmbeddings (0.4.x) does not implement.
+    """Erstellt LangChain-Embeddings für RAGAS AnswerRelevancy (embed_query/embed_documents Interface)."""
     return _LCOpenAIEmbeddings(api_key=cfg.OPENAI_API_KEY, model="text-embedding-3-large")
 
 
 def _make_metrics(llm, emb) -> list:
+    """Erstellt die vier RAGAS-Standardmetriken mit dem angegebenen LLM und Embedding-Modell."""
     return [
         Faithfulness(llm=llm),
         AnswerRelevancy(llm=llm, embeddings=emb, strictness=1),
@@ -217,6 +207,7 @@ _ANSWER_MAX_CHARS = 2000
 
 
 def _truncate_answer(text: str) -> str:
+    """Kürzt lange Antworten satzweise auf _ANSWER_MAX_CHARS Zeichen für das Faithfulness-NLI."""
     if len(text) <= _ANSWER_MAX_CHARS:
         return text
     cut = text[:_ANSWER_MAX_CHARS]
@@ -225,6 +216,7 @@ def _truncate_answer(text: str) -> str:
 
 
 def _run_ragas(rows: dict, llm, emb, metrics: list) -> dict:
+    """Führt RAGAS-Evaluation auf einem Zeilen-Dict aus und gibt gemittelte Metrik-Scores zurück."""
     if not rows.get("question"):
         return {}
     rows = {**rows, "answer": [_truncate_answer(a) for a in rows["answer"]]}
@@ -287,14 +279,7 @@ def run_hallucination_test(
     test_questions: list[TestQuestion],
     neo: Neo4jClient | None = None,
 ) -> dict:
-    """
-    Vergleicht Faithfulness mit echtem vs. bewusst falschem Kontext.
-    Höhere Differenz = anfälliger für Halluzinationen.
-
-    Falscher Kontext: alle Falsch-Fakten des Kurses werden übergeben (nicht nur
-    einer), damit die Kontextgröße vergleichbar mit dem echten Retrieval ist und
-    die Faithfulness-Differenz tatsächlich Halluzinationsanfälligkeit misst.
-    """
+    """Vergleicht Faithfulness mit echtem vs. falschem Kontext; höhere Differenz bedeutet höhere Halluzinationsanfälligkeit."""
     if neo is None:
         neo = _build_neo_client()
 
@@ -377,13 +362,7 @@ def run_llm_comparison(
     local_model_name: str | None = None,
     neo: Neo4jClient | None = None,
 ) -> dict:
-    """
-    Vergleicht GPT-4o-mini (Cloud) mit LM Studio (Lokal) auf denselben Fragen.
-
-    Retrieval läuft immer im Cloud-Modus (OpenAI 3072D Embeddings),
-    da der Neo4j-Vektorindex mit Cloud-Embeddings aufgebaut wurde.
-    Nur die Generierungsphase (grounded_answer) wird umgeschaltet.
-    """
+    """Vergleicht GPT-4o-mini (Cloud) mit LM Studio (Lokal) auf RAGAS-Metriken bei gleichen Fragen und gleichem Retrieval."""
     if neo is None:
         neo = _build_neo_client()
 
@@ -450,21 +429,7 @@ def run_baseline_comparison(
     test_questions: list[TestQuestion],
     neo: Neo4jClient | None = None,
 ) -> dict:
-    """
-    Direkter Vergleich: reines Vektor-RAG (Baseline) vs. GraphRAG (Konzeptexpansion).
-
-    Baseline  — hybrid_retrieve():
-        Vektorsuche auf Paragraph- und Figure-Index, keine Konzeptknoten,
-        keine semantische Graphexpansion.
-
-    GraphRAG  — concept_based_retrieve():
-        Konzept-Vektorsuche → SEMANTIC_RELATION-Expansion →
-        Paragraph-Retrieval via gemitteltes Konzept-Embedding +
-        direkte Paragraphen-Vektorsuche.
-
-    Beide Modi: gleiche Testfragen, gleiches LLM (gpt-4o-mini), gleicher
-    RAGAS-Judge → direkt vergleichbare Scores ohne Confounder.
-    """
+    """Vergleicht reines Vektor-RAG (hybrid_retrieve) mit GraphRAG (concept_based_retrieve) auf allen RAGAS-Metriken."""
     if neo is None:
         neo = _build_neo_client()
 
@@ -532,6 +497,7 @@ def run_baseline_comparison(
 # ---------------------------------------------------------------------------
 
 def export_results_to_json(results: dict, output_path: str) -> None:
+    """Serialisiert das Ergebnis-Dict als JSON-Datei in den angegebenen Pfad."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
@@ -539,6 +505,7 @@ def export_results_to_json(results: dict, output_path: str) -> None:
 
 
 def print_results_table(results: dict) -> None:
+    """Gibt alle Evaluationsergebnisse als formatierte Tabelle auf stdout aus."""
     width = 72
     print("\n" + "=" * width)
     print(f"{'RAGAS EVALUATION ERGEBNISSE':^{width}}")
@@ -578,12 +545,7 @@ def _sample_evenly(questions: list, n: int) -> list:
 
 
 def load_course_questions(kurs_id: str) -> list[TestQuestion]:
-    """
-    Lädt kursspezifische Fragen aus data/eval/questions_{kurs_id}.json
-    (erzeugt von scripts/generate_course_questions.py).
-    Gibt genau QUESTIONS_PER_KURS Fragen zurück, gleichmäßig über alle
-    Abschnitte verteilt (nicht nur die ersten N).
-    """
+    """Lädt kursspezifische Testfragen aus data/eval/questions_{kurs_id}.json und gibt gleichmäßig verteilte QUESTIONS_PER_KURS zurück."""
     import json
     path = Path(__file__).resolve().parents[1] / "data" / "eval" / f"questions_{kurs_id}.json"
     if not path.exists():
@@ -615,10 +577,7 @@ def run_course_evaluation(
     kurs_id: str,
     neo: Neo4jClient | None = None,
 ) -> dict:
-    """
-    Vollständige RAGAS-Evaluation (alle 4 Metriken) mit kursspezifischen Fragen.
-    Lädt Fragen automatisch aus data/eval/questions_{kurs_id}.json.
-    """
+    """Führt vollständige RAGAS-Evaluation (4 Metriken) für einen Kurs auf Basis der gespeicherten Testfragen durch."""
     questions = load_course_questions(kurs_id)
     result = run_ragas_evaluation(questions, neo=neo)
     return {
@@ -632,11 +591,7 @@ def run_all_courses_evaluation(
     kurs_ids: list[str] | None = None,
     neo: Neo4jClient | None = None,
 ) -> dict[str, Any]:
-    """
-    Evaluiert alle drei Kurse sequenziell und gibt vergleichbare Ergebnisse zurück.
-    kurs_ids=None → alle drei Kurse.
-    Retrieval läuft immer im Cloud-Modus, da der Neo4j-Index mit OpenAI-Embeddings gebaut wurde.
-    """
+    """Evaluiert alle drei Kurse sequenziell mit RAGAS und gibt vergleichbare Scores zurück; kurs_ids=None → alle drei."""
     from scripts.generate_course_questions import KURSE
     ids = kurs_ids or list(KURSE.keys())
     _close = neo is None
@@ -692,6 +647,7 @@ def run_all_courses_evaluation(
 
 
 def _print_course_comparison(results: dict) -> None:
+    """Gibt eine RAGAS-Vergleichstabelle aller Kurse auf stdout aus."""
     metric_keys = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
     metric_labels = ["Faithfulness", "Ans. Relevancy", "Ctx. Precision", "Ctx. Recall"]
     kids = list(results.keys())

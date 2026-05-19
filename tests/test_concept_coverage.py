@@ -1,6 +1,4 @@
-"""
-Testet die Concept Extraction Coverage auf einem Beispieltext
-"""
+"""Testet die Concept-Extraction-Coverage auf einem Machine-Learning-Beispieltext."""
 import sys
 import os
 from dotenv import load_dotenv
@@ -44,9 +42,7 @@ Eingabevariablen, ist oft entscheidend für den Erfolg eines ML-Projekts.
 """
 
 def test_concept_coverage():
-    """
-    Testet wie viele Konzepte aus dem Text extrahiert werden
-    """
+    """Testet wie viele der erwarteten Schlüsselkonzepte aus dem Beispieltext extrahiert werden."""
     print("=" * 80)
     print("CONCEPT EXTRACTION COVERAGE TEST")
     print("=" * 80)

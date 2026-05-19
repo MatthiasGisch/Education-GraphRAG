@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-Repariert fehlende paper_id Properties UND HAS_PARAGRAPH Beziehungen bei Paragraphs.
-Nutzt die paragraph_id Namenskonvention (enthält paper_id als Präfix).
-"""
+"""Repariert fehlende paper_id-Properties und HAS_PARAGRAPH-Beziehungen anhand des paragraph_id-Präfix."""
 
 import sys
 from pathlib import Path
@@ -12,8 +9,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.neo import Neo4jClient
 
 def main():
+    """Sucht Paragraphen ohne paper_id oder HAS_PARAGRAPH-Kante und stellt die Verknüpfung wieder her."""
     neo = Neo4jClient()
-    
+
     print("=== Repariere Paragraph-Paper Verknüpfungen ===\n")
     
     # Get all papers

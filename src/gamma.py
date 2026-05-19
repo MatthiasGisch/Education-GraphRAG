@@ -1,4 +1,4 @@
-# src/gamma.py
+"""Gamma-API-Client zur Erzeugung von Präsentationen via Gamma.app."""
 from __future__ import annotations
 import os, time, json, pathlib, re
 import requests
@@ -8,9 +8,10 @@ GAMMA_BASE = os.getenv("GAMMA_BASE", "https://public-api.gamma.app/v0.2")
 DEFAULT_EXPORT = os.getenv("GAMMA_EXPORT", "pptx")  # 'pptx' oder 'pdf'
 
 class GammaError(RuntimeError):
-    pass
+    """Fehlerklasse für fehlgeschlagene Gamma-API-Anfragen."""
 
 class GammaClient:
+    """HTTP-Client für die Gamma.app REST-API."""
     def __init__(self, api_key: Optional[str] = None, base: str = GAMMA_BASE):
         self.api_key = api_key or os.getenv("GAMMA_API_KEY")
         if not self.api_key:
@@ -20,7 +21,7 @@ class GammaClient:
         self.s.headers.update({"X-API-KEY": self.api_key, "Content-Type": "application/json"})
 
     def generate(self, body: Dict[str, Any]) -> str:
-        """POST /generations → generationId"""
+        """Startet eine Präsentationsgenerierung und gibt die generationId zurück."""
         url = f"{self.base}/generations"
         r = self.s.post(url, data=json.dumps(body), timeout=60)
         if r.status_code >= 400:
@@ -31,7 +32,7 @@ class GammaClient:
         return gen_id
 
     def poll(self, generation_id: str, interval_sec: float = 5.0, timeout_sec: int = 600) -> Dict[str, Any]:
-        """GET /generations/{id} (Status & ggf. Datei-URLs)"""
+        """Wartet per Polling bis die Gamma-Generierung abgeschlossen ist und gibt das Ergebnis zurück."""
         url = f"{self.base}/generations/{generation_id}"
         t0 = time.time()
         while True:
@@ -47,6 +48,7 @@ class GammaClient:
             time.sleep(interval_sec)
 
     def download_file(self, file_url: str, out_dir: str = "outputs/gamma", filename: Optional[str] = None) -> str:
+        """Lädt eine Gamma-Exportdatei herunter und gibt den lokalen Dateipfad zurück."""
         pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
         name = filename or file_url.split("?")[0].split("/")[-1] or "deck.pptx"
         out_path = str(pathlib.Path(out_dir) / name)
@@ -60,12 +62,7 @@ class GammaClient:
 
 
     def list_themes(self) -> List[str]:
-        """Try to discover available theme names in the Gamma API.
-
-        This is best-effort: different Gamma API versions may expose themes under
-        different endpoints. We try a few likely endpoints and return a list of
-        theme names if any are found.
-        """
+        """Versucht verfügbare Theme-Namen aus der Gamma-API zu ermitteln (Best-effort)."""
         candidates = [
             f"{self.base}/themes",
             f"{self.base}/templates",
@@ -161,12 +158,7 @@ class GammaClient:
 # ---- Helper: Text in Gamma-freundliches Input-Format umwandeln ----------------
 
 def to_gamma_input_text(answer_text: str, supports: List[Dict[str, Any]], title: str = "Ergebnis") -> str:
-    """
-    Baut ein inputText mit expliziten Seiten-Trennern '---' zwischen Folien.
-    Slide 1: Titel + kurzer Teaser
-    Slide 2..n: Inhalte (aus Antwort – bereits gegliedert, wenn möglich)
-    Letzte Slide: Quellen (aus supports)
-    """
+    """Baut einen Gamma-inputText mit Folien-Trennern aus Antworttext, Bildern und Quellen."""
     def norm(s: str) -> str:
         s = re.sub(r"\r\n|\r", "\n", s or "")
         return s.strip()

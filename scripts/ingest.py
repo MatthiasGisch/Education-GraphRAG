@@ -1,15 +1,6 @@
 # scripts/ingest.py
 # -*- coding: utf-8 -*-
-"""
-Ingest-Skript für GraphRAG + Neo4j AuraDB mit genauer Provenance.
-- Liest Text + Bilder aus PDFs
-- Erzeugt Embeddings
-- Schreibt Paper, Sections, Paragraphs (mit BBox/Order), Figures (mit BBox/Captions) nach Neo4j
-- Hängt DOI/URL/File-Hash an den Paper-Knoten
-
-Aufruf:
-    python scripts/ingest.py <pdf1> [<pdf2> ...]
-"""
+"""Ingestiert PDFs in Neo4j: extrahiert Text, Bilder, Embeddings und schreibt den vollständigen Graph."""
 
 from __future__ import annotations
 import sys, json, traceback
@@ -31,10 +22,7 @@ from src.pdf_ingest import (
 
 def _merge_figure_meta_with_analysis(fig_meta: List[Dict[str, Any]],
                                      fig_analysis: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Merged pro figure_id die ursprünglichen Metadaten (bbox, page_width, figure_label, image_path)
-    mit der VLM-Analyse (caption, analysis_json, embedding, image_uri).
-    """
+    """Merged pro figure_id Metadaten (bbox, page_width, figure_label) mit der VLM-Analyse (caption, embedding)."""
     by_id: Dict[str, Dict[str, Any]] = {f["figure_id"]: f for f in fig_meta}
     merged: List[Dict[str, Any]] = []
     for fa in fig_analysis:
@@ -67,11 +55,7 @@ def _merge_figure_meta_with_analysis(fig_meta: List[Dict[str, Any]],
 
 
 def ingest_one(pdf_path: Path, neo: Neo4jClient) -> Dict[str, Any]:
-    """
-    Ingest genau *eines* PDFs. Gibt eine kompakte Zusammenfassung zurück.
-    Erwartet, dass `read_pdf_text_and_images` vier Werte liefert:
-      paper_meta, sections, paragraphs, figures
-    """
+    """Ingestiert ein einzelnes PDF in Neo4j und gibt eine kompakte Zusammenfassung zurück."""
     paper_meta, sections, paragraphs, figures = read_pdf_text_and_images(str(pdf_path))
 
     # --- Paper upsert inkl. DOI/URL/File-Hash/Metadaten ---

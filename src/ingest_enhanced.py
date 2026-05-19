@@ -1,12 +1,4 @@
-# src/ingest_enhanced.py
-"""
-Enhanced Ingest Module with:
-- Dynamic parameter adjustment
-- Duplicate detection
-- Enhanced metadata extraction
-- Quality validation
-- Batch processing support
-"""
+"""Erweitertes Ingest-Modul: dynamische Parameter, Duplikaterkennung, Metadaten und Qualitätsprüfung."""
 from __future__ import annotations
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
@@ -24,15 +16,7 @@ if TYPE_CHECKING:
 
 
 def calculate_dynamic_parameters(num_paragraphs: int) -> Dict[str, int]:
-    """
-    Calculate optimal extraction parameters based on document size.
-    
-    Args:
-        num_paragraphs: Number of paragraphs in document
-        
-    Returns:
-        Dict with max_entities, max_relations, k_paragraphs, k_figures
-    """
+    """Berechnet optimale Extraktionsparameter abhängig von der Dokumentgröße."""
     # Base parameters on document size
     max_entities = min(50, max(20, num_paragraphs // 10))
     max_relations = min(30, max(10, num_paragraphs // 15))
@@ -48,15 +32,7 @@ def calculate_dynamic_parameters(num_paragraphs: int) -> Dict[str, int]:
 
 
 def infer_topic_from_title(title: str) -> str:
-    """
-    Attempt to infer topic from paper title.
-    
-    Args:
-        title: Paper title
-        
-    Returns:
-        Inferred topic or default
-    """
+    """Leitet das Themengebiet eines Papers aus Schlüsselwörtern im Titel ab."""
     title_lower = title.lower()
     
     # Topic keywords mapping
@@ -79,16 +55,7 @@ def infer_topic_from_title(title: str) -> str:
 
 
 def check_for_duplicates(neo: Neo4jClient, paper_meta: dict) -> Optional[Dict[str, Any]]:
-    """
-    Check for duplicate papers using multiple strategies.
-    
-    Args:
-        neo: Neo4j client
-        paper_meta: Paper metadata dict
-        
-    Returns:
-        Dict with duplicate info if found, None otherwise
-    """
+    """Prüft via SHA256-Hash, DOI und Titel ob ein Paper bereits in Neo4j vorhanden ist."""
     # Strategy 1: SHA256 hash match
     file_hash = paper_meta.get("file_sha256")
     if file_hash:
@@ -145,16 +112,7 @@ def check_for_duplicates(neo: Neo4jClient, paper_meta: dict) -> Optional[Dict[st
 
 
 def extract_enhanced_metadata(pdf_path: Path, paper_meta: dict) -> dict:
-    """
-    Extract enhanced metadata from PDF.
-    
-    Args:
-        pdf_path: Path to PDF file
-        paper_meta: Basic metadata from read_pdf_text_and_images
-        
-    Returns:
-        Enhanced metadata dict
-    """
+    """Extrahiert erweiterte Metadaten aus der PDF-Datei (Seitenanzahl, Dateigröße, PDF-Metadaten)."""
     enhanced = paper_meta.copy()
     
     # File statistics
@@ -185,19 +143,9 @@ def extract_enhanced_metadata(pdf_path: Path, paper_meta: dict) -> dict:
     return enhanced
 
 
-def filter_low_quality_concepts(concepts: List[dict], min_confidence: float = 0.6, 
+def filter_low_quality_concepts(concepts: List[dict], min_confidence: float = 0.6,
                                  links: List[dict] = None) -> Tuple[List[dict], List[dict]]:
-    """
-    Filter out low-quality concepts based on confidence scores.
-    
-    Args:
-        concepts: List of concept dicts
-        min_confidence: Minimum average confidence threshold
-        links: List of paragraph-concept links
-        
-    Returns:
-        Tuple of (filtered_concepts, filtered_links)
-    """
+    """Filtert Konzepte mit zu niedrigem Confidence-Score aus und passt die Links entsprechend an."""
     if not links:
         return concepts, links or []
     
@@ -237,15 +185,7 @@ def filter_low_quality_concepts(concepts: List[dict], min_confidence: float = 0.
 
 
 def validate_ingestion_quality(report: dict) -> Dict[str, Any]:
-    """
-    Validate ingestion quality and provide recommendations.
-    
-    Args:
-        report: Ingestion report dict
-        
-    Returns:
-        Validation results with quality score and issues
-    """
+    """Bewertet die Ingest-Qualität anhand eines Reports und gibt Score, Probleme und Empfehlungen zurück."""
     issues = []
     warnings = []
     recommendations = []
@@ -300,16 +240,7 @@ def validate_ingestion_quality(report: dict) -> Dict[str, Any]:
 
 
 def create_ingestion_summary(report: dict, validation: dict) -> str:
-    """
-    Create a human-readable ingestion summary.
-    
-    Args:
-        report: Ingestion report
-        validation: Validation results
-        
-    Returns:
-        Formatted summary string
-    """
+    """Erzeugt eine lesbare Markdown-Zusammenfassung aus Ingest-Report und Qualitätsvalidierung."""
     summary_lines = [
         f"📄 **{report.get('title', 'Unknown')}**",
         f"",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Test concept matching directly."""
+"""Testet das Konzept-Matching direkt über Vektorsuche mit einer Beispielanfrage."""
 from src.neo import KnowledgeGraph
 from src.openai_client import get_embedding
 

@@ -1,16 +1,4 @@
-"""
-Framework-Vergleich: Mein GraphRAG vs. MS GraphRAG vs. LightRAG
-================================================================
-Evaluiert alle drei Systeme mit RAGAS auf demselben Textkorpus.
-
-Setup:
-    pip install graphrag lightrag-hku
-
-Ausführung:
-    python scripts/framework_comparison.py [--skip-indexing] [--questions N]
-
-ACHTUNG: MS GraphRAG Indexierung dauert 20–40 Minuten und erzeugt LLM-Kosten!
-"""
+"""Framework-Vergleich: evaluiert das eigene GraphRAG-System gegen MS GraphRAG und LightRAG via RAGAS."""
 from __future__ import annotations
 
 import asyncio
@@ -85,10 +73,7 @@ _SYSTEM_LABELS = {
 # ---------------------------------------------------------------------------
 
 def export_papers_as_txt(output_dir: str, neo: Neo4jClient | None = None) -> list[str]:
-    """
-    Exportiert alle Paragraphen aus Neo4j pro Paper als .txt-Datei.
-    Gibt Pfade der erzeugten Dateien zurück.
-    """
+    """Exportiert alle Paragraphen aus Neo4j pro Paper als .txt-Datei und gibt die erzeugten Dateipfade zurück."""
     _close = neo is None
     if neo is None:
         neo = Neo4jClient()
@@ -187,11 +172,7 @@ class MSGraphRAGEvaluator:
 
     # ------------------------------------------------------------------
     def setup_graphrag(self) -> None:
-        """
-        Kopiert Corpus-Dateien, initialisiert den Workspace mit
-        `graphrag init` und überschreibt anschließend die erzeugte
-        settings.yaml mit unseren Modell-Konfigurationen.
-        """
+        """Kopiert Corpus-Dateien, initialisiert den Workspace via graphrag init und schreibt die settings.yaml."""
         target_input = self.workspace_dir / "input"
         target_input.mkdir(parents=True, exist_ok=True)
 
@@ -300,6 +281,7 @@ class MSGraphRAGEvaluator:
             return self._query_cli(question)
 
     def _query_python_api(self, question: str) -> tuple[str, list[str]]:
+        """Fragt MS GraphRAG per Python-API (global_search) ab und gibt Antwort und Kontexte zurück."""
         from graphrag.query.api import global_search  # type: ignore
 
         artifacts_dir = self.workspace_dir / "output" / "artifacts"
@@ -327,6 +309,7 @@ class MSGraphRAGEvaluator:
         return asyncio.run(_run())
 
     def _query_cli(self, question: str) -> tuple[str, list[str]]:
+        """Fragt MS GraphRAG per CLI-Subprocess (Global Search) ab und gibt Antwort und Kontext zurück."""
         result = subprocess.run(
             [
                 sys.executable, "-m", "graphrag", "query",
@@ -347,6 +330,7 @@ class MSGraphRAGEvaluator:
         ragas_llm: LangchainLLMWrapper,
         ragas_emb: LangchainEmbeddingsWrapper,
     ) -> dict:
+        """Evaluiert MS GraphRAG auf den Testfragen und gibt RAGAS-Scores mit Inferenzzeit zurück."""
         rows: dict[str, list] = {
             "question": [], "answer": [], "contexts": [], "ground_truth": []
         }
@@ -494,6 +478,7 @@ class LightRAGEvaluator:
         ragas_llm: LangchainLLMWrapper,
         ragas_emb: LangchainEmbeddingsWrapper,
     ) -> dict:
+        """Evaluiert LightRAG auf den Testfragen und gibt RAGAS-Scores mit Inferenzzeit zurück."""
         rows: dict[str, list] = {
             "question": [], "answer": [], "contexts": [], "ground_truth": []
         }
@@ -531,12 +516,7 @@ def run_full_comparison(
     neo: Neo4jClient | None = None,
     skip_indexing: bool = False,
 ) -> dict:
-    """
-    Führt den vollständigen Vergleich aller drei Systeme aus.
-    Fehler in einem System stoppen die anderen nicht.
-
-    skip_indexing=True: Überspringt Indexierung (wenn bereits durchgeführt).
-    """
+    """Führt den vollständigen RAGAS-Vergleich aller drei Systeme aus; Fehler in einem System stoppen die anderen nicht."""
     results: dict[str, Any] = {}
     ragas_llm = _make_ragas_llm()
     ragas_emb = _make_ragas_embeddings()
@@ -641,6 +621,7 @@ def export_comparison_table(results: dict, output_path: str = RESULTS_PATH) -> N
 
 
 def _build_latex_table(results: dict, metrics: list[str], systems: list[str]) -> str:
+    """Erzeugt eine LaTeX-Tabelle mit RAGAS-Scores aller Systeme; bestes Ergebnis je Metrik fettgedruckt."""
     col_spec = "l" + "r" * len(systems)
     sys_headers = " & ".join(f"\\textbf{{{_SYSTEM_LABELS[s]}}}" for s in systems)
 
@@ -714,6 +695,7 @@ def _run_cmd(
 
 
 def _sanitize_json(obj: Any) -> Any:
+    """Ersetzt NaN/Inf-Floats rekursiv durch None für JSON-sichere Serialisierung."""
     if isinstance(obj, float):
         return None if (math.isnan(obj) or math.isinf(obj)) else obj
     if isinstance(obj, dict):

@@ -1,4 +1,5 @@
 # scripts/gui_app.py
+"""Streamlit-GUI für das GraphRAG-System: Ingest, Fragebeantwortung, Graphexploration und Kursgenerierung."""
 from __future__ import annotations
 
 import os
@@ -99,15 +100,17 @@ st.markdown("""
 # Helpers
 # =========================
 def load_schema_text() -> str:
+    """Liest die graph_schema.cypher-Datei und gibt den Inhalt als String zurück."""
     return GRAPH_SCHEMA_PATH.read_text(encoding="utf-8")
 
 
 def _themes_file_path() -> Path:
+    """Gibt den Pfad zur gamma_themes.json-Datei zurück."""
     return EXPORTS_DIR / "gamma_themes.json"
 
 
 def load_gamma_themes() -> list:
-    """Load saved Gamma theme names from exports/gamma_themes.json or return defaults."""
+    """Lädt gespeicherte Gamma-Theme-Namen aus exports/gamma_themes.json oder gibt Standardwerte zurück."""
     p = _themes_file_path()
     defaults = ["Oasis", "Minimal", "Corporate"]
     try:
@@ -121,7 +124,7 @@ def load_gamma_themes() -> list:
 
 
 def save_gamma_theme(name: str) -> None:
-    """Save a theme name to the themes file (prepend, keep unique)."""
+    """Speichert einen Theme-Namen in gamma_themes.json (vorne einfügen, Duplikate vermeiden)."""
     name = (name or "").strip()
     if not name:
         return
@@ -142,7 +145,7 @@ def save_gamma_theme(name: str) -> None:
 
 
 def remove_gamma_theme(name: str) -> None:
-    """Remove a saved theme from exports/gamma_themes.json (best-effort)."""
+    """Entfernt einen Theme-Namen aus gamma_themes.json (Best-Effort, kein Fehler bei Misserfolg)."""
     try:
         p = _themes_file_path()
         if not p.exists():
@@ -159,6 +162,7 @@ def remove_gamma_theme(name: str) -> None:
 
 # ---- Persistent user configuration for API keys ----
 def load_user_config() -> dict:
+    """Lädt die persistierte Nutzerkonfiguration (API-Keys etc.) aus exports/user_config.json."""
     try:
         if USER_CONFIG_PATH.exists():
             data = json.loads(USER_CONFIG_PATH.read_text(encoding="utf-8") or "{}")
@@ -170,6 +174,7 @@ def load_user_config() -> dict:
 
 
 def save_user_config(conf: dict) -> None:
+    """Speichert die Nutzerkonfiguration als JSON in exports/user_config.json."""
     try:
         EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
         USER_CONFIG_PATH.write_text(json.dumps(conf, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -178,6 +183,7 @@ def save_user_config(conf: dict) -> None:
 
 @st.cache_resource(show_spinner=False)
 def get_neo() -> Neo4jClient:
+    """Gibt einen gecachten Neo4jClient zurück (Streamlit resource cache)."""
     return Neo4jClient()
 
 
@@ -188,6 +194,7 @@ def _cached_list_papers() -> list:
     return st.session_state["papers_list_cache"]
 
 def _invalidate_papers_cache() -> None:
+    """Leert den Papers-Listen-Cache im Session State für die nächste Aktualisierung."""
     st.session_state.pop("papers_list_cache", None)
 
 
@@ -207,6 +214,7 @@ def _load_eval_module():
     return _mod
 
 def get_single_value(neo: Neo4jClient, cypher: str) -> int:
+    """Führt eine Cypher-Zählabfrage aus und gibt das erste 'c'-Ergebnis als Integer zurück."""
     res = neo.run(cypher)
     return int(res[0]["c"]) if res and "c" in res[0] else 0
 
@@ -226,7 +234,7 @@ def create_schema():
         neo.run(stmt)
 
 def stitch_graph() -> dict:
-    """ Vernäht Paragraphs/Figures mit Sections (per page-range) + Dummy-Section pro Paper falls nötig. """
+    """Vernäht Paragraphs/Figures mit Sections (per page-range) und erstellt Dummy-Sections für Papers ohne Sections."""
     neo = get_neo()
     return neo.stitch_document_hierarchy()
 
@@ -291,17 +299,12 @@ def clear_graph() -> dict:
     }
 
 def run_cypher(query: str) -> List[Dict[str, Any]]:
+    """Führt eine Cypher-Abfrage aus und gibt die Ergebnisse als Liste von Dicts zurück."""
     neo = get_neo()
     return neo.run(query)
 
 def visualize_records_as_graph(records: List[Dict[str, Any]], height: int = 650) -> None:
-    """
-    Visualisiert Neo4j-Resultate robust:
-    - echte Neo4j-Objekte (NeoPath/NeoNode/NeoRel)
-    - dict-Serialisierungen (nodes/relationships, segments)
-    - TRIPLET-LISTEN: [node_like, "RELTYPE", node_like, ...]  <-- dein Format
-    - filtert große Props (z.B. embedding)
-    """
+    """Visualisiert Neo4j-Resultate als interaktiven Graph; unterstützt echte Objekte, Dicts und Triplet-Listen."""
     import uuid
     from neo4j.graph import Path as NeoPath, Node as NeoNode, Relationship as NeoRel
     import streamlit.components.v1 as components
@@ -517,10 +520,7 @@ def visualize_records_as_graph(records: List[Dict[str, Any]], height: int = 650)
     components.html(html, height=height, scrolling=True)
 
 def _parse_browser_params(lines: list[str]) -> tuple[dict, list[str]]:
-    """
-    Extrahiert Browser-Param-Zeilen (:param key => value) aus dem Query-Text.
-    Gibt (params, rest_lines) zurück. value darf string ('"…"','\'…\''), Zahl, JSON ({} / []) sein.
-    """
+    """Extrahiert :param-Zeilen aus dem Query-Text und gibt (params-dict, restliche Zeilen) zurück."""
     params = {}
     rest = []
     for line in lines:
@@ -549,9 +549,7 @@ def _parse_browser_params(lines: list[str]) -> tuple[dict, list[str]]:
     return params, rest
 
 def _extract_params_from_textarea(json_text: str) -> dict:
-    """
-    Versucht, JSON aus der separaten Param-Textbox zu parsen.
-    """
+    """Parst JSON aus der separaten Parameter-Textbox und gibt ein Dict zurück (leer bei Fehler)."""
     if not json_text or not json_text.strip():
         return {}
     try:
@@ -563,14 +561,7 @@ def _extract_params_from_textarea(json_text: str) -> dict:
     return {}
 
 def run_cypher_with_params(query_text: str, for_graph: bool = False) -> list[dict]:
-    """
-    Erlaubt Browser-Style :param-Zeilen und/oder JSON-Param-Textbox.
-    Setzt, falls nicht vorhanden, automatisch ein Topic aus der DB.
-    
-    Args:
-        query_text: Cypher Query mit optionalen :param Zeilen
-        for_graph: Wenn True, verwende run_graph() für Graph-Visualisierung (behält Neo4j-Objekte)
-    """
+    """Führt eine parametrisierte Cypher-Abfrage aus; unterstützt :param-Zeilen und JSON-Textbox-Parameter."""
     neo = get_neo()
     lines = query_text.splitlines()
     browser_params, rest_lines = _parse_browser_params(lines)
@@ -605,15 +596,7 @@ def visualize_with_agraph(
     layout: str = 'cose',
     show_edge_labels: bool = True,
 ) -> None:
-    """
-    streamlit-agraph basierte interaktive Graph-Visualisierung.
-
-    Args:
-        records: Liste von Neo4j-Records
-        height: Höhe der Visualisierung in Pixeln
-        layout: Layout-Algorithmus ('cose', 'dagre', 'circle', 'breadthfirst', 'grid')
-        show_edge_labels: Zeige Relationsnamen auf Kanten
-    """
+    """Rendert Neo4j-Records als interaktiven streamlit-agraph-Graph mit konfigurierbarem Layout."""
     if not _AGRAPH_AVAILABLE:
         st.error("streamlit-agraph nicht installiert. Bitte ausführen: `.venv/Scripts/pip install streamlit-agraph` und Streamlit mit `.venv/Scripts/streamlit run scripts/gui_app.py` starten.")
         return
@@ -763,12 +746,13 @@ def visualize_with_agraph(
 
 # ---------- Query orchestrator (UI helper) ----------
 def run_query(
-    q: str, 
-    web_mode_ui: str, 
-    k_paragraphs: int = 24, 
+    q: str,
+    web_mode_ui: str,
+    k_paragraphs: int = 24,
     k_figures: int = 8,
     use_concept_retrieval: bool = True
 ) -> Dict[str, Any]:
+    """Beantwortet eine Nutzeranfrage via answer_query und gibt das vollständige Ergebnis-Dict zurück."""
     neo = get_neo()
     mapping = {"Auto": "auto", "Erzwingen": "force", "Aus": "off"}
     return answer_query(
@@ -784,10 +768,7 @@ import numpy as np
 from uuid import uuid4
 
 def rebuild_concepts_for_all(topic: str, strategy: str) -> dict:
-    """
-    Extrahiert Konzepte + Links für bereits ingestierte Paper neu (per aktueller Strategie).
-    - strategy: "LLM" | "Hybrid (NER + LLM + Relationen)"
-    """
+    """Extrahiert Konzepte und Links für alle ingiestierten Paper neu gemäß der gewählten Strategie (LLM oder Hybrid)."""
     from src.concept_extract import extract_and_embed_concepts, extract_and_embed_concepts_hybrid
 
     neo = get_neo()
@@ -861,15 +842,13 @@ def rebuild_concepts_for_all(topic: str, strategy: str) -> dict:
 
 
 def list_topics() -> list[str]:
+    """Gibt alle Topic-Namen aus der Datenbank alphabetisch sortiert zurück."""
     neo = get_neo()
     rows = neo.run("MATCH (t:Topic) RETURN t.name AS name ORDER BY name")
     return [r["name"] for r in rows]
 
 def stitch_figures_paragraphs() -> dict:
-    """
-    Vernäht Figures mit Paragraphen über CAPTIONS/REFERS_TO/NEAR Beziehungen.
-    Delegiert an Backend-Implementierung in Neo4jClient.
-    """
+    """Vernäht Figures mit Paragraphen über CAPTIONS/REFERS_TO/NEAR-Beziehungen via Neo4jClient."""
     neo = get_neo()
     return neo.stitch_figures_to_paragraphs(prefix_length=60, page_tolerance=1)
 
@@ -1698,10 +1677,7 @@ with tab_ingest:
     
     # Enhanced ingest function
     def ingest_one_pdf_enhanced(path: Path, use_auto_topic_param: bool, topic_param: str, progress_callback=None) -> Dict[str, Any]:
-        """
-        Ingest function with progress callback.
-        progress_callback: callable(step_name: str, percent: int) for progress updates
-        """
+        """Ingestiert ein einzelnes PDF mit optionalem Progress-Callback und gibt einen Ingest-Report zurück."""
         neo = get_neo()
         
         def report_progress(step: str, pct: int):
@@ -1879,6 +1855,7 @@ with tab_ingest:
 
     # --- Metadata helper for post-ingest curation ---
     def fetch_paper_metadata(paper_id: str) -> Dict[str, Any]:
+        """Lädt die Metadaten eines Papers aus Neo4j und gibt sie als Dict zurück."""
         neo = get_neo()
         res = neo.run(
             """
@@ -1892,6 +1869,7 @@ with tab_ingest:
         return res[0] if res else {}
 
     def update_paper_metadata(paper_id: str, updates: Dict[str, Any]):
+        """Schreibt die angegebenen Felder auf den Paper-Knoten in Neo4j."""
         if not updates:
             return
         neo = get_neo()
@@ -2082,6 +2060,7 @@ with tab_ingest:
     
     @st.dialog("Graph leeren - Bestätigung erforderlich")
     def confirm_delete_dialog():
+        """Zeigt einen Bestätigungs-Dialog für das Leeren des gesamten Graphen."""
         st.warning("Achtung: Dies löscht ALLE Knoten und Kanten. Das Schema bleibt erhalten.")
         st.markdown("---")
         col1, col2 = st.columns(2)

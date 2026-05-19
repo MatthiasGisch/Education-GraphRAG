@@ -1,3 +1,4 @@
+"""Synthesia-Video-Client: rendert PPTX-Folien als Video via Synthesia-API mit lokalem Fallback."""
 from __future__ import annotations
 import json
 import time
@@ -16,6 +17,7 @@ DEFAULT_H = 720
 
 
 def extract_slide_texts(pptx_path: str) -> List[str]:
+    """Extrahiert den Textinhalt aller Folien einer PPTX-Datei als Liste von Strings."""
     prs = Presentation(pptx_path)
     slides_texts = []
     for slide in prs.slides:
@@ -34,6 +36,7 @@ def extract_slide_texts(pptx_path: str) -> List[str]:
 
 def _make_image_from_text(text: str, out_path: Path, width: int = DEFAULT_W, height: int = DEFAULT_H,
                           bg_color: str = "white", title: Optional[str] = None) -> str:
+    """Rendert einen Folientext als PNG-Bild und gibt den Dateipfad zurück."""
     img = Image.new("RGB", (width, height), color=bg_color)
     draw = ImageDraw.Draw(img)
     try:
@@ -67,6 +70,7 @@ def _make_image_from_text(text: str, out_path: Path, width: int = DEFAULT_W, hei
 
 
 def _download_file(url: str, dst: Path, headers: Optional[dict] = None, timeout: int = 60):
+    """Lädt eine Datei per HTTP-Stream an den angegebenen Zielpfad herunter."""
     try:
         with httpx.stream("GET", url, headers=headers or {}, timeout=timeout) as r:
             r.raise_for_status()
@@ -89,16 +93,7 @@ def generate_video_from_pptx_via_synthesia(pptx_path: str,
                                            fallback_local: bool = True,
                                            width: int = DEFAULT_W,
                                            height: int = DEFAULT_H) -> str:
-    """
-    Minimal Synthesia integration wrapper (best-effort):
-    - Renders slides to images
-    - Calls Synthesia-like POST /videos endpoint with a scenes payload
-    - Polls GET /videos/{id} until completion and downloads resulting MP4 if available
-
-    Note: The real Synthesia API shape may differ; this wrapper is intentionally
-    flexible and resilient. Configure SYNTHESIA_API_KEY and optionally SYNTHESIA_API_BASE
-    in your `.env`.
-    """
+    """Generiert ein Video aus PPTX via Synthesia-API; fällt bei Fehler auf lokalen Renderer zurück."""
     api_key = api_key or cfg.SYNTHESIA_API_KEY
     api_base = api_base or cfg.SYNTHESIA_API_BASE
     if not api_key or not api_base:

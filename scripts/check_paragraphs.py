@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Prüft Paper-Paragraph Verknüpfungen
-"""
+"""Prüft die Vollständigkeit der Paper-Paragraph-Verknüpfungen in der Neo4j-Datenbank."""
 
 import sys
 from pathlib import Path
@@ -11,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.neo import Neo4jClient
 
 def main():
+    """Gibt Statistiken über Paper-Paragraph-Verknüpfungen und verwaiste Paragraphen aus."""
     neo = Neo4jClient()
     
     print("=== Paper-Paragraph Verknüpfungen ===\n")

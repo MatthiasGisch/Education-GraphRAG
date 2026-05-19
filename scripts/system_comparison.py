@@ -1,43 +1,4 @@
-"""
-Systemvergleich: Eigenes GraphRAG-System vs. MS GraphRAG vs. LightRAG
-======================================================================
-
-Alle drei Systeme beantworten dieselben 15 kursspezifischen Fragen
-(5 je Kurs, gleichmäßig gesampelt — identisch zur Kurs-Evaluation).
-Evaluiert mit demselben RAGAS-Judge (gpt-4o-mini) → direkt vergleichbare Scores.
-
-Metriken:
-  - Answer Relevancy   : alle 3 Systeme (kein Kontext erforderlich)
-  - Faithfulness       : nur eigenes System (Neo4j-Kontexte verfügbar)
-  - Context Precision  : nur eigenes System
-  - Context Recall     : nur eigenes System
-
-Hinweis: MS GraphRAG und LightRAG exponieren ihre internen Retrieval-Kontexte
-nicht direkt über die Standard-API. Answer Relevancy ist daher der primäre
-systemübergreifende Vergleichsindikator.
-
-Einmalige Voraussetzungen
---------------------------
-
-MS GraphRAG:
-  pip install graphrag pdfplumber
-  python scripts/system_comparison.py --index-msraphrag
-  # Danach settings.yaml anpassen (api_key, model = gpt-4o-mini) und:
-  graphrag index --root data/graphrag_index
-
-LightRAG:
-  pip install lightrag-hku pdfplumber
-  python scripts/system_comparison.py --index-lightrag
-
-Aufruf:
-  python scripts/system_comparison.py                       # alle 3 Systeme
-  python scripts/system_comparison.py --system own          # nur eigenes System
-  python scripts/system_comparison.py --system msraphrag    # nur MS GraphRAG
-  python scripts/system_comparison.py --system lightrag     # nur LightRAG
-  python scripts/system_comparison.py --dry-run             # Fragen anzeigen, kein API-Call
-  python scripts/system_comparison.py --index-lightrag      # LightRAG indexieren
-  python scripts/system_comparison.py --index-msraphrag     # MS GraphRAG Input vorbereiten
-"""
+"""Systemvergleich: evaluiert das eigene GraphRAG-System gegen MS GraphRAG und LightRAG mit RAGAS-Metriken."""
 from __future__ import annotations
 
 import argparse
@@ -124,6 +85,7 @@ class OwnSystemAdapter(SystemAdapter):
         self._neo = neo
 
     def query(self, question: str) -> tuple[str, list[str]]:
+        """Beantwortet eine Frage per concept_based_retrieve und grounded_answer und gibt Antwort und Kontexte zurück."""
         result = concept_based_retrieve(self._neo, question)
         supports = result.get("supports", [])
         answer = grounded_answer(question, supports)
@@ -151,7 +113,7 @@ class MSGraphRAGAdapter(SystemAdapter):
         return len(list(output_dir.rglob("*.parquet"))) > 0
 
     def _load(self):
-        """Lädt alle Index-Parquet-Dateien einmalig in DataFrames."""
+        """Lädt alle MS-GraphRAG-Index-Parquet-Dateien einmalig in DataFrames."""
         if self._dfs is not None:
             return
         try:
@@ -171,6 +133,7 @@ class MSGraphRAGAdapter(SystemAdapter):
         )
 
     def query(self, question: str) -> tuple[str, list[str]]:
+        """Fragt MS GraphRAG per Python-API ab; fällt bei Fehler auf CLI-Fallback zurück."""
         try:
             self._load()
             import graphrag.api as api
@@ -234,6 +197,7 @@ class MSGraphRAGAdapter(SystemAdapter):
 
     @staticmethod
     def _parse_output(raw: str) -> str:
+        """Extrahiert die eigentliche Antwort aus der MS-GraphRAG-CLI-Ausgabe."""
         for marker in (
             "SUCCESS: Local Search Response:\n",
             "Local Search Response:\n",
@@ -271,6 +235,7 @@ class LightRAGAdapter(SystemAdapter):
         return len(index_files) > 0
 
     def _load(self):
+        """Lädt den LightRAG-Index lazily beim ersten Aufruf."""
         if self._rag is not None:
             return
         try:
@@ -321,6 +286,7 @@ class LightRAGAdapter(SystemAdapter):
         self._QueryParam = QueryParam
 
     def query(self, question: str) -> tuple[str, list[str]]:
+        """Fragt LightRAG im Hybrid-Modus ab und gibt Antwort und Chunk-Kontexte zurück."""
         self._load()
         try:
             async def _run():
@@ -373,6 +339,7 @@ def _eval_adapter(
     ragas_llm,
     ragas_emb,
 ) -> dict[str, Any]:
+    """Beantwortet alle Fragen via Adapter, berechnet RAGAS-Scores und gibt das Ergebnisdict zurück."""
     rows: dict[str, list] = {
         "question": [], "answer": [], "contexts": [], "ground_truth": []
     }
@@ -430,6 +397,7 @@ def _eval_adapter(
 # ---------------------------------------------------------------------------
 
 def _print_comparison_table(results: dict) -> None:
+    """Gibt die RAGAS-Vergleichstabelle aller Systeme formatiert auf stdout aus."""
     metric_keys   = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
     metric_labels = ["Faithfulness", "Ans. Relevancy", "Ctx. Precision", "Ctx. Recall"]
     sys_keys = list(results.keys())
@@ -578,6 +546,7 @@ def prepare_msraphrag_input() -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    """Parsed CLI-Argumente, lädt Fragen, evaluiert alle gewählten Systeme und speichert JSON-Ergebnisse."""
     parser = argparse.ArgumentParser(
         description="Systemvergleich: Eigenes GraphRAG vs. MS GraphRAG vs. LightRAG"
     )

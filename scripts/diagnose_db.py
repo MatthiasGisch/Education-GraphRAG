@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-Diagnose-Skript für Neo4j Datenbank
-Prüft welche Daten vorhanden sind und ob die Graph-Struktur korrekt ist
-"""
+"""Diagnose-Skript: prüft den Datenbestand und die Graph-Struktur der Neo4j-Datenbank."""
 
 import sys
 from pathlib import Path
@@ -13,14 +10,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.neo import Neo4jClient
 
 def print_section(title: str):
-    """Print formatted section header"""
+    """Gibt einen formatierten Abschnittsheader auf der Konsole aus."""
     print(f"\n{'='*80}")
     print(f"  {title}")
     print(f"{'='*80}\n")
 
 def main():
+    """Verbindet sich mit Neo4j und gibt einen vollständigen Diagnosebericht aus."""
     neo = Neo4jClient()
-    
+
     # 1. Alle Knoten-Typen zählen
     print_section("1. ALLE KNOTEN-TYPEN ZÄHLEN")
     result = neo.run("""

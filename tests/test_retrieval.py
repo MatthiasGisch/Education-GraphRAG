@@ -1,4 +1,4 @@
-"""Quick test of vector-based concept retrieval."""
+"""Schnelltest für den vektorbasierten Konzept-Retriever mit einer Beispielanfrage."""
 from src.neo import Neo4jClient
 from src.retriever import concept_based_retrieve
 

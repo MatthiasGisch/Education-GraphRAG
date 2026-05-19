@@ -1,4 +1,4 @@
-# src/concept_extract.py
+"""Konzeptextraktion: LLM-basierte und hybride Methoden zur Erzeugung von Konzept-Embeddings und Paragraph-Links."""
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
 import os, re, uuid, json, logging
@@ -24,17 +24,20 @@ _BRACE_JSON_RE = re.compile(r"(\{.*\})", re.DOTALL)
 
 # ---------- Utils ----------
 def _slug(s: str) -> str:
+    """Normalisiert einen String zu einem URL-sicheren Slug für Konzept-IDs."""
     s = s.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
     return re.sub(r"-+", "-", s).strip("-")[:80] or str(uuid.uuid4())
 
 def _embed(texts: List[str]) -> List[List[float]]:
+    """Erstellt Embedding-Vektoren für eine Liste von Texten."""
     if not texts:
         return []
     return [embed_text(t) for t in texts]
 
 # ---------- Public: Seeds zu Concept-Objekten (mit Embedding) ----------
 def seed_names_to_concepts(seed_names: List[str]) -> List[Dict[str, Any]]:
+    """Konvertiert eine Liste von Seed-Namen in Konzept-Dicts mit Embeddings."""
     names = [n.strip() for n in (seed_names or []) if n and n.strip()]
     if not names:
         return []
@@ -52,7 +55,7 @@ def seed_names_to_concepts(seed_names: List[str]) -> List[Dict[str, Any]]:
 
 # ---------- LLM-Aufruf für Konzepte + Absatz-Zuordnung ----------
 def _try_parse_llm_response(raw: str) -> dict:
-    """Parse LLM response with fallback strategies for robustness."""
+    """Parst die LLM-Antwort robust mit mehreren Fallback-Strategien zu einem Dict."""
     if not raw or raw.isspace():
         return {"concepts": [], "links": []}
 
@@ -103,14 +106,7 @@ def _ask_llm_for_concepts(
     seed_names: List[str] | None,
     allow_new: bool
 ) -> dict:
-    """
-    Erwartet JSON:
-      { "concepts":[{name, alt_labels[], description}],
-        "links":[{paragraph_id, concept_name, confidence}] }
-    Wenn seed_names gesetzt: Nutzer-Seedliste wird prominent vorgegeben.
-      - allow_new = False -> NUR in diese Namen mappen, KEINE neuen Konzepte erzeugen.
-      - allow_new = True  -> Seeds bevorzugen, aber neue Konzepte zulassen.
-    """
+    """Fragt das LLM nach Konzepten und Paragraph-Links; gibt JSON mit concepts und links zurück."""
     sys = (
         "Du bist ein erfahrener Dozent, der Konzepte (Themen/Begriffe) aus wissenschaftlichen Texten extrahiert, "
         "um daraus Lernmaterial für Studierende zu erstellen.\n"
@@ -184,29 +180,17 @@ def _ask_llm_for_concepts(
 # ---------- Hauptfunktion: Konzepte + Links erzeugen ----------
 def extract_and_embed_concepts(
     paper_title: str,
-    paragraphs: List[Dict[str, Any]], 
+    paragraphs: List[Dict[str, Any]],
     topic_hint: str = "Künstliche Intelligenz",
     max_concepts: int = 30,
     seed_names: List[str] | None = None,
     allow_new: bool = True,
-    neo_client: Optional['Neo4jClient'] = None,  # For deduping + optional persistence
-    dedupe_threshold: float = 0.92,  # Similarity threshold for concept deduping
-    min_confidence: float = 0.0,  # Min confidence for paragraph-concept links
-    persist_to_topic: bool = False  # If True: automatically upsert Topic & add concepts
+    neo_client: Optional['Neo4jClient'] = None,
+    dedupe_threshold: float = 0.92,
+    min_confidence: float = 0.0,
+    persist_to_topic: bool = False
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """
-    Rückgabe:
-      concepts: [{concept_id, name, alt_labels, description, embedding}]
-      links:    [{paragraph_id, concept_id, confidence}]
-    Wenn seed_names gesetzt: Konzepte für Seeds werden immer erzeugt (mit Embedding).
-    Bei allow_new=False werden KEINE zusätzlichen Konzepte erzeugt; die Links mappen ausschließlich
-    auf Seeds. Bei allow_new=True können LLM-Konzepte hinzukommen.
-
-    Parameters:
-        neo_client: Optional Neo4jClient for checking existing concepts
-        dedupe_threshold: Similarity threshold for merging with existing concepts
-        min_confidence: Minimum confidence required for paragraph-concept links
-    """
+    """Extrahiert Konzepte mit Embeddings per LLM und erzeugt Paragraph-Konzept-Links."""
     # 1) Seeds vorbereiten (mit Embeddings)
     seed_concepts = seed_names_to_concepts(seed_names or [])
     seed_name_to_id = {c["name"].lower(): c["concept_id"] for c in seed_concepts}
@@ -358,23 +342,7 @@ def extract_and_embed_concepts_hybrid(
     persist_to_topic: bool = False,
     progress_fn=None,
 ) -> Dict[str, Any]:
-    """
-    Full hybrid extraction pipeline: NER (spaCy/SciSpacy) + LLM concepts + semantic relations.
-
-    Steps:
-      1. `extract_entities_and_relations` → entities (with embeddings) + semantic/co-occurrence relations
-      2. Convert entities to concept dicts (concept_id slug, alt_labels, description, embedding)
-      3. Build paragraph_links by substring-matching concept names inside paragraph text (confidence=0.75)
-      4. (optional) Persist concepts + topic link to Neo4j
-
-    Returns:
-      {
-        "concepts":        [concept_dict, ...],
-        "relations":       [relation_dict, ...],   # filled – semantic + co-occurrence
-        "paragraph_links": [link_dict, ...],        # filled – text-based matching
-        "stats":           {...}
-      }
-    """
+    """Hybride Konzextextraktion via NER + LLM; erzeugt Konzepte, Relationen und Paragraph-Links."""
     log.info("extract_and_embed_concepts_hybrid: starting for '%s'", paper_title)
     if progress_fn:
         progress_fn("NER + LLM Extraktion läuft …", 0)

@@ -1,7 +1,4 @@
-"""
-Test-Script für Plotly-Visualisierung
-Testet die neue visualize_with_plotly Funktion mit Mock-Daten
-"""
+"""Testskript für die Plotly-Graph-Visualisierung mit Mock-Daten."""
 import sys
 from pathlib import Path
 

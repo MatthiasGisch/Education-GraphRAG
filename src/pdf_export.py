@@ -1,4 +1,4 @@
-# src/pdf_export.py
+"""PDF-Export: erzeugt wissenschaftlich formatierte Antwort-PDFs mit Inline-Abbildungen und Literaturverzeichnis."""
 from __future__ import annotations
 from typing import Dict, Any, List
 from datetime import datetime
@@ -12,6 +12,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 
 def _mk_styles():
+    """Erstellt und registriert benutzerdefinierte ReportLab-Absatzstile."""
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="TitleBig", parent=styles["Title"], fontSize=18, leading=22, spaceAfter=10))
     styles.add(ParagraphStyle(name="Heading", parent=styles["Heading2"], spaceBefore=12, spaceAfter=6))
@@ -24,13 +25,11 @@ def _mk_styles():
     return styles
 
 def _escape(text: str) -> str:
+    """Escaped einen String für die sichere Verwendung in ReportLab-XML-Paragraphen."""
     return html.escape(text or "")
 
 def _make_scaled_image(path: str, max_width_pt: float, max_height_pt: float):
-    """
-    Skaliert ein Bild sicher in den verfügbaren Rahmen.
-    Gibt als Fallback einen kleinen Hinweis-Paragraph zurück.
-    """
+    """Skaliert ein Bild proportional in den Druckrahmen; gibt bei Fehler einen Fallback-Paragraph zurück."""
     from reportlab.platypus import Paragraph
     if not (path and os.path.exists(path)):
         return Paragraph(f"(Kein Bildpfad gefunden: {_escape(path or '')})", getSampleStyleSheet()["Small"])
@@ -50,10 +49,7 @@ def _make_scaled_image(path: str, max_width_pt: float, max_height_pt: float):
         return Paragraph(f"(Bild konnte nicht geladen werden: {_escape(path)} – {e})", getSampleStyleSheet()["Small"])
 
 def _sources_list(supports: List[Dict[str, Any]], id_mapping: Dict[str, int], styles):
-    """
-    Erstellt ein wissenschaftliches Literaturverzeichnis mit nummerierten Einträgen.
-    Format: [1] Autor (Jahr). Titel. DOI: xxx. S. yyy.
-    """
+    """Erstellt nummerierte Literaturverzeichnis-Paragraphen aus den Retrieval-Supports."""
     entries = []
     seen = set()
     
@@ -106,10 +102,7 @@ def _append_inline_figures_for_line(
     max_height_pt: float,
     max_inline_total: int | None,
 ):
-    """
-    Findet alle [F<id>]-Referenzen in der Zeile und fügt unmittelbar darunter
-    die entsprechenden (skalierten) Bilder + wissenschaftliche Captions ein.
-    """
+    """Fügt alle [F...]-referenzierten Abbildungen einer Zeile mit Caption direkt in die Story ein."""
     # pattern match: [Fxxxxxxxx-xxxx-....]  (ID ist alles außer ])
     refs = re.findall(r"\[F([^\]]+)\]", line)
     for rid in refs:
@@ -162,13 +155,7 @@ def write_answer_pdf(
     max_inline_figures_total: int | None = None,
     fallback_append_top_k_if_no_refs: int = 3
 ) -> str:
-    """
-    Erstellt ein wissenschaftlich formatiertes PDF mit nummerierten Referenzen.
-    - inline_figures=True: Bilder werden dort eingefügt, wo [F<id>] im Text steht.
-    - max_inline_figures_total: optionales globales Limit (None = kein Limit).
-    - fallback_append_top_k_if_no_refs: wenn im Text gar keine [F...] vorkommen,
-      werden (optional) Top-K Figuren am Ende hinzugefügt (0 = kein Fallback).
-    """
+    """Schreibt ein wissenschaftliches Antwort-PDF mit nummerierten Referenzen und Inline-Abbildungen."""
     styles = _mk_styles()
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 

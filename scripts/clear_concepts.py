@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-Löscht alle Konzepte und ihre Beziehungen aus der Datenbank.
-Behält Papers, Paragraphs, Figures, etc.
-"""
+"""Löscht alle Concept- und Topic-Knoten aus der Datenbank; Papers und Paragraphen bleiben erhalten."""
 
 import sys
 from pathlib import Path
@@ -13,8 +10,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.neo import Neo4jClient
 
 def main():
+    """Löscht alle Concept- und Topic-Knoten mit zugehörigen Beziehungen aus der Datenbank."""
     neo = Neo4jClient()
-    
+
     print("Lösche alle Konzepte und zugehörige Beziehungen...")
     
     # Count before deletion

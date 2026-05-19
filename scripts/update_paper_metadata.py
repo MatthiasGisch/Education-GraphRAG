@@ -1,3 +1,4 @@
+"""CLI-Skript: aktualisiert fehlende Paper-Metadaten (Autor, DOI, URL, etc.) aus einer CSV-Datei."""
 import argparse
 import csv
 from pathlib import Path
@@ -15,6 +16,7 @@ FIELDS = [
 ]
 
 def fetch_paper(neo: Neo4jClient, paper_id: Optional[str], title: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Sucht ein Paper via paper_id oder Titel und gibt die Metadaten zurück."""
     if paper_id:
         res = neo.run(
             """
@@ -44,6 +46,7 @@ def fetch_paper(neo: Neo4jClient, paper_id: Optional[str], title: Optional[str])
     return None
 
 def update_paper(neo: Neo4jClient, pid: str, updates: Dict[str, Any]) -> None:
+    """Schreibt die angegebenen Metadaten-Felder auf den Paper-Knoten in Neo4j."""
     if not updates:
         return
     set_parts = []
@@ -55,6 +58,7 @@ def update_paper(neo: Neo4jClient, pid: str, updates: Dict[str, Any]) -> None:
     neo.run(cypher, params)
 
 def main():
+    """Liest eine CSV-Datei und aktualisiert die Paper-Metadaten in Neo4j."""
     parser = argparse.ArgumentParser(description="Update missing Paper metadata from CSV")
     parser.add_argument("csv", type=Path, help="CSV with columns: paper_id,title,author,publication_year,doi,url,source,publisher")
     parser.add_argument("--dry-run", action="store_true", help="Only show what would change")

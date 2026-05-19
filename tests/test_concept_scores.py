@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Test concept vector search directly."""
+"""Testet die Konzept-Vektorsuche mit verschiedenen min_score-Schwellwerten."""
 from src.neo import Neo4jClient
 from src.openai_client import embed_text
 

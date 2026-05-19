@@ -1,4 +1,4 @@
-# scripts/create_schema.py
+"""Liest graph_schema.cypher und legt das Neo4j-Datenbankschema an (Indizes, Constraints)."""
 from pathlib import Path
 import sys
 
@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 from src.neo import Neo4jClient  # jetzt auffindbar
 
 def main():
+    """Liest graph_schema.cypher und wendet das Schema via ensure_schema auf die Datenbank an."""
     schema_path = ROOT / "src" / "graph_schema.cypher"
     cypher = schema_path.read_text(encoding="utf-8")
     neo = Neo4jClient()

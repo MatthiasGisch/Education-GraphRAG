@@ -1,15 +1,4 @@
-"""
-Re-Ingest Script: Clears database and re-ingests all papers with improved concept linking.
-
-Usage:
-    python scripts/reingest_all.py
-
-This script will:
-1. Clear the entire Neo4j database
-2. Re-ingest all PDFs from data/uploads/
-3. Use improved concept extraction with better text matching
-4. Create proper Paper -> Section -> Paragraph -> Concept hierarchy
-"""
+"""Löscht die Datenbank und ingestiert alle PDFs aus data/uploads/ neu mit verbesserter Konzeptverknüpfung."""
 import sys
 from pathlib import Path
 import time
@@ -22,7 +11,7 @@ from scripts.ingest import ingest_one
 
 
 def clear_database(neo: Neo4jClient) -> None:
-    """Clear entire Neo4j database in batches to avoid memory issues."""
+    """Löscht alle Knoten der Datenbank in Batches um Memory-Limits zu vermeiden."""
     print("\n" + "="*60)
     print("CLEARING DATABASE")
     print("="*60)

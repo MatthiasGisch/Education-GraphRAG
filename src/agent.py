@@ -1,4 +1,4 @@
-# src/agent.py
+"""Orchestriert Retrieval und Antwortgenerierung mit Graph- und optionalem Web-Fallback."""
 from __future__ import annotations
 from typing import List, Dict, Any
 import os, re, json, logging
@@ -28,6 +28,7 @@ except Exception:
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
 def _extract_sources_json(answer_text: str) -> tuple[list[dict], str]:
+    """Extrahiert einen JSON-Quellen-Block aus dem Antworttext und gibt Quellen und bereinigten Text zurück."""
     m = _JSON_BLOCK_RE.search(answer_text or "")
     if not m:
         return [], (answer_text or "")
@@ -40,6 +41,7 @@ def _extract_sources_json(answer_text: str) -> tuple[list[dict], str]:
     return sources, cleaned
 
 def answer_via_openai_web(query: str, *, lang: str = "de", force_tool: bool = False) -> Dict[str, Any]:
+    """Beantwortet eine Frage per OpenAI-Websuche und gibt Antwort mit Quellen-Supports zurück."""
     if _oai_client is None:
         return {"mode": "web_error", "answer": "OpenAI Client nicht initialisierbar.", "supports": [], "debug": {"web_call": "client_none"}}
 
@@ -95,6 +97,7 @@ def answer_via_openai_web(query: str, *, lang: str = "de", force_tool: bool = Fa
 
 # ---------------- (Optional) Serp-Stub ----------------
 def answer_via_serp(query: str) -> Dict[str, Any]:
+    """Stub für SERP-API-Websuche; gibt Fehlermeldung zurück wenn kein Key gesetzt ist."""
     if not USE_SERP:
         return {
             "mode": "web_fallback_disabled",
@@ -132,23 +135,13 @@ def answer_query(
     neo: Neo4jClient,
     min_supports: int = MIN_SUPPORTS_COUNT_DEFAULT,
     min_supports_score: float = MIN_SUPPORTS_SCORE_DEFAULT,
-    web_mode: str | None = None,   # "auto" | "force" | "off"
+    web_mode: str | None = None,
     k_paragraphs: int = 24,
     k_figures: int = 8,
     use_concept_retrieval: bool = True,
     max_supports: int = 20,
 ) -> Dict[str, Any]:
-    """
-    web_mode:
-      - "force": immer Websuche (Graph wird übersprungen)
-      - "off"  : niemals Websuche (nur Graph)
-      - "auto" : erst Graph; wenn zu wenig valide Belege -> Web
-      - None   : wie "auto" (Provider aus .env bestimmt openai/serp)
-    
-    k_paragraphs: Anzahl der Paragraphen beim Retrieval (default: 24)
-    k_figures: Anzahl der Abbildungen beim Retrieval (default: 8)
-    use_concept_retrieval: Nutze intelligentes Concept-basiertes Retrieval (default: True)
-    """
+    """Beantwortet eine Anfrage via Graph-Retrieval; fällt bei unzureichenden Belegen auf Websuche zurück."""
     debug: Dict[str, Any] = {
         "web_mode": (web_mode or "auto"),
         "k_paragraphs": k_paragraphs,

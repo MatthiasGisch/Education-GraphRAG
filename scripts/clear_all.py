@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-Löscht ALLE Daten aus der Datenbank (Papers, Paragraphs, Figures, Sections, Concepts, Topics).
-Nutze dies um mit sauberer Datenbank neu zu starten.
-"""
+"""Löscht ALLE Knoten und Beziehungen aus der Neo4j-Datenbank nach Bestätigung durch den Nutzer."""
 
 import sys
 from pathlib import Path
@@ -12,8 +9,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.neo import Neo4jClient
 
 def main():
+    """Zeigt den aktuellen Datenbestand, fragt nach Bestätigung und löscht dann alle Knoten."""
     neo = Neo4jClient()
-    
+
     print("⚠️  WARNUNG: Dieses Skript löscht ALLE Daten aus der Datenbank!")
     print("=" * 80)
     

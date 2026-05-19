@@ -1,4 +1,5 @@
 # src/neo.py
+"""Neo4j-Datenbankclient mit Retry-Logik, Vektor-Suche und Graph-Management."""
 from __future__ import annotations
 import time
 from typing import Any, Dict, List
@@ -7,6 +8,8 @@ from .config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 
 
 class Neo4jClient:
+    """Verbindungs- und Abfrage-Client für die Neo4j AuraDB-Instanz."""
+
     def __init__(self) -> None:
         if not (NEO4J_URI and NEO4J_USERNAME and NEO4J_PASSWORD):
             raise RuntimeError("Neo4j credentials missing. Check .env")
@@ -22,6 +25,7 @@ class Neo4jClient:
         )
 
     def close(self) -> None:
+        """Schließt den Neo4j-Treiber und gibt Ressourcen frei."""
         self.driver.close()
     
     def verify_connectivity(self) -> bool:
@@ -52,10 +56,7 @@ class Neo4jClient:
                 raise
     
     def run_graph(self, cypher: str, params: Dict[str, Any] | None = None) -> List[Any]:
-        """
-        Führt Cypher-Query aus und gibt die rohen Neo4j-Records zurück (inkl. Nodes, Paths, Relationships).
-        Wichtig für Graph-Visualisierung!
-        """
+        """Führt eine Cypher-Query aus und gibt rohe Neo4j-Records zurück (Nodes, Paths, Relationships)."""
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -75,8 +76,8 @@ class Neo4jClient:
                     continue
                 raise
 
-    # --- WICHTIG: robuste Schema-Anlage (Kommentare rausfiltern, Semikolons splitten)
     def ensure_schema(self, schema_cypher: str) -> None:
+        """Wendet das Datenbankschema an; filtert Kommentare und führt Statements einzeln aus."""
         # Kommentare und leere Zeilen entfernen
         lines: List[str] = []
         for line in schema_cypher.splitlines():
@@ -91,8 +92,8 @@ class Neo4jClient:
             for stmt in statements:
                 session.run(stmt)
 
-    # --- Upserts / Inserts ---
     def upsert_paper(self, paper_id: str, title: str | None, meta: Dict[str, Any]) -> None:
+        """Legt einen Paper-Knoten an oder aktualisiert dessen Metadaten."""
         self.run(
             """
             MERGE (p:Paper {paper_id:$paper_id})
@@ -103,6 +104,7 @@ class Neo4jClient:
         )
 
     def add_sections(self, paper_id: str, sections: list[dict]) -> None:
+        """Verknüpft Sections mit einem Paper-Knoten im Graph."""
         self.run(
             """
             UNWIND $sections AS s
@@ -202,8 +204,8 @@ class Neo4jClient:
                 print(f"    ✗ Figure batch {batch_num}/{total_batches} failed: {e}")
                 raise
 
-    # --- Vector-Retrieval ---
     def vector_search_paragraphs(self, embedding: List[float], k: int = 12) -> List[Dict[str, Any]]:
+        """Führt eine Vektorsuche über den Paragraph-Index aus und gibt die k ähnlichsten Treffer zurück."""
         return self.run(
             """
             CALL db.index.vector.queryNodes('paragraph_embedding_index', $k, $embedding)
@@ -231,6 +233,7 @@ class Neo4jClient:
         )
 
     def vector_search_figures(self, embedding: List[float], k: int = 6) -> List[Dict[str, Any]]:
+        """Führt eine Vektorsuche über den Figure-Index aus und gibt die k ähnlichsten Treffer zurück."""
         return self.run(
             """
             CALL db.index.vector.queryNodes('figure_embedding_index', $k, $embedding)
@@ -261,15 +264,12 @@ class Neo4jClient:
             {"embedding": embedding, "k": k},
         )
 
-    # --- Concepts & Topics ---
-
     def upsert_topic(self, name: str) -> None:
+        """Legt einen Topic-Knoten an, falls er noch nicht existiert."""
         self.run("MERGE (t:Topic {name:$name})", {"name": name})
 
     def add_concepts(self, topic_name: str, concepts: list[dict]) -> None:
-        """
-        concepts: [{concept_id, name, alt_labels, description, embedding}]
-        """
+        """Fügt Konzepte einem Topic hinzu (Felder: concept_id, name, alt_labels, description, embedding)."""
         self.run(
             """
             MERGE (t:Topic {name:$topic})
@@ -286,11 +286,7 @@ class Neo4jClient:
         )
 
     def link_paragraphs_to_concepts(self, paper_id: str, links: list[dict]) -> None:
-        """
-        links: [{paragraph_id, concept_id, confidence}]
-        - Hängt para->MENTIONS->concept
-        - Aggregiert zusätzlich paper->ABOUT->concept (gewichtete Summe)
-        """
+        """Verknüpft Paragraphen mit Konzepten (MENTIONS) und aggregiert Paper→ABOUT→Konzept-Gewichte."""
         self.run(
             """
             UNWIND $links AS L
@@ -306,10 +302,7 @@ class Neo4jClient:
         )
 
     def vector_search_concepts(self, embedding: list[float], k: int = 10, min_score: float = 0.0) -> list[dict]:
-        """
-        Vector similarity search for concepts with score threshold.
-        Returns concepts sorted by similarity score, filtered by min_score if provided.
-        """
+        """Vektorsuche über Konzepte mit optionalem Mindest-Score; gibt Treffer absteigend sortiert zurück."""
         return self.run(
             """
             CALL db.index.vector.queryNodes('concept_embedding_index', $k, $embedding)
@@ -328,11 +321,8 @@ class Neo4jClient:
             {"embedding": embedding, "k": k, "min_score": min_score},
         )
 
-    # --- Convenience: attach all topic concepts to the (single) umbrella if only one exists and they are unassigned ---
     def attach_concepts_to_existing_umbrella(self, topic_name: str) -> dict:
-        """If the topic has exactly one Umbrella and there are concepts without a NARROWER assignment,
-        attach them. Returns stats.
-        """
+        """Hängt nicht zugeordnete Konzepte an den einzigen vorhandenen Umbrella des Topics (falls genau einer existiert)."""
         umbrellas = self.run(
             """
             MATCH (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)
@@ -365,10 +355,7 @@ class Neo4jClient:
         return {"attached": len(unassigned), "umbrella_id": uid}
 
     def vector_search_similar_concepts(self, embedding: list[float], min_similarity: float = 0.92) -> list[dict]:
-        """
-        Find semantically similar existing concepts using vector similarity.
-        Returns only concepts above the similarity threshold.
-        """
+        """Findet semantisch ähnliche Konzepte via Vektorähnlichkeit über dem angegebenen Schwellwert."""
         return self.vector_search_concepts(embedding=embedding, k=5, min_score=min_similarity)
 
     def _get_single_value(self, cypher: str) -> int:
@@ -377,16 +364,7 @@ class Neo4jClient:
         return int(res[0]["c"]) if res and "c" in res[0] else 0
 
     def link_figures_to_concepts(self, figures: list[dict]) -> dict:
-        """
-        Verknüpft Figure-Knoten mit Concept-Knoten basierend auf den
-        von GPT-4o extrahierten Entitäten (aus analyze_and_embed_figures).
-        Erstellt: Figure -[:MENTIONS {confidence, source}]-> Concept
-
-        Args:
-            figures: Liste der gemergten Figure-Dicts (mit 'figure_id' und 'entities')
-        Returns:
-            {"linked": int, "attempted": int}
-        """
+        """Verknüpft Figure-Knoten mit passenden Konzepten über die extrahierten Entitätsnamen."""
         links = []
         for fig in figures:
             fig_id  = fig.get("figure_id")
@@ -421,12 +399,7 @@ class Neo4jClient:
         return {"linked": linked, "attempted": len(links)}
 
     def stitch_document_hierarchy(self) -> dict:
-        """
-        Verbindet Paragraphs/Figures mit ihren Sections basierend auf Seitenbereichen.
-        Erstellt Dummy-Sections für Paper ohne Sections.
-
-        Rückgabe: Stats über Verknüpfungen vor/nach dem Stitching.
-        """
+        """Verbindet Paragraphen und Figuren mit ihren Sections anhand von Seitenbereichen; erstellt Dummy-Sections falls nötig."""
         # Dummy-Section pro Paper falls nötig
         self.run("""
         MATCH (p:Paper)
@@ -476,18 +449,7 @@ class Neo4jClient:
         return stats
 
     def stitch_figures_to_paragraphs(self, prefix_length: int = 60, page_tolerance: int = 1) -> dict:
-        """
-        Verbindet Figures mit relevanten Paragraphen über drei Arten von Beziehungen:
-        1) CAPTIONS: Absatz enthält Prefix der (normalisierten) Caption
-        2) REFERS_TO: Absatz erwähnt figure_label (z.B. "Figure 2", "Fig. 2")
-        3) NEAR: Fallback für noch unverbundene Figures
-
-        Args:
-            prefix_length: Länge des Caption-Prefixes für den ersten CAPTIONS-Pass
-            page_tolerance: ±Seiten für Caption/Reference-Matching
-
-        Rückgabe: Stats über neue Verbindungen + Beispiele unverbundener Figures
-        """
+        """Verbindet Figures mit Paragraphen via CAPTIONS, REFERS_TO und NEAR-Beziehungen; gibt Statistiken zurück."""
         def cnt(rel: str) -> int:
             return self._get_single_value(f"MATCH ()-[r:{rel}]->() RETURN count(r) AS c")
 
@@ -603,15 +565,7 @@ class Neo4jClient:
         }
 
     def cluster_concepts_into_umbrellas(self, topic_name: str, sim_threshold: float = 0.86, min_cluster_size: int = 2) -> dict:
-        """
-        Bildet Umbrella-Knoten aus Concept-Embeddings für ein Topic.
-
-        Rückgabe: {"clusters": n_clusters, "umbrellas_created": n_created, "assigned": n_assigned}
-
-        Diese Methode repliziert die (einfache) Greedy-Clustering-Logik, die zuvor in
-        `scripts/gui_app.py` implementiert war, und stellt sie als wiederverwendbare Backend-Funktion
-        bereit, damit andere Teile der Applikation (CLI/GUI/Pipelines) dieselbe Logik nutzen.
-        """
+        """Gruppiert Konzepte eines Topics via Greedy-Clustering in Umbrella-Knoten."""
         import numpy as np
         # Konzepte + Embeddings laden
         concepts = self.run(
@@ -677,7 +631,7 @@ class Neo4jClient:
         return {"clusters": len(clusters), "umbrellas_created": created, "assigned": int(np.sum(assigned))}
 
     def _generate_umbrella_name(self, concept_names: list[str]) -> str:
-        """Generate a descriptive umbrella term from concept names using LLM."""
+        """Erzeugt per LLM einen beschreibenden Oberbegriff für eine Gruppe von Konzepten."""
         from openai import OpenAI
         client = OpenAI()
         
@@ -709,7 +663,7 @@ class Neo4jClient:
     # --- Umbrella Management Functions ---
     
     def list_umbrellas_for_topic(self, topic_name: str) -> list[dict]:
-        """List all umbrellas for a topic with their concepts."""
+        """Gibt alle Umbrella-Knoten eines Topics mit ihren zugeordneten Konzepten zurück."""
         return self.run(
             """
             MATCH (t:Topic {name:$topic})-[:HAS_UMBRELLA]->(u:Umbrella)
@@ -727,7 +681,7 @@ class Neo4jClient:
         )
     
     def rename_umbrella(self, umbrella_id: str, new_name: str) -> dict:
-        """Rename an umbrella."""
+        """Benennt einen Umbrella-Knoten um."""
         self.run(
             """
             MATCH (u:Umbrella {umbrella_id:$uid})
@@ -738,7 +692,7 @@ class Neo4jClient:
         return {"umbrella_id": umbrella_id, "new_name": new_name}
     
     def delete_umbrella(self, umbrella_id: str, reassign_to: str | None = None) -> dict:
-        """Delete an umbrella. If reassign_to is provided, move concepts to that umbrella."""
+        """Löscht einen Umbrella-Knoten und verschiebt dessen Konzepte optional in einen anderen."""
         if reassign_to:
             # Move concepts to another umbrella
             self.run(
@@ -764,7 +718,7 @@ class Neo4jClient:
         return {"deleted": result[0]["deleted"] if result else 0, "reassigned": bool(reassign_to)}
     
     def merge_umbrellas(self, umbrella_ids: list[str], new_name: str | None = None) -> dict:
-        """Merge multiple umbrellas into the first one, optionally renaming it."""
+        """Zusammenführen mehrerer Umbrella-Knoten in den ersten; optionale Umbenennung möglich."""
         if len(umbrella_ids) < 2:
             return {"error": "Need at least 2 umbrellas to merge"}
         
@@ -815,7 +769,7 @@ class Neo4jClient:
     # --- Concept Management Functions ---
     
     def list_concepts_for_topic(self, topic_name: str) -> list[dict]:
-        """List all concepts for a topic with their metadata."""
+        """Gibt alle Konzepte eines Topics mit Metadaten und Mention-Zählern zurück."""
         return self.run(
             """
             MATCH (t:Topic {name:$topic})-[:HAS_CONCEPT]->(c:Concept)
@@ -833,9 +787,9 @@ class Neo4jClient:
             {"topic": topic_name}
         )
     
-    def update_concept(self, concept_id: str, name: str | None = None, 
+    def update_concept(self, concept_id: str, name: str | None = None,
                       alt_labels: list[str] | None = None, description: str | None = None) -> dict:
-        """Update concept metadata."""
+        """Aktualisiert Name, Alternativbezeichnungen und Beschreibung eines Konzepts."""
         updates = []
         params = {"cid": concept_id}
         
@@ -862,7 +816,7 @@ class Neo4jClient:
         return {"concept_id": concept_id, "updated_fields": list(params.keys())}
     
     def delete_concept(self, concept_id: str) -> dict:
-        """Delete a concept and all its relationships."""
+        """Löscht ein Konzept und alle zugehörigen Beziehungen aus dem Graph."""
         result = self.run(
             """
             MATCH (c:Concept {concept_id:$cid})
@@ -907,16 +861,7 @@ class Neo4jClient:
         return result or []
 
     def delete_paper(self, paper_id: str) -> Dict[str, Any]:
-        """
-        Löscht ein Paper und alle zugehörigen Knoten/Kanten vollständig aus dem Graph.
-
-        Gelöscht werden: Paragraphen, Abbildungen, Abschnitte, SEMANTIC_RELATION-
-        und CO_OCCURS_WITH-Kanten mit dieser paper_id sowie der Paper-Knoten selbst.
-        Konzepte bleiben erhalten (können paper-übergreifend geteilt sein).
-
-        Returns:
-            {"paper_id": str, "deleted": {"papers", "paragraphs", "figures", "sections"}}
-        """
+        """Löscht ein Paper mit allen Paragraphen, Abbildungen und Abschnitten; Konzepte bleiben erhalten."""
         # Zähle vor dem Löschen für die Rückmeldung
         counts = self.run(
             """
@@ -975,7 +920,7 @@ class Neo4jClient:
         }
     
     def merge_concepts(self, source_id: str, target_id: str) -> dict:
-        """Merge source concept into target concept."""
+        """Verschmilzt ein Quell-Konzept in ein Ziel-Konzept und überträgt alle MENTIONS-Kanten."""
         # Get source info for potential alt_labels update
         source_info = self.run(
             """
@@ -1030,24 +975,7 @@ class Neo4jClient:
     # =============================================================================
 
     def add_semantic_relations(self, paper_id: str, relations: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Add semantic relations extracted from a paper.
-        
-        Args:
-            paper_id: The paper ID these relations belong to
-            relations: List of relation dicts with structure:
-                {
-                    "subject": str,  # Entity name
-                    "predicate": str,  # Relation type (IS_A, PART_OF, etc.)
-                    "object": str,  # Entity name
-                    "confidence": float,  # 0.0-1.0
-                    "context": str,  # Sentence/phrase where relation appears
-                    "source": str  # "llm" or "cooccurrence"
-                }
-        
-        Returns:
-            Statistics about relations created/updated
-        """
+        """Schreibt extrahierte semantische Relationen eines Papers als SEMANTIC_RELATION-Kanten in den Graph."""
         import logging
         log = logging.getLogger(__name__)
         
@@ -1126,22 +1054,7 @@ class Neo4jClient:
         return stats
 
     def add_cooccurrence_relations(self, paper_id: str, cooccurrences: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Add co-occurrence relations between concepts.
-        
-        Args:
-            paper_id: The paper ID these relations belong to
-            cooccurrences: List of dicts with:
-                {
-                    "concept1": str,
-                    "concept2": str,
-                    "count": int,
-                    "strength": float  # normalized 0.0-1.0
-                }
-        
-        Returns:
-            Statistics about relations created
-        """
+        """Schreibt Ko-Okkurrenz-Beziehungen zwischen Konzepten als CO_OCCURS_WITH-Kanten."""
         import logging
         log = logging.getLogger(__name__)
         
@@ -1208,19 +1121,9 @@ class Neo4jClient:
         
         return stats
 
-    def get_concept_relations(self, concept_id: str, relation_types: List[str] = None, 
+    def get_concept_relations(self, concept_id: str, relation_types: List[str] = None,
                              min_confidence: float = 0.0) -> Dict[str, Any]:
-        """
-        Get all relations for a concept.
-        
-        Args:
-            concept_id: The concept ID
-            relation_types: Optional list of relation types to filter (e.g., ["IS_A", "PART_OF"])
-            min_confidence: Minimum confidence threshold
-        
-        Returns:
-            Dict with outgoing and incoming relations
-        """
+        """Gibt alle semantischen und Ko-Okkurrenz-Relationen eines Konzepts zurück."""
         type_filter = ""
         if relation_types:
             types_str = ", ".join([f"'{t}'" for t in relation_types])
@@ -1279,7 +1182,7 @@ class Neo4jClient:
         }
 
     def _concept_slug(self, name: str) -> str:
-        """Create a slug for concept ID (same logic as in concept_extract.py)."""
+        """Normalisiert einen Konzept-Namen zu einem URL-sicheren Slug als Konzept-ID."""
         import re
         slug = name.lower().strip()
         slug = re.sub(r"[^\w\s-]", "", slug)

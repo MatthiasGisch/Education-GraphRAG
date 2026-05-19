@@ -1,8 +1,4 @@
-# src/entity_relation_extract.py
-"""
-Hybrid Entity & Relation Extraction
-Combines NER (spaCy/SciSpacy) with LLM-based extraction for robust concept and relation discovery.
-"""
+"""Hybride Entitäts- und Relationsextraktion: kombiniert NER (spaCy/SciSpacy) mit LLM-Extraktion."""
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
 import os
@@ -24,11 +20,7 @@ _BRACE_JSON_RE = re.compile(r"(\{[\s\S]*\})", re.DOTALL)
 
 
 def _parse_json_robust(text: str) -> dict:
-    """
-    Versucht JSON aus einem LLM-Response-String zu extrahieren.
-    Funktioniert auch wenn das Modell Präambeln, Markdown-Blöcke oder
-    Erklärungstext um das JSON herum ausgibt (häufig bei lokalen Modellen).
-    """
+    """Extrahiert JSON aus LLM-Antworten robust auch bei Markdown-Blöcken oder Präambeln."""
     if not text:
         return {}
     # 1) Direkt parsen (OpenAI-Modelle liefern sauberes JSON)
@@ -55,7 +47,7 @@ def _parse_json_robust(text: str) -> dict:
 
 
 def _get_spacy_nlp():
-    """Lazy-load standard spaCy model."""
+    """Lädt das Standard-spaCy-Modell lazy beim ersten Aufruf."""
     global _SPACY_NLP
     if _SPACY_NLP is None:
         try:
@@ -80,7 +72,7 @@ def _get_spacy_nlp():
 
 
 def _get_scispacy_nlp():
-    """Lazy-load SciSpacy model for scientific text."""
+    """Lädt das SciSpacy-Modell für wissenschaftliche Texte lazy beim ersten Aufruf."""
     global _SCISPACY_NLP
     if _SCISPACY_NLP is None:
         try:
@@ -105,7 +97,7 @@ def _get_scispacy_nlp():
 
 
 def _embed(texts: List[str]) -> List[List[float]]:
-    """Generate embeddings for a list of texts."""
+    """Erstellt Embedding-Vektoren für eine Liste von Texten; liefert Null-Vektoren als Fallback."""
     if not texts:
         return []
     try:
@@ -121,18 +113,7 @@ def _embed(texts: List[str]) -> List[List[float]]:
 # =============================================================================
 
 def extract_entities_ner(text: str, use_scispacy: bool = True) -> Dict[str, List[str]]:
-    """
-    Extract entities using spaCy/SciSpacy NER.
-    
-    Returns:
-        Dictionary with entity types as keys and lists of entity texts as values.
-        Example: {
-            "PERSON": ["Einstein", "Curie"],
-            "ORG": ["MIT", "NASA"],
-            "SCIENTIFIC_TERM": ["neural network", "gradient descent"],
-            ...
-        }
-    """
+    """Extrahiert Entitäten via spaCy/SciSpacy NER und gibt sie nach Typ gruppiert zurück."""
     entities = {
         "PERSON": [],
         "ORG": [],
@@ -204,17 +185,7 @@ def extract_concepts_llm(
     max_concepts: int = 15,
     existing_entities: Optional[Dict[str, List[str]]] = None
 ) -> List[Dict[str, Any]]:
-    """
-    Extract abstract concepts using LLM that NER might miss.
-    
-    Args:
-        text: Text to analyze
-        max_concepts: Maximum number of concepts to extract
-        existing_entities: Already extracted entities from NER (to avoid duplication)
-    
-    Returns:
-        List of concept dicts: [{"name": str, "type": str, "description": str}, ...]
-    """
+    """Extrahiert abstrakte Konzepte via LLM, die NER-Modelle typisch übersehen."""
     # Build prompt with context about already found entities
     ner_context = ""
     if existing_entities:
@@ -292,16 +263,7 @@ def extract_entities_hybrid(
     max_llm_concepts: int = 15,
     use_scispacy: bool = True
 ) -> Dict[str, Any]:
-    """
-    Hybrid approach: Combine NER (fast, structured) with LLM (semantic, flexible).
-    
-    Returns:
-        {
-            "ner_entities": {...},  # From spaCy/SciSpacy
-            "llm_concepts": [...],  # From LLM
-            "all_entities": [...]   # Merged and deduplicated list
-        }
-    """
+    """Kombiniert NER und LLM-Extraktion zu einer deduplizierten Entitätsliste."""
     # Step 1: NER extraction
     ner_entities = extract_entities_ner(text, use_scispacy=use_scispacy)
     
@@ -317,7 +279,7 @@ def extract_entities_hybrid(
     
     # Filter to exclude trivial entities (single chars, numbers, etc.)
     def is_valid_entity(name: str) -> bool:
-        """Check if entity name is meaningful enough to be a concept."""
+        """Prüft ob ein Entitätsname lang und inhaltlich genug für ein Konzept ist."""
         name = name.strip()
         # Exclude too short
         if len(name) < 3:
@@ -379,14 +341,8 @@ def extract_relations_llm(
     entities: List[Dict[str, Any]],
     max_relations: int = 20
 ) -> List[Dict[str, Any]]:
-    """
-    Extract semantic relations between entities as (subject, predicate, object) triplets.
-    
-    Args:
-        text: Text to analyze
-        entities: List of entities found in the text
-        max_relations: Maximum number of relations to extract
-    
+    """Extrahiert semantische Relationen als (Subjekt, Prädikat, Objekt)-Tripel via LLM.
+
     Returns:
         List of relation dicts: [
             {
@@ -495,17 +451,7 @@ def extract_cooccurrence_relations(
     paragraphs: List[Dict[str, Any]],
     window_size: int = 50
 ) -> List[Dict[str, Any]]:
-    """
-    Extract co-occurrence based relations (entities appearing near each other).
-    
-    Args:
-        entities: List of entities
-        paragraphs: List of paragraph dicts with 'text' field
-        window_size: Character window for co-occurrence
-    
-    Returns:
-        List of co-occurrence relations with weights
-    """
+    """Ermittelt Ko-Okkurrenz-Relationen zwischen Entitäten innerhalb eines Zeichenfensters."""
     from collections import defaultdict
     
     cooccur = defaultdict(int)
@@ -560,24 +506,7 @@ def extract_entities_and_relations(
     use_scispacy: bool = True,
     extract_cooccurrence: bool = True
 ) -> Dict[str, Any]:
-    """
-    Complete pipeline: Extract entities (hybrid NER+LLM) and relations (LLM+co-occurrence).
-    
-    Args:
-        text: Full text to analyze
-        paragraphs: Optional list of paragraph dicts for co-occurrence analysis
-        max_entities: Maximum entities to extract via LLM
-        max_relations: Maximum relations to extract
-        use_scispacy: Use SciSpacy for scientific text
-        extract_cooccurrence: Also extract co-occurrence relations
-    
-    Returns:
-        {
-            "entities": [...],  # All extracted entities with embeddings
-            "relations": [...],  # All extracted relations
-            "stats": {...}  # Extraction statistics
-        }
-    """
+    """Vollständige Pipeline: hybride Entitätsextraktion + semantische und Ko-Okkurrenz-Relationen."""
     log.info("Starting hybrid entity and relation extraction...")
     
     # Step 1: Extract entities (NER + LLM)

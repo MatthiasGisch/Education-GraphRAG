@@ -1,3 +1,4 @@
+"""CLI-Skript: stellt eine Frage ans GraphRAG-System und gibt die Antwort auf der Konsole aus."""
 from pathlib import Path
 import sys, json
 
@@ -9,6 +10,7 @@ from src.neo import Neo4jClient
 from src.agent import answer_query
 
 def main():
+    """Liest eine Frage aus den Kommandozeilenargumenten und gibt die belegte Antwort aus."""
     if len(sys.argv) < 2:
         print('Usage: python scripts/ask.py "Deine Frage hier"')
         sys.exit(1)

@@ -1,3 +1,4 @@
+"""Lokaler Video-Generator: konvertiert PPTX-Folien via PIL und MoviePy in ein MP4-Video."""
 from __future__ import annotations
 from typing import List, Optional
 from pathlib import Path
@@ -16,6 +17,7 @@ DEFAULT_H = 720
 
 
 def extract_slide_texts(pptx_path: str) -> List[str]:
+    """Extrahiert den Textinhalt aller Folien einer PPTX-Datei als Liste von Strings."""
     prs = Presentation(pptx_path)
     slides_texts: List[str] = []
     for slide in prs.slides:
@@ -35,6 +37,7 @@ def extract_slide_texts(pptx_path: str) -> List[str]:
 
 def _make_image_from_text(text: str, out_path: Path, width: int = DEFAULT_W, height: int = DEFAULT_H,
                           bg_color: str = "white", title: Optional[str] = None) -> str:
+    """Rendert einen Folientext als PNG-Bild und gibt den Dateipfad zurück."""
     img = Image.new("RGB", (width, height), color=bg_color)
     draw = ImageDraw.Draw(img)
 
@@ -65,6 +68,7 @@ def _make_image_from_text(text: str, out_path: Path, width: int = DEFAULT_W, hei
 
 def render_slide_images(pptx_path: str, out_dir: str, prefix: str = "slide", width: int = DEFAULT_W,
                         height: int = DEFAULT_H) -> List[str]:
+    """Rendert alle PPTX-Folien als PNG-Bilder in out_dir und gibt die Pfade zurück."""
     out_dir_p = Path(out_dir)
     out_dir_p.mkdir(parents=True, exist_ok=True)
     slides = extract_slide_texts(pptx_path)
@@ -83,6 +87,7 @@ def render_slide_images(pptx_path: str, out_dir: str, prefix: str = "slide", wid
 
 def create_video_from_images(image_paths: List[str], out_path: str, duration_per_slide: float = 4.0,
                              fps: int = 24, audio_path: Optional[str] = None) -> str:
+    """Erstellt ein MP4-Video aus einer Liste von PNG-Bildern mit optionalem Audio-Track."""
     clips = []
     for img in image_paths:
         clip = ImageClip(img).set_duration(duration_per_slide)
@@ -103,6 +108,7 @@ def create_video_from_images(image_paths: List[str], out_path: str, duration_per
 
 def generate_video_from_pptx(pptx_path: str, out_dir: str, duration_per_slide: float = 4.0,
                              width: int = DEFAULT_W, height: int = DEFAULT_H) -> str:
+    """Konvertiert eine PPTX-Datei vollständig in ein lokales MP4-Video."""
     slides = extract_slide_texts(pptx_path)
     images_dir = Path(out_dir) / f"slides_{uuid.uuid4().hex[:8]}"
     images = render_slide_images(pptx_path, str(images_dir), width=width, height=height)

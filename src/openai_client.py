@@ -1,3 +1,4 @@
+"""OpenAI- und LM-Studio-Client-Factories sowie Hilfsfunktionen für Embeddings, Vision und RAG-Antworten."""
 from __future__ import annotations
 import base64, json, re, time
 from typing import List, Dict, Any
@@ -5,48 +6,51 @@ from openai import OpenAI, RateLimitError
 from . import config as cfg
 
 
-# ---------------------------------------------------------------------------
-# Interne Client-Factories (lesen cfg zur Laufzeit → GUI-Änderungen wirken)
-# ---------------------------------------------------------------------------
-
 def _make_openai_client() -> OpenAI:
+    """Erstellt einen authentifizierten OpenAI-Client; wirft RuntimeError wenn API-Key fehlt."""
     if not cfg.OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY fehlt. Bitte in der Sidebar oder .env eintragen.")
     return OpenAI(api_key=cfg.OPENAI_API_KEY, max_retries=6)
 
 
 def _make_lmstudio_client() -> OpenAI:
+    """Erstellt einen OpenAI-kompatiblen Client für den lokalen LM-Studio-Server."""
     return OpenAI(base_url=cfg.LMSTUDIO_BASE_URL, api_key="lm-studio")
 
 
 def _chat_client() -> OpenAI:
+    """Gibt je nach LLM_MODE den LM-Studio- oder OpenAI-Client zurück."""
     return _make_lmstudio_client() if cfg.LLM_MODE == "local" else _make_openai_client()
 
 
 def _embed_client() -> OpenAI:
+    """Gibt den passenden Embedding-Client abhängig vom LLM_MODE zurück."""
     return _make_lmstudio_client() if cfg.LLM_MODE == "local" else _make_openai_client()
 
 
-# Modell-Auswahl zur Laufzeit
 def _chat_model() -> str:
+    """Gibt den aktiven Chat-Modellnamen abhängig vom LLM_MODE zurück."""
     return cfg.LMSTUDIO_CHAT_MODEL if cfg.LLM_MODE == "local" else "gpt-4o-mini"
 
 
 def _vision_model() -> str:
+    """Gibt den aktiven Vision-Modellnamen abhängig vom LLM_MODE zurück."""
     return cfg.LMSTUDIO_VISION_MODEL if cfg.LLM_MODE == "local" else "gpt-4o-mini"
 
 
 def _embed_model() -> str:
+    """Gibt den aktiven Embedding-Modellnamen abhängig vom LLM_MODE zurück."""
     return cfg.LMSTUDIO_EMBED_MODEL if cfg.LLM_MODE == "local" else "text-embedding-3-large"
 
 
-# Rückwärtskompatibilität: client() wird von altem Code noch erwartet
 def client() -> OpenAI:
+    """Rückwärtskompatible Kurzform für _chat_client()."""
     return _chat_client()
 
 
 # ---- Embeddings ----
 def embed_text(text: str, model: str | None = None) -> List[float]:
+    """Erstellt einen Embedding-Vektor für einen einzelnen Text mit automatischem Retry."""
     m = model or _embed_model()
     for attempt in range(6):
         try:
@@ -60,7 +64,7 @@ def embed_text(text: str, model: str | None = None) -> List[float]:
 
 
 def embed_texts_batch(texts: List[str], model: str | None = None, batch_size: int = 50) -> List[List[float]]:
-    """Sendet Embeddings in Batches und wiederholt bei Rate-Limit-Fehlern."""
+    """Erstellt Embedding-Vektoren für eine Liste von Texten in Batches mit Retry-Logik."""
     m = model or _embed_model()
     results: List[List[float]] = []
     for i in range(0, len(texts), batch_size):
@@ -80,6 +84,7 @@ def embed_texts_batch(texts: List[str], model: str | None = None, batch_size: in
 
 # ---- Vision: Bild beschreiben ----
 def _image_to_data_url(path: str) -> str:
+    """Kodiert eine Bilddatei als Base64-Data-URL für die Vision-API."""
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
@@ -87,6 +92,7 @@ def _image_to_data_url(path: str) -> str:
 
 
 def describe_image(path: str) -> Dict[str, Any]:
+    """Analysiert eine Abbildung per Vision-Modell und gibt caption, figure_type, entities und ocr_hints zurück."""
     data_url = _image_to_data_url(path)
     system = (
         "Du bist ein wissenschaftlicher Bild-Analyst für akademische Publikationen. "
@@ -144,6 +150,7 @@ def describe_image(path: str) -> Dict[str, Any]:
 
 
 def grounded_answer(query: str, supports: List[Dict[str, Any]], max_supports: int = 20) -> str:
+    """Generiert eine didaktisch aufbereitete, belegte Antwort auf Basis von Retrieval-Supports."""
     # Lokales Modell: Kontextfenster schonen (typisch 4096 Tokens)
     _local = cfg.LLM_MODE == "local"
     if _local:

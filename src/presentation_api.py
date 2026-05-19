@@ -1,3 +1,4 @@
+"""FastAPI-Endpunkte zur Präsentationsgenerierung aus Nutzeranfragen via Graph-Retrieval."""
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -12,6 +13,7 @@ from .gamma_client import generate_presentation
 app = FastAPI(title="Presentation Generator")
 
 class CreateReq(BaseModel):
+    """Anfrage-Schema für den POST /presentations Endpunkt."""
     query: str
     use_gamma: Optional[bool] = True
     web_mode: Optional[str] = None
@@ -19,6 +21,7 @@ class CreateReq(BaseModel):
 
 @app.post("/presentations")
 def create_presentation(req: CreateReq):
+    """Beantwortet die Anfrage per Graph-Retrieval und generiert daraus eine Präsentation."""
     # 1) Connect to Neo4j
     try:
         neo = Neo4jClient()
@@ -49,6 +52,7 @@ def create_presentation(req: CreateReq):
 
 @app.get("/presentations/download")
 def download_presentation(path: str):
+    """Liefert eine generierte PPTX-Datei als Download-Response."""
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found")
     # stream file

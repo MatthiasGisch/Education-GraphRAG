@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Check if concept index exists and has data."""
+"""Prüft ob der Konzept-Vektorindex in Neo4j existiert und Daten mit Embeddings enthält."""
 from src.neo import Neo4jClient
 
 neo = Neo4jClient()

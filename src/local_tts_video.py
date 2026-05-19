@@ -1,16 +1,4 @@
-"""
-Lokale Video-Generierung aus PPTX.
-
-Pipeline:
-  PPTX → Folienbilder (PIL) + Narrationstexte (optional LLM) → TTS-Audio → MP4 (MoviePy)
-
-Benötigte Pakete (einmalig installieren):
-  pip install moviepy edge-tts pyttsx3
-
-TTS-Backends (Priorität):
-  1. edge-tts   – Microsoft Edge TTS, kostenlos, sehr gute Qualität, pip install edge-tts
-  2. pyttsx3    – vollständig offline, Windows SAPI / Linux eSpeak, pip install pyttsx3
-"""
+"""Lokale Video-Generierung: PPTX → Folienbilder + LLM-Narration → TTS-Audio → MP4 via MoviePy."""
 from __future__ import annotations
 
 import asyncio
@@ -38,6 +26,7 @@ DEFAULT_EDGE_VOICE_EN = "en-US-AriaNeural"
 # ---------------------------------------------------------------------------
 
 def extract_slide_texts(pptx_path: str) -> List[str]:
+    """Extrahiert den Textinhalt aller Folien einer PPTX-Datei als Liste von Strings."""
     prs = Presentation(pptx_path)
     result = []
     for slide in prs.slides:
@@ -59,6 +48,7 @@ def extract_slide_texts(pptx_path: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 def _render_slide_image(text: str, out_path: Path, width: int, height: int) -> str:
+    """Rendert einen Folientext als PNG-Bild im Dark-Mode-Design und gibt den Pfad zurück."""
     img = Image.new("RGB", (width, height), color="#1e1e2e")
     draw = ImageDraw.Draw(img)
 
@@ -92,6 +82,7 @@ def _render_slide_image(text: str, out_path: Path, width: int, height: int) -> s
 
 def render_slide_images(pptx_path: str, out_dir: str,
                         width: int = DEFAULT_W, height: int = DEFAULT_H) -> List[str]:
+    """Rendert alle Folien einer PPTX als PNG-Bilder in out_dir und gibt die Pfade zurück."""
     slides = extract_slide_texts(pptx_path)
     out = []
     for i, text in enumerate(slides, start=1):
@@ -106,10 +97,7 @@ def render_slide_images(pptx_path: str, out_dir: str,
 # ---------------------------------------------------------------------------
 
 def generate_narration_with_llm(slide_texts: List[str], language: str = "de") -> List[str]:
-    """
-    Lässt das konfigurierte Sprachmodell (Cloud oder LM Studio) einen
-    natürlichen Vortragstext pro Folie erzeugen.
-    """
+    """Erzeugt per LLM natürliche Vortragstexte für jede Folie."""
     from .openai_client import _chat_client, _chat_model
 
     lang_name = "Deutsch" if language == "de" else "Englisch"
@@ -230,12 +218,7 @@ def _write_silence_mp3(out_path: Path, duration_sec: float = 1.0):
 def generate_audio(texts: List[str], out_dir: Path,
                    backend: str = "edge-tts",
                    voice: str = "") -> List[str]:
-    """
-    Erzeugt Audiodateien für alle Folien.
-
-    backend: "edge-tts" | "pyttsx3"
-    voice:   Stimmname, leer = Standardstimme
-    """
+    """Erzeugt TTS-Audiodateien für alle Folientexte via edge-tts oder pyttsx3."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if backend == "edge-tts":
@@ -254,10 +237,7 @@ def generate_audio(texts: List[str], out_dir: Path,
 def assemble_video(image_paths: List[str], audio_paths: List[str],
                    out_path: str, fallback_duration: float = 5.0,
                    fps: int = 24) -> str:
-    """
-    Kombiniert Folienbilder + Audiodateien zu einem MP4-Video.
-    Jede Folie dauert so lange wie die zugehörige Audiodatei.
-    """
+    """Fügt Folienbilder und Audiodateien zu einem MP4-Video zusammen."""
     try:
         from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
     except ImportError:
@@ -311,22 +291,7 @@ def generate_local_video(
     height: int = DEFAULT_H,
     progress_callback=None,
 ) -> str:
-    """
-    Vollständige lokale Video-Pipeline.
-
-    Args:
-        pptx_path:          Pfad zur PPTX-Datei
-        out_dir:            Ausgabeverzeichnis
-        tts_backend:        "edge-tts" (empfohlen) oder "pyttsx3" (offline)
-        tts_voice:          Stimmname (leer = Standardstimme)
-        use_llm_narration:  True → LLM generiert natürlichen Vortragstext
-        narration_language: "de" oder "en"
-        fallback_duration:  Foliendauer in Sekunden falls kein Audio
-        width / height:     Videoauflösung
-
-    Returns:
-        Pfad zur fertigen MP4-Datei
-    """
+    """Vollständige lokale Video-Pipeline: PPTX → TTS-Audio → MP4-Video."""
     out_dir_p = Path(out_dir)
     tmp_dir = out_dir_p / f"_tmp_{uuid.uuid4().hex[:8]}"
     tmp_dir.mkdir(parents=True, exist_ok=True)

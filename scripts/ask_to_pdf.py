@@ -1,4 +1,4 @@
-# scripts/ask_to_pdf.py
+"""CLI-Skript: stellt eine Frage ans GraphRAG-System und speichert die Antwort als PDF."""
 from __future__ import annotations
 import sys, os, re, time, json
 from pathlib import Path
@@ -12,11 +12,13 @@ from src.agent import answer_query
 from src.pdf_export import write_answer_pdf
 
 def slugify(s: str) -> str:
+    """Normalisiert einen String zu einem URL-sicheren Slug für Dateinamen."""
     s = s.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
     return re.sub(r"-+", "-", s).strip("-")[:60] or "answer"
 
 def main():
+    """Beantwortet eine Frage und exportiert die Antwort mit Belegen als PDF in exports/."""
     if len(sys.argv) < 2:
         print('Usage: python -m scripts.ask_to_pdf "Deine Frage hier"')
         sys.exit(1)

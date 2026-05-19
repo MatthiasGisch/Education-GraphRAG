@@ -1,9 +1,4 @@
-# src/citation_validator.py
-"""
-Citation Validation System für GenerierteTexte
-- Semantic Similarity Check (Mittlere Variante)
-- Detaillierter Audit Report (Umfassende Variante)
-"""
+"""Zitationsvalidierung: prüft LLM-generierte Texte per semantischer Ähnlichkeit gegen Quell-Supports."""
 
 import re
 from typing import Dict, List, Any, Tuple
@@ -11,11 +6,7 @@ from .openai_client import embed_text
 
 
 def _extract_citations_from_text(text: str) -> List[Tuple[str, str]]:
-    """
-    Extrahiert alle Citations aus dem Text.
-    Unterstützt: [1], [2], [1; 2; 3] (numerisch) und [Pxxx], [Fxxx] (ID-basiert)
-    Gibt Liste von (citation_id, surrounding_sentence) zurück.
-    """
+    """Extrahiert numerische [1] und ID-basierte [Pxxx]/[Fxxx] Zitationen mit Kontext aus dem Text."""
     citations = []
     
     # Pattern 1: Numerische Zitationen [1], [2], [1; 2], etc.
@@ -57,10 +48,7 @@ def _extract_citations_from_text(text: str) -> List[Tuple[str, str]]:
 
 
 def _find_support_by_id(supports: List[Dict[str, Any]], citation_id: str) -> Dict[str, Any] | None:
-    """
-    Findet das Support-Dokument für eine gegebene Citation-ID.
-    Citation ID Format: P12345abc (Paragraph) oder F67890def (Figure)
-    """
+    """Sucht das zum Zitationsschlüssel passende Support-Dokument (P=Paragraph, F=Figure)."""
     citation_type = citation_id[0]  # 'P' oder 'F'
     
     for support in supports:
@@ -79,10 +67,7 @@ def _find_support_by_id(supports: List[Dict[str, Any]], citation_id: str) -> Dic
 
 
 def calculate_semantic_similarity(text1: str, text2: str) -> float:
-    """
-    Berechnet Semantic Similarity zwischen zwei Texten via Embeddings.
-    Wertebereich: 0.0 (völlig unterschiedlich) bis 1.0 (identisch)
-    """
+    """Berechnet die Kosinus-Ähnlichkeit zweier Texte via Embeddings (0.0–1.0)."""
     try:
         # Kürze sehr lange Texte für Performance
         text1_short = text1[:300] if len(text1) > 300 else text1
@@ -114,21 +99,7 @@ def validate_citations(
     supports: List[Dict[str, Any]],
     similarity_threshold: float = 0.65
 ) -> Dict[str, Any]:
-    """
-    Validiert alle Citations im Text gegen die Support-Dokumente.
-    Für numerische Zitationen [1], [2], ... wird nur geprüft, ob Supports vorhanden sind.
-    Für ID-basierte Zitationen [Pxxx], [Fxxx] wird semantische Ähnlichkeit geprüft.
-    
-    Returns:
-        {
-            "total_citations": int,
-            "valid_count": int,
-            "invalid_count": int,
-            "warning_count": int,
-            "warnings": List[str],
-            "details": [...]
-        }
-    """
+    """Validiert alle Zitationen im generierten Text semantisch gegen die Quell-Supports."""
     
     citations = _extract_citations_from_text(generated_text)
     details = []
@@ -258,9 +229,7 @@ def validate_citations(
 
 
 def generate_audit_report(validation_result: Dict[str, Any]) -> str:
-    """
-    Generiert einen detaillierten Audit-Report aus dem Validierungsergebnis.
-    """
+    """Erzeugt einen lesbaren Text-Audit-Report aus dem Zitationsvalidierungsergebnis."""
     report = []
     report.append("=" * 80)
     report.append("CITATION VALIDATION AUDIT REPORT")

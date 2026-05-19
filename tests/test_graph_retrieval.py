@@ -1,15 +1,4 @@
-"""
-Manueller Integrationstest für den Graph-Traversal-Retriever.
-
-Ausführen:
-    python -m tests.test_graph_retrieval
-
-Prüft:
-  1. MENTIONS-Kanten vorhanden (Voraussetzung für Graph-Traversal)
-  2. _paragraphs_via_concepts liefert Ergebnisse via Graph-Traversal
-  3. concept_based_retrieve liefert Ergebnisse und zeigt den Pfad
-  4. Vergleich: Graph-Traversal vs. reine Vektorsuche (debug-Output)
-"""
+"""Manueller Integrationstest für den Graph-Traversal-Retriever: prüft MENTIONS-Kanten und concept_based_retrieve."""
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -20,12 +9,14 @@ from src.openai_client import embed_text
 
 
 def separator(title: str):
+    """Gibt einen formatierten Trennbalken mit Titel auf stdout aus."""
     print(f"\n{'='*60}")
     print(f"  {title}")
     print('='*60)
 
 
 def main():
+    """Führt alle vier Retrieval-Tests sequenziell aus und gibt Diagnosedaten aus."""
     neo = Neo4jClient()
 
     # ----------------------------------------------------------------

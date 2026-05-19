@@ -1,4 +1,4 @@
-# src/retriever.py
+"""Retrieval-Funktionen für Paragraphen, Abbildungen und Konzepte via Vektor- und Graph-Suche."""
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import os
@@ -17,12 +17,7 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-large")  # 3072-D
 
 
 def _embed_query(text: str) -> List[float]:
-    """Erzeugt eine Query-Embedding-Vektorrepräsentation.
-
-    Diese Funktion verwendet die zentrale `embed_text`-Hilfe aus `openai_client.py`.
-    Dadurch vermeiden wir, beim Import bereits einen OpenAI-Client zu instanziieren
-    und erhalten konsistente Fehlerbehandlung (z. B. wenn OPENAI_API_KEY fehlt).
-    """
+    """Erzeugt einen Embedding-Vektor für einen Query-Text über embed_text."""
     try:
         emb = embed_text(text, model=EMBED_MODEL)
     except Exception as e:
@@ -35,9 +30,7 @@ def _embed_query(text: str) -> List[float]:
 # Neo4j Vector-Suche (Paragraphs / Figures)
 # =========================
 def _vsearch_paragraphs(neo: Neo4jClient, embedding: List[float], k: int = 24) -> List[Dict[str, Any]]:
-    """
-    Vector-Suche über Paragraph-Index. Liefert direkt verwertbare 'supports'-Einträge (type='paragraph').
-    """
+    """Vektorsuche im Paragraph-Index; gibt supports-Einträge mit type='paragraph' zurück."""
     rows = neo.run(
         """
         CALL db.index.vector.queryNodes('paragraph_embedding_index', $k, $embedding)
@@ -70,9 +63,7 @@ def _vsearch_paragraphs(neo: Neo4jClient, embedding: List[float], k: int = 24) -
 
 
 def _vsearch_figures(neo: Neo4jClient, embedding: List[float], k: int = 8) -> List[Dict[str, Any]]:
-    """
-    Vector-Suche über Figure-Index. Liefert 'supports'-Einträge (type='figure') inkl. image_uri/caption.
-    """
+    """Vektorsuche im Figure-Index; gibt supports-Einträge mit type='figure' inkl. Bildpfad zurück."""
     rows = neo.run(
         """
         CALL db.index.vector.queryNodes('figure_embedding_index', $k, $embedding)
@@ -112,10 +103,7 @@ def _vsearch_figures(neo: Neo4jClient, embedding: List[float], k: int = 8) -> Li
 
 
 def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict[str, Any]], limit: int = 200) -> None:
-    """
-    Ergänzt zu bereits gefundenen Figure-Supports passende Paragraph-Supports über REFERS_TO/CAPTIONS.
-    Dedupliziert gegen bereits vorhandene Paragraphs. Modifiziert 'supports' IN PLACE.
-    """
+    """Ergänzt Paragraph-Supports zu gefundenen Figures via REFERS_TO/CAPTIONS in-place."""
     top_figs = [s for s in supports if s.get("type") == "figure" and s.get("figure_id")]
     if not top_figs:
         return
@@ -159,10 +147,7 @@ def _expand_figure_context_with_paragraphs(neo: Neo4jClient, supports: List[Dict
 
 
 def _vsearch_concepts(neo: Neo4jClient, embedding: List[float], k: int = 10, min_score: float = 0.6) -> List[Dict[str, Any]]:
-    """
-    Vector-Suche über Concept-Index. Findet die relevantesten Konzepte zur Query.
-    Lowered min_score to 0.6 since concept names are short and may not match as strongly as full paragraphs.
-    """
+    """Vektorsuche im Concept-Index; gibt die relevantesten Konzepte zur Query zurück."""
     rows = neo.run(
         """
         CALL db.index.vector.queryNodes('concept_embedding_index', $k, $embedding)
@@ -182,13 +167,7 @@ def _vsearch_concepts(neo: Neo4jClient, embedding: List[float], k: int = 10, min
 
 
 def _paragraphs_via_concepts(neo: Neo4jClient, concept_ids: List[str], limit: int = 20) -> List[Dict[str, Any]]:
-    """
-    Graph-Traversal: Concept -[MENTIONS]-> Paragraph.
-
-    Paragraphen die mehrere relevante Concepts erwähnen, erhalten einen
-    höheren Score (concept_hits-Boost). Concepts ohne MENTIONS-Kanten
-    werden über einen Vector-Fallback abgedeckt.
-    """
+    """Traversiert MENTIONS-Kanten von Konzepten zu Paragraphen; boosted mehrfach erwähnte."""
     if not concept_ids:
         return []
 
@@ -296,10 +275,7 @@ def _paragraphs_via_concepts(neo: Neo4jClient, concept_ids: List[str], limit: in
 
 
 def _expand_via_semantic_relations(neo: Neo4jClient, concept_ids: List[str], k: int = 5) -> List[str]:
-    """
-    Erweitert Concept-Liste über SEMANTIC_RELATION (IS_A, PART_OF, etc.).
-    Findet verwandte Concepts die ebenfalls relevant sein könnten.
-    """
+    """Erweitert die Konzeptliste über SEMANTIC_RELATION-Kanten (IS_A, PART_OF, RELATED_TO)."""
     if not concept_ids:
         return []
     
@@ -328,16 +304,7 @@ def hybrid_retrieve(
     add_figure_context: bool = True,
     use_concept_based: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Hybrid-Retrieval:
-      1) Embed Query
-      2) Vector-Suche Paragraphs & Figures (getrennte Indizes)
-      3) (optional) Figure-Kontext aus Paragraphen via REFERS_TO/CAPTIONS nachziehen
-      4) Supports zusammenführen
-
-    Rückgabe:
-      {"supports": [ {type: 'paragraph'| 'figure', ...}, ... ]}
-    """
+    """Kombiniert Paragraph- und Figure-Vektorsuche und ergänzt optional Figure-Kontext."""
     emb = _embed_query(query)
 
     paras = _vsearch_paragraphs(neo, emb, k=k_paragraphs)
@@ -370,20 +337,7 @@ def concept_based_retrieve(
     add_figure_context: bool = True,
     min_concept_score: float = 0.6,
 ) -> Dict[str, Any]:
-    """
-    GraphRAG Concept-basiertes Retrieval:
-      1) Embed Query
-      2) Vector-Suche auf Concepts → findet relevante Konzepte
-      3) Graph-Traversal: Concept -[MENTIONS]-> Paragraph (primärer GraphRAG-Pfad)
-         Fallback: Vector-Similarity für Concepts ohne MENTIONS-Kanten
-      4) (optional) Semantic Relations: erweitere Concepts über IS_A/PART_OF/RELATED_TO
-      5) Direkte Paragraph-Vektorsuche als Ergänzung
-      6) Vector-Suche Figures
-      7) Deduplizierung & Merge
-
-    Rückgabe:
-      {"supports": [...], "matched_concepts": [...], "debug": {...}}
-    """
+    """GraphRAG-Retrieval via Konzept-Vektorsuche, Graph-Traversal und direkter Paragraph-/Figure-Suche."""
     emb = _embed_query(query)
     debug: Dict[str, Any] = {}
     

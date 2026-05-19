@@ -1,3 +1,4 @@
+"""Gamma-Präsentations-Client: generiert PPTX via Gamma-API oder lokalem python-pptx-Fallback."""
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import os
@@ -26,17 +27,7 @@ import requests
 
 
 def _call_gamma_api(title: str, slides: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Versucht, eine Präsentation via Gamma-API zu erzeugen.
-
-    Wichtig: Die konkrete Gamma-API ist hier als generisches POST-Pattern implementiert.
-    Setze `GAMMA_API_URL` und `GAMMA_API_KEY` in deiner Umgebung, z.B.
-      GAMMA_API_URL=https://api.gamma.app/v1
-      GAMMA_API_KEY=sk-...
-
-    Falls die Gamma-API nicht erreichbar ist oder nicht konfiguriert wurde, wird
-    eine Exception geworfen und der Aufrufer sollte auf das lokale Fallback zurückgreifen.
-    """
+    """Sendet Titel und Folien an die Gamma-API und gibt die JSON-Antwort zurück."""
     if not GAMMA_API_URL or not GAMMA_API_KEY:
         raise RuntimeError("Gamma API nicht konfiguriert (GAMMA_API_URL/GAMMA_API_KEY fehlen)")
     if httpx is None:
@@ -57,24 +48,15 @@ def _call_gamma_api(title: str, slides: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _create_local_pptx(
-    title: str, 
-    slides: List[Dict[str, Any]], 
-    out_dir: str = ".", 
+    title: str,
+    slides: List[Dict[str, Any]],
+    out_dir: str = ".",
     template_path: Optional[str] = None,
     title_font_size: int = 32,
     body_font_size: int = 18,
     bullet_font_size: int = 14
 ) -> str:
-    """
-    Erzeugt lokal eine .pptx-Datei mit python-pptx als Fallback.
-
-    slides: List[dict] mit Einträgen {"title": str, "content": str|List[str]}.
-    title_font_size: Schriftgröße für Folientitel (Standard: 32pt)
-    body_font_size: Schriftgröße für erste Zeile im Body (Standard: 18pt)
-    bullet_font_size: Schriftgröße für Bulletpoints (Standard: 14pt)
-    
-    Gibt den absoluten Pfad zur erzeugten Datei zurück.
-    """
+    """Erstellt eine PPTX-Datei lokal via python-pptx als Gamma-Fallback und gibt den Pfad zurück."""
     if Presentation is None:
         raise RuntimeError("python-pptx nicht installiert; Installation in requirements.txt fehlt oder nicht installiert")
 
@@ -230,29 +212,7 @@ def generate_presentation(
     body_font_size: int = 18,
     bullet_font_size: int = 14
 ) -> Dict[str, Any]:
-    """
-    Erzeugt eine Präsentation aus einer Answer-Text und zugehörigen Supports.
-
-    Ablauf:
-      - Baut einfache Slide-Struktur aus `answer_text` und `supports`.
-      - Versucht, Gamma-API zu verwenden (wenn konfiguriert), andernfalls lokaler PPTX-Fallback.
-
-    Args:
-        title: Titel der Präsentation
-        answer_text: Haupttext für die Folien
-        supports: Liste von Belegen (paragraphs/figures)
-        use_gamma: Ob Gamma API verwendet werden soll
-        out_dir: Ausgabe-Verzeichnis
-        template_path: Optional: Pfad zu PPTX-Template
-        title_font_size: Schriftgröße für Folientitel (nur lokales PPTX, Standard: 32pt)
-        body_font_size: Schriftgröße für Body-Text (nur lokales PPTX, Standard: 18pt)
-        bullet_font_size: Schriftgröße für Bulletpoints (nur lokales PPTX, Standard: 14pt)
-
-    Rückgabe: Dict mit Feldern:
-      - method: "gamma" | "local"
-      - result: API-Antwort oder Pfad zur .pptx-Datei
-      - slides: strukturierte Slide-Daten
-    """
+    """Erzeugt eine Präsentation aus Antworttext und Supports via Gamma-API oder lokalem PPTX-Fallback."""
     # 1) Erzeuge strukturierte Slides
     slides: List[Dict[str, Any]] = []
 

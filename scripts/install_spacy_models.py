@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Installiert die benötigten spaCy-Modelle für die Hybrid-Extraktion.
-
-Aufruf:
-    python scripts/install_spacy_models.py
-"""
+"""Installiert die spaCy- und SciSpacy-Modelle für die hybride Entitätsextraktion."""
 
 import subprocess
 import sys
@@ -30,6 +25,7 @@ def run_command(cmd, description):
         return False
 
 def main():
+    """Installiert en_core_web_sm und en_core_sci_sm und meldet Erfolg oder Fehler."""
     print("\n" + "="*60)
     print("spaCy Modell-Installation für Hybrid Entity Extraction")
     print("="*60)

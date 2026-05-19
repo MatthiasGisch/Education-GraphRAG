@@ -1,26 +1,4 @@
-"""
-Kursspezifischer Testfragen-Generator für RAGAS-Evaluation.
-============================================================
-Generiert aus den drei Kursinhaltsverzeichnissen automatisch
-Testfragen + Ground Truths auf Basis der Papers in Neo4j.
-
-Phase 1 – Fragengenerierung (schnell, ~2 min):
-    GPT liest Lernziele pro Abschnitt → 2 Fragen je Abschnitt
-
-Phase 2 – Ground-Truth-Anreicherung (langsam, ~10–20 min):
-    Für jede Frage: concept_based_retrieve() → GPT synthetisiert Antwort
-    Fallback: GPT-Allgemeinwissen (gekennzeichnet)
-
-Aufruf:
-    python scripts/generate_course_questions.py               # alle 3 Kurse
-    python scripts/generate_course_questions.py --kurs kurs1  # nur Kurs 1
-    python scripts/generate_course_questions.py --nur-fragen  # ohne Ground Truths
-
-Ausgabe:
-    data/eval/questions_kurs1_ai_literacy_kmu.json
-    data/eval/questions_kurs2_ki_strategie_governance.json
-    data/eval/questions_kurs3_ki_recht_eu_ai_act.json
-"""
+"""Generiert kursspezifische RAGAS-Testfragen mit Ground Truths aus den Kursinhaltsverzeichnissen und Neo4j."""
 from __future__ import annotations
 
 import argparse
@@ -327,6 +305,7 @@ def _generate_questions_for_section(
     abschnitt: dict,
     n: int = 2,
 ) -> list[dict]:
+    """Generiert n Testfragen für einen Kursabschnitt via GPT-4o-mini und gibt sie als Liste von Dicts zurück."""
     themen_str = "\n".join(f"- {t}" for t in abschnitt["themen"])
     prompt = _FRAGEN_USER.format(
         kurs_name=kurs_name,
@@ -400,10 +379,7 @@ def _generate_ground_truth(
     kurs_name: str,
     abschnitt: dict,
 ) -> tuple[str, str]:
-    """
-    Gibt (ground_truth, source) zurück.
-    source: "neo4j" | "synthetic"
-    """
+    """Generiert per Neo4j-Retrieval oder GPT-Allgemeinwissen eine Ground Truth und gibt (text, source) zurück."""
     # Paragraphen aus Neo4j holen
     try:
         result = concept_based_retrieve(neo, frage)
@@ -452,10 +428,7 @@ def process_kurs(
     nur_fragen: bool = False,
     neo: Neo4jClient | None = None,
 ) -> list[dict]:
-    """
-    Generiert Fragen (+ optional Ground Truths) für einen Kurs.
-    Gibt Liste von Fragen-Dicts zurück und speichert JSON.
-    """
+    """Generiert Fragen und optional Ground Truths für einen Kurs, speichert die Ergebnisse als JSON und gibt sie zurück."""
     kurs = KURSE[kurs_id]
     client = OpenAI(api_key=cfg.OPENAI_API_KEY)
     n = kurs["fragen_pro_abschnitt"]
@@ -524,10 +497,7 @@ def process_kurs(
 # ---------------------------------------------------------------------------
 
 def load_course_questions(kurs_id: str) -> list[dict]:
-    """
-    Lädt gespeicherte Fragen als Liste von Dicts.
-    Kompatibel mit ragas_eval.TestQuestion via Konvertierung.
-    """
+    """Lädt gespeicherte Fragen aus data/eval/questions_{kurs_id}.json als Liste von Dicts."""
     path = OUTPUT_DIR / f"questions_{kurs_id}.json"
     if not path.exists():
         raise FileNotFoundError(
@@ -539,9 +509,7 @@ def load_course_questions(kurs_id: str) -> list[dict]:
 
 
 def load_as_test_questions(kurs_id: str):
-    """
-    Lädt Fragen und konvertiert sie in TestQuestion-Objekte für ragas_eval.py.
-    """
+    """Lädt Fragen aus der JSON-Datei und konvertiert sie in TestQuestion-Objekte für ragas_eval.py."""
     from scripts.ragas_eval import TestQuestion
     raw = load_course_questions(kurs_id)
     return [
@@ -560,6 +528,7 @@ def load_as_test_questions(kurs_id: str):
 # ---------------------------------------------------------------------------
 
 def print_summary(kurs_id: str) -> None:
+    """Gibt eine Übersicht aller generierten Fragen eines Kurses mit Ground-Truth-Quelle auf stdout aus."""
     fragen = load_course_questions(kurs_id)
     kurs_name = KURSE[kurs_id]["name"]
     print(f"\n{'='*70}")

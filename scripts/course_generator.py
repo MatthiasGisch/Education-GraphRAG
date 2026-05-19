@@ -15,7 +15,7 @@ import re
 
 
 def _safe_para(text: str) -> str:
-    """Escapes text for ReportLab Paragraph XML while preserving <super>…</super> citation tags."""
+    """Escaped Text für ReportLab-Paragraph-XML und bewahrt dabei <super>…</super>-Zitations-Tags."""
     parts = re.split(r'(</?super>)', text)
     return ''.join(
         p if p in ('<super>', '</super>') else html.escape(p)
@@ -24,11 +24,7 @@ def _safe_para(text: str) -> str:
 
 
 def _remap_inline_citations(text: str, local_titles: list, global_mapping: dict) -> str:
-    """
-    Remaps section-local <super>[n]</super> numbers to global bibliography numbers.
-    local_titles: sorted list of paper titles used in this section (defines local 1-based order)
-    global_mapping: {paper_title: global_citation_number}
-    """
+    """Remappt abschnittslokal nummerierte <super>[n]</super>-Zitationen auf globale Literaturverzeichnisnummern."""
     if not text or not local_titles or not global_mapping:
         return text
     local_to_global = {}
@@ -47,10 +43,7 @@ def _remap_inline_citations(text: str, local_titles: list, global_mapping: dict)
 
 
 def clean_llm_metadata(text: str) -> str:
-    """
-    Entfernt überflüssige Metadaten und Präfixe, die das LLM manchmal generiert.
-    Z.B. "Schulungsunterlagen: Titel – Untertitel" am Anfang des Textes.
-    """
+    """Entfernt LLM-generierte Metadaten-Präfixe wie 'Schulungsunterlagen: Titel – Untertitel' am Textbeginn."""
     if not text:
         return text
     
@@ -70,21 +63,7 @@ def clean_llm_metadata(text: str) -> str:
 
 
 def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str = None, retrieval_hints: dict = None, section_title: str = None, learner_role: str = None) -> dict:
-    """
-    Holt relevante Inhalte aus dem Wissensgraphen für ein Kapitel.
-    Nutzt das bewährte Retrieval-System aus dem Fragen-Tab.
-    
-    Args:
-        neo: Neo4j Client
-        chapter_title: Titel des Kapitels
-        topic: Optional das Topic für bessere Zuordnung
-        retrieval_hints: Optional dict mit Abschnitt-Index -> Retrieval-Hinweis
-        section_title: Optional Abschnittstitel für spezifische Sections
-        learner_role: Optional Zielgruppe/Rolle (z.B. "Vertriebsmitarbeiter", "Lagerarbeiter")
-        
-    Returns:
-        Dict mit answer_text, paragraphs, figures, related_concepts
-    """
+    """Holt relevante Inhalte aus dem Wissensgraphen für ein Kapitel und gibt answer_text, paragraphs, figures und concepts zurück."""
     result = {
         "answer_text": "",
         "paragraphs": [], 
@@ -740,20 +719,7 @@ def fetch_content_for_chapter(neo: Neo4jClient, chapter_title: str, topic: str =
     return result
 
 def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None, include_content: bool = True, cover_logo_bytes: bytes = None, learner_role: str = None) -> dict:
-    """
-    Generiert eine strukturierte PDF aus der Kursstruktur mit Inhalten aus dem Wissensgraphen.
-    
-    Args:
-        course: Dict mit Kursname und Kapiteln
-        output_path: Pfad für die Ausgabedatei
-        neo: Neo4j Client für Inhaltsabruf (optional)
-        include_content: Ob Inhalte aus dem Graph eingebunden werden sollen
-        cover_logo_bytes: Optionales Logo als Bytes für das Deckblatt
-        learner_role: Optional Zielgruppe/Rolle für die Inhaltsanpassung
-        
-    Returns:
-        Dict mit 'path', 'supports', 'generated_text' für Citation Validation
-    """
+    """Generiert ein strukturiertes Kurs-PDF mit Inhalten aus dem Wissensgraphen und gibt path, supports und generierten Text zurück."""
     # Speichere die learner_role für Zugriff in der PDF-Generierung
     generate_course_pdf._learner_role = learner_role
     
@@ -1257,6 +1223,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
     
     # Seitenzahlen ab erster Inhaltsseite (Deckblatt + TOC ohne Nummer)
     def add_page_number(canvas_obj, doc_obj):
+        """Fügt Seitenzahlen ab der dritten Seite (nach Deckblatt und TOC) in das PDF ein."""
         page_num = canvas_obj.getPageNumber()
         if page_num <= 2:
             return  # Kein Deckblatt/TOC nummerieren
@@ -1277,6 +1244,7 @@ def generate_course_pdf(course: dict, output_path: str, neo: Neo4jClient = None,
     }
 
 def show_course_generator():
+    """Rendert die Streamlit-Oberfläche des Kursgenerators mit Struktureditor, Vorschau und PDF-Export."""
     # Neo4j Client initialisieren (wird für Graph-Zugriff und PDF-Generierung benötigt)
     from pathlib import Path
     import json

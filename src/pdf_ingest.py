@@ -1,3 +1,4 @@
+"""PDF-Ingest-Pipeline: extrahiert Text, Abschnitte, Absätze und Abbildungen aus PDFs und erzeugt Embeddings."""
 from __future__ import annotations
 import fitz, os, uuid, json, re, time
 from typing import List, Dict, Any, Tuple, Optional
@@ -9,9 +10,11 @@ import hashlib
 import imagehash
 
 def sha256(text: str) -> str:
+    """Berechnet den SHA-256-Hash eines Strings als Hex-String."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 def file_sha256(path: str) -> str:
+    """Berechnet den SHA-256-Hash einer Datei und gibt ihn als Hex-String zurück."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1<<20), b""):
@@ -19,6 +22,7 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 def extract_doi_and_url(doc) -> tuple[str|None, str|None]:
+    """Extrahiert DOI und URL aus den PDF-Metadaten und dem Text der ersten zwei Seiten."""
     # 1) Metadaten
     meta_raw = doc.metadata or {}
     # Filter leere Metafelder, damit keine leeren author/creator Felder gespeichert werden
@@ -65,13 +69,7 @@ def extract_sections(doc) -> list[dict]:
 
 
 def extract_title_from_first_page(doc) -> str | None:
-    """
-    Extrahiere den Titel aus der ersten Seite durch Analyse der Textformatierung.
-    Sucht nach dem größten/fettesten Text am Anfang der Seite.
-    
-    Returns:
-        Extrahierter Titel oder None
-    """
+    """Extrahiert den Titel aus der ersten PDF-Seite anhand des größten/fettesten Texts; gibt None zurück wenn nicht gefunden."""
     if len(doc) == 0:
         return None
     
@@ -125,20 +123,14 @@ def extract_title_from_first_page(doc) -> str | None:
 
 
 def section_for_page(sections: list[dict], page_num1: int) -> dict|None:
+    """Gibt den Abschnitt zurück, in dessen page_start/page_end-Range die gegebene Seite liegt."""
     for s in sections:
         if s["page_start"] <= page_num1 <= s["page_end"]:
             return s
     return None
 
 def extract_paragraph_blocks(page) -> list[dict]:
-    """
-    Robust: liest page.get_text('rawdict') und baut Absätze.
-    - Unterstützt Spans ohne 'text' (nimmt dann 'chars' zusammen)
-    - Ignoriert fehlerhafte / leere Lines
-    - Filtert sehr kurze Blöcke (< MIN_PARA_CHARS Zeichen) heraus
-    - Teilt sehr lange Blöcke an Absatz-/Satzgrenzen auf (MAX_BLOCK_CHARS)
-    Rückgabe: Liste aus Dicts mit text, bbox, order_in_page, page_width/-height, char_start/-end
-    """
+    """Extrahiert Absatzblöcke aus einer PDF-Seite via rawdict; filtert kurze Blöcke und teilt lange Blöcke auf."""
     MIN_PARA_CHARS = 50    # Kürzere Blöcke (Überschriften, Seitenzahlen etc.) überspringen
     MAX_BLOCK_CHARS = 600  # Blöcke länger als das werden aufgeteilt
 
@@ -201,15 +193,7 @@ def extract_paragraph_blocks(page) -> list[dict]:
 
 
 def _split_block(text: str, max_chars: int) -> list[str]:
-    """
-    Teilt einen langen Textblock intelligent auf:
-    1. Zuerst an Doppel-Zeilenumbrüchen (natürliche Absatzgrenzen)
-    2. Falls ein Teilstück immer noch zu lang: an Satzenden ('. ', '! ', '? ')
-    3. Als letzten Ausweg: harter Schnitt an max_chars
-
-    Kurze Teilstücke werden mit dem nächsten zusammengeführt, um
-    fragmentierte Sätze zu vermeiden.
-    """
+    """Teilt einen langen Textblock an Absatz- und Satzgrenzen auf; nutzt harten Schnitt als letzten Ausweg."""
     if len(text) <= max_chars:
         return [text]
 
@@ -263,10 +247,7 @@ def _split_at_sentences(text: str, max_chars: int) -> list[str]:
     return final
 
 def extract_images_with_bbox(page) -> list[dict]:
-    """
-    Robust: holt Image-BBoxen aus 'rawdict'; falls nichts gefunden,
-    liefert leere Liste (Speichern der Bilddateien passiert weiterhin via get_images()).
-    """
+    """Extrahiert Bild-BBoxen aus dem rawdict einer PDF-Seite; gibt leere Liste zurück wenn keine Bilder gefunden."""
     rd = page.get_text("rawdict") or {}
     W, H = page.rect.width, page.rect.height
     out: list[dict] = []
@@ -278,9 +259,7 @@ def extract_images_with_bbox(page) -> list[dict]:
 
 
 def extract_figure_label(text: str) -> Optional[str]:
-    """
-    Extrahiert Figure-Label aus Text wie "Figure 1:", "Fig. 2.3:", "Abb. 5", etc.
-    """
+    """Extrahiert ein Figure-Label aus Text wie 'Figure 1:', 'Fig. 2.3:' oder 'Abb. 5' und gibt es als String zurück."""
     patterns = [
         r'\b(?:Figure|Fig\.|Abb\.|Abbildung)\s+(\d+(?:\.\d+)?)',
         r'\bFigure\s+(\d+(?:\.\d+)?)\s*[:\.]',
@@ -295,15 +274,7 @@ def extract_figure_label(text: str) -> Optional[str]:
 
 
 def find_caption_for_image(image_bbox: list, text_blocks: list, y_tolerance: int = 50, x_tolerance: int = 20) -> tuple[str, Optional[str]]:
-    """
-    Intelligente Caption-Suche für Bilder:
-    1. Sucht Text unterhalb des Bildes (y_tolerance)
-    2. Muss horizontal aligned sein (x_tolerance)
-    3. Extrahiert Figure-Label wenn vorhanden
-    4. Filtert Section-Header aus (zu weit weg, zu groß)
-    
-    Returns: (caption_text, figure_label)
-    """
+    """Sucht die Caption eines Bildes im umliegenden Text und gibt (caption_text, figure_label) zurück."""
     x0, y0, x1, y1 = image_bbox
     img_bottom = y1
     img_center_x = (x0 + x1) / 2
@@ -358,12 +329,7 @@ def find_caption_for_image(image_bbox: list, text_blocks: list, y_tolerance: int
 
 
 def match_bbox_to_xref(image_bboxes: list, xref_list: list, page) -> dict:
-    """
-    Spatial Matching: Ordnet xref (image index) der passenden BBox zu.
-    Nutzt Position und Größe statt Reihenfolge.
-    
-    Returns: {xref: bbox_index} mapping
-    """
+    """Ordnet jeden xref (image index) via räumlichem Abstand der passenden BBox zu und gibt ein {xref: bbox_index}-Dict zurück."""
     if not image_bboxes:
         return {}
     
@@ -416,10 +382,7 @@ def nearest_caption_after(image_bbox, text_blocks, y_tol=30):
     return caption
 
 def read_pdf_text_and_images(path: str):
-    """
-    Wie zuvor – aber mit Fallback, falls rawdict-paragraphs leer:
-    nimmt dann page.get_text('text') + Chunking.
-    """
+    """Liest Text, Abschnitte, Absätze und Abbildungs-Metadaten aus einem PDF; nutzt Fallback-Chunking wenn rawdict leer ist."""
     doc = fitz.open(path)
     doi, url = extract_doi_and_url(doc)
     paper_id = str(uuid.uuid5(uuid.NAMESPACE_URL, file_sha256(path)))
@@ -590,6 +553,7 @@ def read_pdf_text_and_images(path: str):
     return paper_meta, sections, paragraphs, figures_meta
 
 def chunk_text(text: str, size: int, overlap: int) -> List[str]:
+    """Teilt Text in überlappende Chunks der angegebenen Größe auf."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     parts: List[str] = []
     start = 0
@@ -606,12 +570,7 @@ def embed_paragraphs(
     progress_fn=None,
     batch_size: int = 50,
 ) -> List[Dict[str, Any]]:
-    """
-    Bettet alle Paragraphen in Batches ein (reduziert API-Calls drastisch).
-    Bei Rate-Limit-Fehler (429) wird automatisch mit exponentiellem Backoff wiederholt.
-    progress_fn(label: str, pct: int) wird pro Batch aufgerufen (0-100).
-    Wenn progress_fn None ist, wird tqdm verwendet.
-    """
+    """Bettet alle Paragraphen in Batches ein; unterstützt optionalen Progress-Callback und Retry bei Rate-Limits."""
     n = len(paragraphs)
     if n == 0:
         return []
@@ -641,11 +600,7 @@ def analyze_and_embed_figures(
     figures: List[Dict[str, Any]],
     progress_fn=None,
 ) -> List[Dict[str, Any]]:
-    """
-    Analysiert und bettet Abbildungen ein.
-    progress_fn(label: str, pct: int) wird bei jeder Abbildung aufgerufen (0-100).
-    Wenn progress_fn None ist, wird tqdm verwendet.
-    """
+    """Analysiert Abbildungen per VLM und erzeugt Embeddings; unterstützt optionalen Progress-Callback."""
     out = []
     n = len(figures)
     # Throttle zwischen Vision-Calls bei vielen Figures um TPM-Limit zu vermeiden

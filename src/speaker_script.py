@@ -1,8 +1,4 @@
-# src/speaker_script.py
-"""
-Sprechtext-Generierung für Video- und Podcast-Produktion
-Optimiert für Synthesia, ElevenLabs und andere KI-Sprachsynthese
-"""
+"""Sprechtext-Generierung für Kursvideos und Podcasts: optimiert für KI-Sprachsynthese-APIs."""
 
 import json
 import re
@@ -24,12 +20,7 @@ def _normalize_text(text: str) -> str:
 
 
 def _optimize_for_speech(text: str) -> str:
-    """
-    Optimiert Text für natürliche Sprachsynthese.
-    - Zerlegt lange Sätze
-    - Ersetzt Zahlen durch Wörter
-    - Fügt Pausen-Markierungen ein
-    """
+    """Optimiert Text für natürliche Sprachsynthese: normalisiert Zahlen und Abkürzungen."""
     text = _normalize_text(text)
     
     # Zahlenwörter (vereinfacht)
@@ -73,7 +64,7 @@ def _estimate_duration(text: str, words_per_minute: int = 130) -> str:
 
 
 def _split_into_sentences(text: str, max_length: int = 150) -> List[str]:
-    """Zerlegt Text in Sätze mit max. Länge für bessere Lesbarkeit."""
+    """Teilt Text an Satzgrenzen auf; lange Sätze werden zusätzlich an Kommas getrennt."""
     sentences = re.split(r'(?<=[.!?])\s+', text)
     result = []
     
@@ -107,17 +98,7 @@ def generate_speaker_script(
     course_name: str,
     learner_role: str = None
 ) -> Dict[str, Any]:
-    """
-    Generiert strukturierte Sprechtexte für Video/Podcast-Produktion.
-    
-    Args:
-        course_struct: Kursstruktur aus der GUI
-        course_name: Name des Kurses
-        learner_role: Zielgruppe/Rolle (optional)
-    
-    Returns:
-        Dict mit JSON und Markdown Varianten
-    """
+    """Generiert strukturierte Sprechtexte als JSON und Markdown aus einer Kursstruktur."""
     
     chapters = course_struct.get("Kapitel", [])
     
@@ -239,12 +220,7 @@ def export_speaker_script(
     output_dir: str,
     course_name: str
 ) -> Dict[str, str]:
-    """
-    Speichert Sprechtexte als JSON und Markdown.
-    
-    Returns:
-        Dict mit Pfaden zu beiden Dateien
-    """
+    """Speichert einen Sprechtext als JSON- und Markdown-Datei; gibt die Dateipfade zurück."""
     from pathlib import Path
     
     output_dir = Path(output_dir)
