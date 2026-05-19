@@ -1,191 +1,351 @@
-# GraphRAG + Neo4j AuraDB (Text + Bilder) – Starter
-Dieses Repo ist ein minimaler, lauffähiger Startpunkt für ein **GraphRAG-Hybridsystem** mit Neo4j AuraDB:
-- PDFs ingestieren (Text + Bilder)
-- Vektorindizes (Neo4j native Vector Index)
-- Bild-Analyse via Vision-Language-Model (OpenAI GPT-4o)
-- Antwortorchestrierung (Graph→RAG; Fallback Websuche optional)
-- Einfaches FastAPI (optional, hier CLI-Skripte)
+# GraphRAG-System zur automatisierten Kursgenerierung
 
-## Schnellstart
-1. **.env anlegen**
-   Kopiere `.env.example` nach `.env` und setze deine Werte (AuraDB + OpenAI):
-   ```bash
-   cp .env.example .env
-   ```
-2. **Abhängigkeiten**
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. **spaCy Modelle installieren (für Hybrid-Extraktion)**
-   ```bash
-   python -m spacy download en_core_web_sm
-   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
-   ```
-4. **Schema in Neo4j anlegen**
-   ```bash
-   python scripts/create_schema.py
-   ```
-5. **PDFs ingestieren** (Pfad(e) zu deinen PDFs angeben)
-   ```bash
-   python scripts/ingest.py /pfad/zu/deinen.pdf /weitere/datei.pdf
-   ```
-   Bilder werden in `data/images/` abgelegt und als `Figure`-Knoten verknüpft.
-6. **Fragen stellen (GraphRAG)**
-   ```bash
-   python scripts/ask.py "Erkläre Green AI und nenne Belege."
-   ```
-7. **GUI Starten**
-   ```bash
-   streamlit run .\scripts\gui_app.py
-   ```
+Masterthesis-Projekt: Ein hybrides GraphRAG-System, das wissenschaftliche PDFs in einen Neo4j-Wissensgraphen aufnimmt und daraus strukturierte Lernkurse generiert.
 
-## Features
+---
 
-### Hybrid Entity & Relation Extraction (NEU)
-Das System bietet jetzt eine erweiterte Extraktion, die folgendes kombiniert:
+## Inhaltsverzeichnis
 
-- **Named Entity Recognition (NER)**: spaCy + SciSpacy für strukturierte Entitäten (PERSON, ORG, SCIENTIFIC_TERM, CHEMICAL, etc.)
-- **LLM-basierte Konzeptextraktion**: Erfasst abstrakte Konzepte, Methodologien und Theorien
-- **Semantische Relationen**: Extrahiert Tripel (Subject-Predicate-Object) wie IS_A, PART_OF, CAUSES, etc.
-- **Ko-Okkurrenz-Analyse**: Statistische Beziehungen zwischen häufig gemeinsam auftretenden Konzepten
+1. [Voraussetzungen](#1-voraussetzungen)
+2. [Installation](#2-installation)
+3. [Konfiguration (.env)](#3-konfiguration-env)
+4. [Datenbank vorbereiten](#4-datenbank-vorbereiten)
+5. [PDFs ingestieren](#5-pdfs-ingestieren)
+6. [GUI verwenden](#6-gui-verwenden)
+7. [CLI-Befehle](#7-cli-befehle)
+8. [Kursgenerierung](#8-kursgenerierung)
+9. [Lokaler Betrieb mit LM Studio](#9-lokaler-betrieb-mit-lm-studio)
+10. [RAGAS-Evaluation](#10-ragas-evaluation)
+11. [Framework-Vergleich](#11-framework-vergleich)
+12. [Projektstruktur](#12-projektstruktur)
 
-#### Verwendung im Code:
-```python
-from src.concept_extract import extract_and_embed_concepts_hybrid
+---
 
-result = extract_and_embed_concepts_hybrid(
-    paper_title="Mein Paper",
-    paper_text=full_text,
-    paragraphs=paragraphs,
-    max_entities=30,
-    max_relations=20,
-    use_scispacy=True,
-    neo_client=neo,
-    persist_to_topic=True
-)
+## 1. Voraussetzungen
 
-# result enthält: concepts, relations, paragraph_links, stats
+- Python 3.11 oder 3.12
+- Neo4j AuraDB-Instanz (kostenloser Tier reicht für Tests)
+- OpenAI API-Key
+- Optional: LM Studio (für lokalen Betrieb ohne OpenAI)
+
+---
+
+## 2. Installation
+
+```bash
+# 1. Repository klonen
+git clone <repo-url>
+cd masterthesis_neu
+
+# 2. Virtuelle Umgebung erstellen und aktivieren
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS / Linux
+
+# 3. Abhängigkeiten installieren
+pip install -r requirements.txt
+
+# 4. spaCy-Modelle installieren
+python scripts/install_spacy_models.py
 ```
 
-#### GUI-Integration:
-Die Streamlit-GUI nutzt derzeit die LLM-basierte Konzept-Extraktion. Ein Hybrid-(NER+LLM)-Modus ist im Code verfügbar, jedoch nicht als GUI-Option.
+> **Hinweis:** `graphrag`, `lightrag-hku` und `pdfplumber` werden nur für den Framework-Vergleich benötigt und sind optional.
 
-### Relation Types im Graph:
-- `SEMANTIC_RELATION` - Semantische Beziehungen mit Properties:
-  - `relation_type`: IS_A, PART_OF, CAUSES, REQUIRES, USES, etc.
-  - `confidence`: Konfidenzwert (0.0-1.0)
-  - `context`: Satz/Phrase, in dem die Relation erscheint
-  - `source`: "llm" oder "cooccurrence"
-- `CO_OCCURS_WITH` - Ko-Okkurrenz-Beziehungen mit Properties:
-  - `count`: Anzahl gemeinsamer Vorkommen
-  - `strength`: Normalisierte Stärke (0.0-1.0)
+---
 
-## Projektstruktur
-```
-graphrag-auradb-starter/
-├─ .env.example
-├─ requirements.txt
-├─ README.md
-├─ src/
-│  ├─ config.py
-│  ├─ neo.py
-│  ├─ openai_client.py
-│  ├─ pdf_ingest.py
-│  ├─ retriever.py
-│  ├─ agent.py
-│  └─ graph_schema.cypher
-├─ scripts/
-│  ├─ create_schema.py
-│  ├─ ingest.py
-│  └─ ask.py
-└─ data/
-   └─ images/
+## 3. Konfiguration (.env)
+
+Die Datei `.env` im Projektroot enthält alle Credentials. Pflichtfelder:
+
+```env
+# Neo4j AuraDB
+NEO4J_URI=neo4j+s://<deine-instanz>.databases.neo4j.io
+NEO4J_USERNAME=<benutzername>
+NEO4J_PASSWORD=<passwort>
+
+# OpenAI
+OPENAI_API_KEY=sk-proj-...
+
+# LLM-Modus: "cloud" (OpenAI) oder "local" (LM Studio)
+LLM_MODE=cloud
 ```
 
-# AuraDB Cypherabfragen
+Alle weiteren Variablen (Gamma, Synthesia, LM Studio, Websuche) sind optional und haben sinnvolle Defaults. Siehe bestehende `.env` für die vollständige Liste.
 
-## DIAGNOSE: Was ist in der Datenbank?
+---
 
-### Alle Knoten-Typen zählen
-```cypher
-MATCH (n)
-RETURN labels(n) AS NodeType, count(n) AS Count
-ORDER BY Count DESC
+## 4. Datenbank vorbereiten
+
+Einmalig das Neo4j-Schema anlegen (Constraints und Vektorindizes):
+
+```bash
+python scripts/create_schema.py
 ```
 
-### Topics und ihre Konzepte
-```cypher
-MATCH (t:Topic)
-OPTIONAL MATCH (t)-[:HAS_CONCEPT]->(c:Concept)
-RETURN t.name AS Topic, count(c) AS ConceptCount
+Danach kann der Graph mit PDFs befüllt werden.
+
+---
+
+## 5. PDFs ingestieren
+
+### Via GUI (empfohlen)
+
+Die GUI bietet den komfortabelsten Ingest-Workflow — siehe [Abschnitt 6](#6-gui-verwenden).
+
+### Via CLI
+
+```bash
+python scripts/ingest.py pfad/zu/paper1.pdf pfad/zu/paper2.pdf
 ```
 
-### Papers und ihre Komponenten
-```cypher
-MATCH (p:Paper)
-OPTIONAL MATCH (p)-[:HAS_PARAGRAPH]->(para:Paragraph)
-OPTIONAL MATCH (p)-[:HAS_FIGURE]->(fig:Figure)
-OPTIONAL MATCH (p)-[:HAS_SECTION]->(sec:Section)
-RETURN p.title AS Paper, 
-       count(DISTINCT para) AS Paragraphs,
-       count(DISTINCT fig) AS Figures,
-       count(DISTINCT sec) AS Sections
-LIMIT 10
+Was dabei passiert:
+1. PDF wird geparst (Text, Bilder, Struktur)
+2. Embeddings werden berechnet (`text-embedding-3-large`, 3072-D)
+3. Paper, Sections, Paragraphs und Figures werden in Neo4j gespeichert
+4. Konzepte und semantische Relationen werden extrahiert (NER + LLM)
+5. Paragraph→Konzept-Verknüpfungen werden angelegt
+
+---
+
+## 6. GUI verwenden
+
+```bash
+streamlit run scripts/gui_app.py
 ```
 
-### Konzept-Paragraph Verknüpfungen prüfen
-```cypher
-MATCH (para:Paragraph)-[:MENTIONS]->(c:Concept)
-RETURN count(*) AS MentionsCount
+Der Browser öffnet sich automatisch unter `http://localhost:8501`.
+
+### Tab-Übersicht
+
+| Tab | Funktion |
+|-----|---------|
+| **Ingest** | PDFs hochladen und verarbeiten, Fortschrittsanzeige in Echtzeit |
+| **Q&A** | Fragen an den Graphen stellen, Antworten mit Quellenbelegen |
+| **Kursgenerierung** | Automatisierte Kurse aus dem Graphen erstellen |
+| **Paper-Verwaltung** | Ingestionierte Paper anzeigen, Metadaten bearbeiten, Paper löschen |
+| **Graph** | Wissensgraph interaktiv visualisieren (Plotly / agraph) |
+| **Cypher** | Direkte Cypher-Abfragen an Neo4j |
+| **Evaluation** | RAGAS-Evaluation starten und Ergebnisse anzeigen |
+
+### Ingest-Workflow (Schritt für Schritt)
+
+1. Tab **Ingest** öffnen
+2. PDFs via Datei-Upload hochladen (mehrere gleichzeitig möglich)
+3. Topic eingeben (z.B. `KI-Literacy`)
+4. **Ingestieren** klicken — der Fortschrittsbalken zeigt jeden Schritt
+5. Nach Abschluss erscheinen die Paper im Tab **Paper-Verwaltung**
+
+### Q&A-Workflow
+
+1. Tab **Q&A** öffnen
+2. Frage in das Textfeld eingeben
+3. Optional: Websuche aktivieren (Fallback wenn Graph keine Belege findet)
+4. **Fragen** klicken
+5. Die Antwort erscheint mit Quellenbelegen (`[P123]` = Paragraph, `[F45]` = Figure)
+
+---
+
+## 7. CLI-Befehle
+
+```bash
+# Frage stellen und Antwort auf der Konsole ausgeben
+python scripts/ask.py "Was ist Transfer Learning?"
+
+# Frage stellen und Antwort als PDF speichern
+python scripts/ask_to_pdf.py "Erkläre Transformer-Architekturen."
+
+# Alle Paper neu ingestieren (z.B. nach Schema-Änderung)
+python scripts/reingest_all.py
+
+# Datenbankstatus prüfen (Knotenanzahlen, Indizes)
+python scripts/diagnose_db.py
+
+# Gesamten Graphen leeren (VORSICHT: unumkehrbar)
+python scripts/clear_all.py
 ```
 
-### Semantische Relationen prüfen (Hybrid-Modus)
-```cypher
-MATCH (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
-RETURN c1.name, r.relation_type, c2.name, r.confidence
-LIMIT 20
+---
+
+## 8. Kursgenerierung
+
+Die Kursgenerierung ist in den GUI-Tab **Kursgenerierung** integriert.
+
+### Ablauf
+
+1. Tab **Kursgenerierung** öffnen
+2. Kursname, Zielgruppe und gewünschte Kapitelanzahl eingeben
+3. Optional: Themenfilter setzen (nur bestimmte Paper verwenden)
+4. **Kurs generieren** klicken
+5. Der Kurs wird mit Kapiteln, Erklärungen und Quellenbelegen generiert
+6. Export als **PDF** oder **PowerPoint** möglich
+
+### Präsentationsgenerierung
+
+Im selben Tab können Präsentationen erzeugt werden:
+- **Gamma API**: Hochwertige Web-Präsentation (erfordert `GAMMA_API_KEY` + `GAMMA_API_URL` in `.env`)
+- **PowerPoint (lokal)**: Kein API-Key nötig, via `python-pptx`
+
+### Videogenerierung
+
+- **Synthesia**: KI-Avatar liest den Kurs vor (erfordert `SYNTHESIA_API_KEY`)
+- **Lokal**: Text-to-Speech via `edge-tts` + `moviepy`, kein API-Key nötig
+
+---
+
+## 9. Lokaler Betrieb mit LM Studio
+
+Das System läuft vollständig ohne Cloud-APIs, wenn LM Studio installiert und konfiguriert ist.
+
+### Setup
+
+1. [LM Studio](https://lmstudio.ai) installieren
+2. Ein Chat-Modell laden (z.B. `mistral-7b-instruct`)
+3. Ein Vision-Modell laden (z.B. `llava-v1.5-7b`)
+4. Ein Embedding-Modell laden (z.B. `nomic-embed-text`)
+5. Den lokalen Server in LM Studio starten (Standard-Port: 1234)
+
+### .env anpassen
+
+```env
+LLM_MODE=local
+
+LMSTUDIO_BASE_URL=http://localhost:1234/v1
+LMSTUDIO_CHAT_MODEL=mistral-7b-instruct
+LMSTUDIO_VISION_MODEL=llava-v1.5-7b
+LMSTUDIO_EMBED_MODEL=nomic-embed-text
+LMSTUDIO_EMBED_DIM=768
 ```
 
-## TOPIC->CONCEPTS
-```cypher
-MATCH p = (:Topic)-[:HAS_CONCEPT]->(:Concept)
-RETURN p
-LIMIT 100
+> **Wichtig:** Die Neo4j-Vektorindizes sind auf **3072 Dimensionen** angelegt (für `text-embedding-3-large`). Lokale Embedding-Modelle haben meist 768 Dimensionen. Wenn lokal und cloud gemischt werden, entstehen inkompatible Embeddings. Entweder konsequent einen Modus verwenden oder das Schema mit `python scripts/create_schema.py` neu anlegen.
+
+---
+
+## 10. RAGAS-Evaluation
+
+Die Evaluation misst die Qualität der RAG-Pipeline mit dem RAGAS-Framework.
+
+### Vorbereitung: Testfragen generieren
+
+```bash
+# Kursspezifische Testfragen für alle 3 Kurse generieren
+python scripts/generate_course_questions.py
+
+# Nur Fragen ohne Ground Truths (schneller)
+python scripts/generate_course_questions.py --nur-fragen
 ```
 
-## PAPER->PARAGRAPHS
-```cypher
-MATCH p = (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)
-RETURN p
-LIMIT 100
+Die Fragen werden in `data/eval/questions_<kurs_id>.json` gespeichert.
+
+### Evaluation starten
+
+**Via GUI** (empfohlen):
+1. Tab **Evaluation** öffnen
+2. Evaluationsmodus wählen (Vollständig / Kurs-Evaluation / Halluzinationstest)
+3. **Evaluation starten** klicken
+4. Ergebnisse erscheinen als Tabelle und werden in `data/eval/` gespeichert
+
+**Via CLI:**
+```bash
+python scripts/ragas_eval.py
 ```
 
-## PAPER -> FIGURES/MENTIONS/PARAGRAPHS -> CONCEPTS
-```cypher
-MATCH (t:Topic {name:$topic})
-OPTIONAL MATCH (t)-[:HAS_CONCEPT]->(c:Concept)
-WITH c
-WHERE c IS NOT NULL
-OPTIONAL MATCH p1 = (c)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
-OPTIONAL MATCH p2 = (paper)-[:HAS_SECTION]->(sec:Section)-[:HAS_PARAGRAPH]->(para)
-OPTIONAL MATCH p3 = (paper)-[:HAS_FIGURE]->(figP:Figure)
-OPTIONAL MATCH p4 = (sec)-[:HAS_FIGURE]->(figS:Figure)
-RETURN p1, p2, p3, p4
-LIMIT 500
+### Gemessene Metriken
+
+| Metrik | Beschreibung |
+|--------|-------------|
+| **Faithfulness** | Sind alle Aussagen durch den Kontext belegt? |
+| **Answer Relevancy** | Beantwortet die Antwort die Frage? |
+| **Context Precision** | Wie präzise ist der abgerufene Kontext? |
+| **Context Recall** | Enthält der Kontext alle nötigen Informationen? |
+
+---
+
+## 11. Framework-Vergleich
+
+Vergleicht das eigene GraphRAG-System mit **MS GraphRAG** und **LightRAG** auf denselben Testfragen mit demselben RAGAS-Judge.
+
+### Voraussetzungen
+
+```bash
+pip install graphrag pdfplumber lightrag-hku
 ```
 
-## Einfache Graph-Visualisierung (ohne Topic-Parameter)
-```cypher
-MATCH (paper:Paper)-[:HAS_PARAGRAPH]->(para:Paragraph)-[:MENTIONS]->(c:Concept)
-OPTIONAL MATCH (paper)-[:HAS_FIGURE]->(fig:Figure)
-RETURN paper, para, c, fig
-LIMIT 100
+PDFs für den Vergleich in `data/uploads/` ablegen.
+
+### LightRAG indexieren
+
+```bash
+python scripts/system_comparison.py --index-lightrag
 ```
 
-## Hybrid-Modus: Konzepte mit Relationen
-```cypher
-MATCH (c1:Concept)-[r:SEMANTIC_RELATION]->(c2:Concept)
-OPTIONAL MATCH (c1)<-[:MENTIONS]-(para:Paragraph)<-[:HAS_PARAGRAPH]-(paper:Paper)
-RETURN c1, r, c2, para, paper
-LIMIT 100
+### MS GraphRAG indexieren
+
+```bash
+# Schritt 1: Textdateien aufbereiten
+python scripts/system_comparison.py --index-msraphrag
+
+# Schritt 2: MS GraphRAG Index aufbauen (manuell)
+graphrag index --root data/graphrag_index
+```
+
+### Vergleich durchführen
+
+```bash
+# Alle 3 Systeme vergleichen
+python scripts/system_comparison.py
+
+# Nur ein bestimmtes System evaluieren
+python scripts/system_comparison.py --system own
+python scripts/system_comparison.py --system msraphrag
+python scripts/system_comparison.py --system lightrag
+
+# Fragen anzeigen ohne API-Calls
+python scripts/system_comparison.py --dry-run
+```
+
+Ergebnisse werden in `data/eval/system_comparison_results.json` gespeichert und als Tabelle auf der Konsole ausgegeben.
+
+---
+
+## 12. Projektstruktur
+
+```
+masterthesis_neu/
+├── src/                          # Kernmodule
+│   ├── config.py                 # Zentrale Konfiguration (.env)
+│   ├── neo.py                    # Neo4j-Client
+│   ├── openai_client.py          # LLM + Embedding + Vision (cloud & lokal)
+│   ├── retriever.py              # Hybrid-Retrieval (Graph + Vektor)
+│   ├── agent.py                  # Query-Orchestrierung + Websuche
+│   ├── pdf_ingest.py             # PDF-Parsing, Chunking, Embedding
+│   ├── concept_extract.py        # Konzextextraktion (NER + LLM)
+│   ├── entity_relation_extract.py# Entitäten- und Relationsextraktion
+│   ├── citation_validator.py     # Zitationsvalidierung
+│   ├── ingest_enhanced.py        # Erweiterter Ingest mit Qualitätsprüfung
+│   ├── pdf_export.py             # PDF-Export (ReportLab)
+│   ├── gamma_client.py           # Gamma-Präsentationsgenerierung
+│   ├── synthesia_client.py       # Synthesia-Videogenerierung
+│   ├── local_tts_video.py        # Lokale Videogenerierung (edge-tts + moviepy)
+│   └── presentation_api.py       # FastAPI REST-Endpunkte (optional)
+├── scripts/                      # Einstiegspunkte & Utilities
+│   ├── gui_app.py                # Streamlit-GUI (Haupteinstieg)
+│   ├── ingest.py                 # CLI-Batch-Ingest
+│   ├── ask.py                    # CLI Q&A
+│   ├── course_generator.py       # Kursgenerierung (GUI-Plugin)
+│   ├── ragas_eval.py             # RAGAS-Evaluation
+│   ├── system_comparison.py      # Framework-Vergleich (Adapter-basiert)
+│   ├── generate_course_questions.py  # Testfragen generieren
+│   ├── create_schema.py          # Datenbankschema anlegen
+│   ├── diagnose_db.py            # Datenbankdiagnose
+│   └── reingest_all.py           # Alle Paper neu ingestieren
+├── data/                         # Laufzeitdaten (in .gitignore)
+│   ├── images/                   # Extrahierte Abbildungen
+│   ├── eval/                     # RAGAS-Ergebnisse (JSON)
+│   ├── uploads/                  # PDFs für Framework-Vergleich
+│   ├── graphrag_index/           # MS GraphRAG Index
+│   └── lightrag_index/           # LightRAG Index
+├── exports/                      # Exportierte Kurse (PDF, PPTX, MP4)
+├── .env                          # Credentials (nicht in Git!)
+├── requirements.txt              # Python-Abhängigkeiten
+└── README.md                     # Diese Datei
 ```
