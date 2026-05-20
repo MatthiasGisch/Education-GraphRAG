@@ -1,6 +1,6 @@
 # GraphRAG-System zur automatisierten Kursgenerierung
 
-Masterthesis: Ein hybrides GraphRAG-System, das wissenschaftliche PDFs in einen Neo4j-Wissensgraphen aufnimmt und daraus strukturierte Lernkurse generiert.
+Ein hybrides GraphRAG-System, das wissenschaftliche PDFs in einen Neo4j-Wissensgraphen aufnimmt und daraus strukturierte Lernkurse generiert.
 
 ---
 
@@ -15,9 +15,7 @@ Masterthesis: Ein hybrides GraphRAG-System, das wissenschaftliche PDFs in einen 
 7. [CLI-Befehle](#7-cli-befehle)
 8. [Kursgenerierung](#8-kursgenerierung)
 9. [Lokaler Betrieb mit LM Studio](#9-lokaler-betrieb-mit-lm-studio)
-10. [RAGAS-Evaluation](#10-ragas-evaluation)
-11. [Framework-Vergleich](#11-framework-vergleich)
-12. [Projektstruktur](#12-projektstruktur)
+10. [Projektstruktur](#12-projektstruktur)
 
 ---
 
@@ -37,7 +35,7 @@ Masterthesis: Ein hybrides GraphRAG-System, das wissenschaftliche PDFs in einen 
 ```bash
 # 1. Repository klonen
 git clone <repo-url>
-cd graphrag education pipeline
+cd <zum Speicherort>
 
 # 2. Virtuelle Umgebung erstellen und aktivieren
 python -m venv .venv
